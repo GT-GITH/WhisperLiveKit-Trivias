@@ -4,25 +4,21 @@ set -e
 REPO_URL="https://github.com/GT-GITH/WhisperLiveKit-Trivias.git"
 WORKSPACE="/workspace"
 APP_DIR="$WORKSPACE/WhisperLiveKit-Trivias"
-VENV_DIR="$WORKSPACE/venv"
 
 echo "------------------------------------------"
 echo " 🧠 WhisperLiveKit-Trivias setup starten..."
 echo "------------------------------------------"
 
-# 🧩 Cache directories (voorkomt 'no space left')
+# 🧩 Cache directories
 export CACHE_BASE="$WORKSPACE/cache"
 export TMPDIR="$CACHE_BASE/tmp"
 export PIP_CACHE_DIR="$CACHE_BASE/pip"
 export POETRY_CACHE_DIR="$CACHE_BASE/poetry"
 mkdir -p "$CACHE_BASE" "$TMPDIR" "$PIP_CACHE_DIR" "$POETRY_CACHE_DIR"
 
-echo "📦 Cache directories ingesteld in: $CACHE_BASE"
-
-# 🧱 Basis packages
 apt update -y && apt install -y git curl ffmpeg python3-venv
 
-# 📜 Poetry installeren (indien niet aanwezig)
+# 📦 Poetry installatie
 if ! command -v poetry &> /dev/null; then
   echo "📦 Installeer Poetry..."
   curl -sSL https://install.python-poetry.org | python3 -
@@ -40,12 +36,12 @@ else
   git reset --hard origin/main
 fi
 
-# 🧩 Poetry configureren met lokale cache-paden
+# ⚙️ Poetry configuratie
 cd "$APP_DIR"
-poetry config cache-dir "$POETRY_CACHE_DIR"
 poetry config virtualenvs.in-project true
+poetry config cache-dir "$POETRY_CACHE_DIR"
 
-# 🐍 Lokale venv aanmaken (indien nog niet bestaat)
+# 🐍 Lokale venv
 if [ ! -d "$APP_DIR/.venv" ]; then
   echo "🐍 Maak lokale venv aan..."
   poetry env use python3
@@ -54,26 +50,16 @@ else
   echo "🚀 Lokale venv al aanwezig – overslaan"
 fi
 
-# 💾 Algemene virtuele omgeving voor shells (optioneel)
-if [ ! -d "$VENV_DIR" ]; then
-  echo "🐍 Maak globale virtuele omgeving..."
-  python3 -m venv "$VENV_DIR"
-fi
-source "$VENV_DIR/bin/activate"
-
-# 🧠 Controleer actieve venv
-echo "Actieve Python: $(which python)"
+# 🧠 Controle
 echo "Actieve Poetry venv: $(poetry env info --path)"
 
-# 🔗 Permanente aliassen
+# 🔗 Alias (voor directe start)
 ALIASES_FILE="$HOME/.bash_aliases"
 if ! grep -q "startlive" "$ALIASES_FILE" 2>/dev/null; then
-  echo "alias startlive='cd /workspace/WhisperLiveKit-Trivias && poetry run python whisperlivekit/basic_server.py'" >> "$ALIASES_FILE"
-  echo "alias gpuprep='nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader'" >> "$ALIASES_FILE"
-  echo "alias wssstart='cd /workspace/WhisperLiveKit-Trivias && poetry run python whisperlivekit/basic_server.py'" >> "$ALIASES_FILE"
+  echo "alias startlive='cd /workspace/WhisperLiveKit-Trivias && /workspace/WhisperLiveKit-Trivias/.venv/bin/python whisperlivekit/basic_server.py'" >> "$ALIASES_FILE"
+  echo "✅ Alias toegevoegd: startlive"
   echo "source $ALIASES_FILE" >> ~/.bashrc
   source ~/.bashrc
-  echo "✅ Aliassen permanent toegevoegd"
 fi
 
 echo ""
