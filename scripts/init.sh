@@ -12,20 +12,20 @@ echo "------------------------------------------"
 echo " 🧠 WhisperLiveKit-Trivias setup starten..."
 echo "------------------------------------------"
 
-# === 1) Cache directories instellen ===
+# === 1) Cache directories ===
 export CACHE_BASE="$WORKSPACE/cache"
 export TMPDIR="$CACHE_BASE/tmp"
 export PIP_CACHE_DIR="$CACHE_BASE/pip"
 export POETRY_CACHE_DIR="$CACHE_BASE/poetry"
 mkdir -p "$CACHE_BASE" "$TMPDIR" "$PIP_CACHE_DIR" "$POETRY_CACHE_DIR"
 
-# === 2) Basis packages installeren ===
+# === 2) Basis packages ===
 apt update -y >/dev/null
 apt install -y git curl ffmpeg python3-venv >/dev/null
 
-# === 3) Poetry installeren (indien nog niet aanwezig) ===
+# === 3) Poetry installeren ===
 export PATH="/root/.local/bin:$PATH"
-if ! command -v poetry &> /dev/null; then
+if ! command -v poetry >/dev/null 2>&1; then
   echo "📦 Installeer Poetry..."
   curl -sSL https://install.python-poetry.org | python3 - >/dev/null
   export PATH="/root/.local/bin:$PATH"
@@ -33,7 +33,7 @@ fi
 
 # === 4) Repo klonen of updaten ===
 if [ ! -d "$APP_DIR/.git" ]; then
-  echo "⬇️  Clone repo vanuit GitHub..."
+  echo "⬇️  Clone repo..."
   git clone "$REPO_URL" "$APP_DIR"
 else
   echo "🔄  Update bestaande repo..."
@@ -42,12 +42,10 @@ else
   git reset --hard origin/main >/dev/null
 fi
 
-# === 5) Virtuele omgeving controleren / aanmaken ===
+# === 5) Virtuele omgeving ===
 if [ -z "$VIRTUAL_ENV" ]; then
-  if [ -d "$VENV_DIR" ]; then
-    echo "[init] venv al aanwezig: $VENV_DIR"
-  else
-    echo "[init] Geen venv gevonden — nieuwe aanmaken in $VENV_DIR"
+  if [ ! -d "$VENV_DIR" ]; then
+    echo "[init] Maak nieuwe venv aan: $VENV_DIR"
     python3 -m venv "$VENV_DIR"
   fi
   source "$VENV_DIR/bin/activate"
@@ -56,20 +54,20 @@ else
   echo "[init] venv al actief: $VIRTUAL_ENV"
 fi
 
-# === 6) Poetry configureren en dependencies installeren ===
+# === 6) Dependencies via Poetry ===
 cd "$APP_DIR"
 poetry config virtualenvs.in-project true
 echo "[init] Installeer dependencies..."
 poetry install --no-interaction --no-root
 
-# === 7) Bash-functies (blijvend + direct actief) ===
+# === 7) Helperfuncties ===
 if [[ ":$PATH:" != *":/root/.local/bin:"* ]]; then
   export PATH="/root/.local/bin:$PATH"
 fi
 
-# definieer functies direct in huidige shell
+# tijdelijk direct bruikbaar
 startlive() {
-  cd /workspace/WhisperLiveKit-Trivias || return
+  cd "$APP_DIR" || return
   "$POETRY_BIN" run python whisperlivekit/basic_server.py
 }
 
@@ -77,12 +75,11 @@ gpuprep() {
   nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
 }
 
-# veilige multiline append aan .bashrc (geen syntax errors)
-if ! grep -q "startlive()" "$HOME/.bashrc" 2>/dev/null; then
-  cat <<'EOF' >> "$HOME/.bashrc"
+# schrijf functies permanent weg
+grep -q "startlive()" "$HOME/.bashrc" 2>/dev/null || cat >>"$HOME/.bashrc" <<'EOF'
 
 # --- WhisperLiveKit helperfuncties ---
-export PATH="/root/.local/bin:\$PATH"
+export PATH="/root/.local/bin:$PATH"
 
 startlive() {
   cd /workspace/WhisperLiveKit-Trivias || return
@@ -93,7 +90,6 @@ gpuprep() {
   nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
 }
 EOF
-fi
 
 echo "[init] Functies geladen: startlive, gpuprep"
 
@@ -101,5 +97,5 @@ echo "[init] Functies geladen: startlive, gpuprep"
 echo ""
 echo "✅ Setup voltooid en venv actief!"
 echo "Actieve Python: $(which python)"
-echo "Gebruik nu:  startlive"
+echo "Gebruik nu: startlive"
 echo "------------------------------------------"
