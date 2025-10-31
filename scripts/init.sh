@@ -96,7 +96,7 @@ gpuprep() {
 }
 EOF
 fi
-
+ 
 echo "[init] Functies geladen: startlive, gpuprep"
 
 # === 8) Samenvatting ===
