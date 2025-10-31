@@ -1,9 +1,8 @@
 #!/bin/sh
-# --- Forceer Bash wanneer het via Dash wordt gestart ---
-if [ -z "$BASH_VERSION" ]; then
-  exec bash "$0" "$@"
-fi
 set -e
+
+# --- Force Bash when executed via Dash ---
+[ -z "$BASH_VERSION" ] && exec bash "$0" "$@"
 
 # === Config ===
 REPO_URL="https://github.com/GT-GITH/WhisperLiveKit-Trivias.git"
@@ -52,7 +51,8 @@ if [ -z "$VIRTUAL_ENV" ]; then
     echo "[init] Maak nieuwe venv aan: $VENV_DIR"
     python3 -m venv "$VENV_DIR"
   fi
-  source "$VENV_DIR/bin/activate"
+  # shellcheck disable=SC1091
+  . "$VENV_DIR/bin/activate"
   echo "[init] venv geactiveerd: $VENV_DIR"
 else
   echo "[init] venv al actief: $VIRTUAL_ENV"
@@ -64,24 +64,35 @@ poetry config virtualenvs.in-project true
 echo "[init] Installeer dependencies..."
 poetry install --no-interaction --no-root
 
-# === 7) Helperfuncties ===
+# === 7) Hugging Face hf_transfer fix ===
+echo "[init] Controleer Hugging Face-transferondersteuning..."
+if [ "${HF_HUB_ENABLE_HF_TRANSFER:-1}" = "1" ]; then
+  "$VENV_DIR/bin/pip" install -q hf_transfer || export HF_HUB_ENABLE_HF_TRANSFER=0
+fi
+
+# === 8) Helperfuncties ===
 startlive() {
   cd "$APP_DIR" || return
-  "$POETRY_BIN" run python whisperlivekit/basic_server.py
+  export PATH="/root/.local/bin:$PATH"
+  export PYTHONPATH="$APP_DIR"
+
+  # Detecteer RunPod-host IP voor externe toegang
+  HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo "🌐 RunPod-host gedetecteerd: $HOST_IP"
+
+  # Start server bindend aan 0.0.0.0 zodat hij buiten RunPod bereikbaar is
+  "$POETRY_BIN" run python -m whisperlivekit.basic_server --host 0.0.0.0 --port 8000
 }
 
 gpuprep() {
   nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
 }
 
-# functies gewoon definiëren, niet exporteren
 echo ""
 echo "[init] Functies geladen in huidige sessie:"
-echo "  ▶ startlive   → Start de live server"
+echo "  ▶ startlive   → Start de live server (extern bereikbaar)"
 echo "  ▶ gpuprep     → Bekijk GPU-status"
 echo ""
-
-# === 8) Samenvatting ===
 echo "✅ Setup voltooid en venv actief!"
 echo "Actieve Python: $(which python)"
 echo "Gebruik nu: startlive"
