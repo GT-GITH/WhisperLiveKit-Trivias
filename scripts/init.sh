@@ -1,4 +1,8 @@
-#!/bin/bash
+#!/bin/sh
+# --- Forceer Bash wanneer het via Dash wordt gestart ---
+if [ -z "$BASH_VERSION" ]; then
+  exec bash "$0" "$@"
+fi
 set -e
 
 # === Config ===
