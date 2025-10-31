@@ -84,7 +84,6 @@ if [ -f "$HOME/.bashrc" ]; then
 fi
 echo "[init] Aliassen geladen: startlive, gpuprep"
 
-
 echo ""
 echo "✅ Setup voltooid en venv actief!"
 echo "Actieve Python: $(which python)"
