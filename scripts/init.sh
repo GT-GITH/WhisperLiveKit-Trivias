@@ -63,8 +63,6 @@ echo "[init] Installeer dependencies..."
 poetry install --no-interaction --no-root
 
 # === 7) Bash-functies (blijvend + direct actief) ===
-
-# Zorg dat poetry altijd beschikbaar is
 if [[ ":$PATH:" != *":/root/.local/bin:"* ]]; then
   export PATH="/root/.local/bin:$PATH"
 fi
@@ -96,7 +94,7 @@ gpuprep() {
 }
 EOF
 fi
- 
+
 echo "[init] Functies geladen: startlive, gpuprep"
 
 # === 8) Samenvatting ===
