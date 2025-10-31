@@ -71,12 +71,19 @@ poetry install --no-interaction --no-root
 # === 7) Aliassen ===
 ALIASES_FILE="$HOME/.bash_aliases"
 if ! grep -q "startlive" "$ALIASES_FILE" 2>/dev/null; then
-  echo "alias startlive='cd /workspace/WhisperLiveKit-Trivias && poetry run python whisperlivekit/basic_server.py'" >> "$ALIASES_FILE"
+  echo "alias startlive='cd /workspace/WhisperLiveKit-Trivias && $VENV_DIR/bin/poetry run python whisperlivekit/basic_server.py'" >> "$ALIASES_FILE"
   echo "alias gpuprep='nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader'" >> "$ALIASES_FILE"
-  echo "source $ALIASES_FILE" >> ~/.bashrc
-  source ~/.bashrc
-  echo "[init] Aliassen toegevoegd"
 fi
+
+# === 8) Forceer alias-load ook in deze sessie ===
+if [ -f "$ALIASES_FILE" ]; then
+  source "$ALIASES_FILE"
+fi
+if [ -f "$HOME/.bashrc" ]; then
+  source "$HOME/.bashrc"
+fi
+echo "[init] Aliassen geladen: startlive, gpuprep"
+
 
 echo ""
 echo "✅ Setup voltooid en venv actief!"
