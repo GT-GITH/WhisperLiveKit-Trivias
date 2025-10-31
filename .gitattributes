@@ -1,4 +1,25 @@
-echo "* text eol=lf" > .gitattributes
-git add .gitattributes
-git commit -m "Force LF endings for all scripts"
-git push
+# --- Force UNIX line endings (LF) for all text files ---
+* text=auto eol=lf
+
+# --- Shell scripts: always LF ---
+*.sh text eol=lf
+
+# --- Python: always LF ---
+*.py text eol=lf
+
+# --- Markdown & JSON: keep consistent LF ---
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# --- Binary files: never change line endings ---
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.exe binary
+*.dll binary
