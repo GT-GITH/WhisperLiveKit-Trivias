@@ -65,12 +65,6 @@ if [[ ":$PATH:" != *":/root/.local/bin:"* ]]; then
   export PATH="/root/.local/bin:$PATH"
 fi
 
-# tijdelijk direct bruikbaar
-startlive() {
-  cd "$APP_DIR" || return
-  "$POETRY_BIN" run python whisperlivekit/basic_server.py
-}
-
 gpuprep() {
   nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
 }
