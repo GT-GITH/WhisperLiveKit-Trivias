@@ -62,28 +62,32 @@ echo "[init] Installeer dependencies..."
 poetry install --no-interaction --no-root
 
 # === 7) Bash-functies (blijvend + direct actief) ===
-shopt -s expand_aliases
 POETRY_BIN="/root/.local/bin/poetry"
-STARTLIVE_CMD="cd $APP_DIR && $POETRY_BIN run python whisperlivekit/basic_server.py"
-GPUPREP_CMD="nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader"
 
-# verwijder oude definities
-unset -f startlive 2>/dev/null || true
-unset -f gpuprep 2>/dev/null || true
-unalias startlive 2>/dev/null || true
-unalias gpuprep 2>/dev/null || true
+# Zorg dat poetry altijd beschikbaar is
+if [[ ":$PATH:" != *":/root/.local/bin:"* ]]; then
+  export PATH="/root/.local/bin:$PATH"
+fi
 
-# definieer functies
-startlive() { eval "$STARTLIVE_CMD"; }
-gpuprep() { eval "$GPUPREP_CMD"; }
+# definieer functies direct in huidige shell
+startlive() {
+  cd /workspace/WhisperLiveKit-Trivias || return
+  "$POETRY_BIN" run python whisperlivekit/basic_server.py
+}
 
-# veilige multiline-append in .bashrc (met correcte syntax)
+gpuprep() {
+  nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
+}
+
+# veilige multiline append aan .bashrc (geen syntax errors)
 if ! grep -q "startlive()" "$HOME/.bashrc"; then
   cat <<'EOF' >> "$HOME/.bashrc"
 
 # --- WhisperLiveKit helperfuncties ---
+export PATH="/root/.local/bin:\$PATH"
+
 startlive() {
-  cd /workspace/WhisperLiveKit-Trivias
+  cd /workspace/WhisperLiveKit-Trivias || return
   /root/.local/bin/poetry run python whisperlivekit/basic_server.py
 }
 
@@ -94,7 +98,6 @@ EOF
 fi
 
 echo "[init] Functies geladen: startlive, gpuprep"
-
 
 # verwijder bestaande definities
 unset -f startlive 2>/dev/null || true
