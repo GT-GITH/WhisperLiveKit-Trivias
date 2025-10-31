@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
 # === Config ===
@@ -48,7 +48,8 @@ if [ -z "$VIRTUAL_ENV" ]; then
     echo "[init] Maak nieuwe venv aan: $VENV_DIR"
     python3 -m venv "$VENV_DIR"
   fi
-  source "$VENV_DIR/bin/activate"
+  # shellcheck disable=SC1091
+  . "$VENV_DIR/bin/activate"
   echo "[init] venv geactiveerd: $VENV_DIR"
 else
   echo "[init] venv al actief: $VIRTUAL_ENV"
@@ -60,35 +61,26 @@ poetry config virtualenvs.in-project true
 echo "[init] Installeer dependencies..."
 poetry install --no-interaction --no-root
 
-# === 7) Helperfuncties ===
-if [[ ":$PATH:" != *":/root/.local/bin:"* ]]; then
-  export PATH="/root/.local/bin:$PATH"
-fi
-
-gpuprep() {
-  nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
-}
-
-# schrijf functies permanent weg
-grep -q "startlive()" "$HOME/.bashrc" 2>/dev/null || cat >>"$HOME/.bashrc" <<'EOF'
-
-# --- WhisperLiveKit helperfuncties ---
-export PATH="/root/.local/bin:$PATH"
-
+# === 7) Helperfuncties (POSIX-stijl) ===
 startlive() {
-  cd /workspace/WhisperLiveKit-Trivias || return
-  /root/.local/bin/poetry run python whisperlivekit/basic_server.py
+  cd "$APP_DIR" || return
+  "$POETRY_BIN" run python whisperlivekit/basic_server.py
 }
 
 gpuprep() {
   nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
 }
-EOF
 
-echo "[init] Functies geladen: startlive, gpuprep"
+export -f startlive
+export -f gpuprep
+
+echo ""
+echo "[init] Functies beschikbaar in huidige sessie:"
+echo "  ▶ startlive   → Start de live server"
+echo "  ▶ gpuprep     → Bekijk GPU-status"
+echo ""
 
 # === 8) Samenvatting ===
-echo ""
 echo "✅ Setup voltooid en venv actief!"
 echo "Actieve Python: $(which python)"
 echo "Gebruik nu: startlive"
