@@ -98,6 +98,9 @@ def main():
     """Entry point for the CLI command."""
     import uvicorn
     
+    uvicorn_kwargs["host"] = "0.0.0.0"
+    uvicorn_kwargs["port"] = 8000
+    
     uvicorn_kwargs = {
         "app": "whisperlivekit.basic_server:app",
         "host":args.host, 
@@ -121,8 +124,6 @@ def main():
     if args.forwarded_allow_ips:
         uvicorn_kwargs = { **uvicorn_kwargs, "forwarded_allow_ips" : args.forwarded_allow_ips }
 
-        uvicorn_kwargs["host"] = "0.0.0.0"
-        uvicorn_kwargs["port"] = 8000
 
     uvicorn.run(**uvicorn_kwargs)
  
