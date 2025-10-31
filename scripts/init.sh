@@ -6,6 +6,7 @@ REPO_URL="https://github.com/GT-GITH/WhisperLiveKit-Trivias.git"
 WORKSPACE="/workspace"
 APP_DIR="$WORKSPACE/WhisperLiveKit-Trivias"
 VENV_DIR="$APP_DIR/.venv"
+POETRY_BIN="/root/.local/bin/poetry"
 
 echo "------------------------------------------"
 echo " 🧠 WhisperLiveKit-Trivias setup starten..."
@@ -62,7 +63,6 @@ echo "[init] Installeer dependencies..."
 poetry install --no-interaction --no-root
 
 # === 7) Bash-functies (blijvend + direct actief) ===
-POETRY_BIN="/root/.local/bin/poetry"
 
 # Zorg dat poetry altijd beschikbaar is
 if [[ ":$PATH:" != *":/root/.local/bin:"* ]]; then
@@ -80,7 +80,7 @@ gpuprep() {
 }
 
 # veilige multiline append aan .bashrc (geen syntax errors)
-if ! grep -q "startlive()" "$HOME/.bashrc"; then
+if ! grep -q "startlive()" "$HOME/.bashrc" 2>/dev/null; then
   cat <<'EOF' >> "$HOME/.bashrc"
 
 # --- WhisperLiveKit helperfuncties ---
@@ -95,28 +95,6 @@ gpuprep() {
   nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
 }
 EOF
-fi
-
-echo "[init] Functies geladen: startlive, gpuprep"
-
-# verwijder bestaande definities
-unset -f startlive 2>/dev/null || true
-unset -f gpuprep 2>/dev/null || true
-unalias startlive 2>/dev/null || true
-unalias gpuprep 2>/dev/null || true
-
-# definieer functies
-startlive() { eval "$STARTLIVE_CMD"; }
-gpuprep() { eval "$GPUPREP_CMD"; }
-
-# sla ze ook permanent op in .bashrc
-if ! grep -q "startlive()" "$HOME/.bashrc"; then
-  {
-    echo ""
-    echo "# --- WhisperLiveKit helperfuncties ---"
-    echo "startlive() { $STARTLIVE_CMD; }"
-    echo "gpuprep() { $GPUPREP_CMD; }"
-  } >> "$HOME/.bashrc"
 fi
 
 echo "[init] Functies geladen: startlive, gpuprep"
