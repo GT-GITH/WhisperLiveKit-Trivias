@@ -10,7 +10,15 @@ echo "------------------------------------------"
 echo " 🧠 WhisperLiveKit-Trivias setup starten..."
 echo "------------------------------------------"
 
-# === 1) Cache directories instellen ===
+# === 0) Zelfherstart in venv ===
+if [ -z "$VIRTUAL_ENV" ]; then
+  if [ -d "$VENV_DIR" ]; then
+    echo "[init] Geen actieve venv gevonden — script herstart binnen venv..."
+    exec bash --rcfile <(echo "source $VENV_DIR/bin/activate; bash /workspace/WhisperLiveKit-Trivias/scripts/init.sh")
+  fi
+fi
+
+# === 1) Cache directories ===
 export CACHE_BASE="$WORKSPACE/cache"
 export TMPDIR="$CACHE_BASE/tmp"
 export PIP_CACHE_DIR="$CACHE_BASE/pip"
@@ -21,31 +29,31 @@ echo "[init] Caches ingesteld onder $CACHE_BASE"
 # === 2) Basis packages ===
 apt update -y && apt install -y git curl ffmpeg python3-venv
 
-# === 3) Virtuele omgeving (aanmaken of activeren) ===
-if [ -d "$VENV_DIR" ]; then
+# === 3) Virtuele omgeving aanmaken of activeren ===
+if [ ! -d "$VENV_DIR" ]; then
+  echo "[init] Geen venv gevonden — nieuwe aanmaken in $VENV_DIR"
+  python3 -m venv "$VENV_DIR"
+  source "$VENV_DIR/bin/activate"
+  echo "[init] venv aangemaakt en geactiveerd: $VENV_DIR"
+else
   if [ -z "$VIRTUAL_ENV" ]; then
     source "$VENV_DIR/bin/activate"
     echo "[init] venv geactiveerd: $VENV_DIR"
   else
     echo "[init] venv al actief: $VIRTUAL_ENV"
   fi
-else
-  echo "[init] Geen venv gevonden — nieuwe aanmaken in $VENV_DIR"
-  python3 -m venv "$VENV_DIR"
-  source "$VENV_DIR/bin/activate"
-  echo "[init] venv aangemaakt en geactiveerd: $VENV_DIR"
 fi
 
-# === 4) Poetry installeren (binnen deze venv) ===
+# === 4) Poetry installeren binnen venv ===
 if ! command -v poetry &> /dev/null; then
-  echo "[init] Installeer Poetry in venv..."
+  echo "[init] Installeer Poetry..."
   curl -sSL https://install.python-poetry.org | python3 -
   export PATH="$VENV_DIR/bin:$PATH:/root/.local/bin"
 fi
 
 # === 5) Repo klonen of updaten ===
 if [ ! -d "$APP_DIR/.git" ]; then
-  echo "[init] Clone repo..."
+  echo "[init] Clone repo vanuit GitHub..."
   git clone "$REPO_URL" "$APP_DIR"
 else
   echo "[init] Update bestaande repo..."
@@ -54,24 +62,24 @@ else
   git reset --hard origin/main
 fi
 
-# === 6) Poetry configureren en dependencies installeren ===
+# === 6) Dependencies installeren ===
 cd "$APP_DIR"
 poetry config virtualenvs.in-project true
 poetry config cache-dir "$POETRY_CACHE_DIR"
-
-echo "[init] Installeer dependencies..."
 poetry install --no-interaction --no-root
 
 # === 7) Aliassen ===
 ALIASES_FILE="$HOME/.bash_aliases"
 if ! grep -q "startlive" "$ALIASES_FILE" 2>/dev/null; then
   echo "alias startlive='cd /workspace/WhisperLiveKit-Trivias && poetry run python whisperlivekit/basic_server.py'" >> "$ALIASES_FILE"
+  echo "alias gpuprep='nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader'" >> "$ALIASES_FILE"
   echo "source $ALIASES_FILE" >> ~/.bashrc
   source ~/.bashrc
-  echo "[init] Alias toegevoegd: startlive"
+  echo "[init] Aliassen toegevoegd"
 fi
 
 echo ""
 echo "✅ Setup voltooid en venv actief!"
+echo "Actieve Python: $(which python)"
 echo "Gebruik nu: startlive"
 echo "------------------------------------------"
