@@ -27,7 +27,7 @@ class TranscriptionEngine:
             return
 
         global_params = {
-            "host": "localhost",
+            "host": "0.0.0.0",
             "port": 8000,
             "diarization": False,
             "punctuation_split": False,
@@ -91,7 +91,7 @@ class TranscriptionEngine:
                     "frame_threshold": 25,
                     "beams": 1,
                     "decoder_type": None,
-                    "audio_max_len": 20.0,
+                    "audio_max_len": 30.0,      #GT: 20>30 Whisper krijgt meer context
                     "audio_min_len": 0.0,
                     "cif_ckpt_path": None,
                     "never_fire": False,
@@ -99,7 +99,13 @@ class TranscriptionEngine:
                     "static_init_prompt": None,
                     "max_context_tokens": None,
                     "model_path": './base.pt',
-                    "preload_model_count": 1,
+                    "preload_model_count": 1, 
+                    # --- Tuned for smooth real-time transcription (NL hearings) ---
+                    "chunk_seconds": 30,        #GT: langere blokken = minder onderbrekingen
+                    "overlap_seconds": 3,       #GT: overlap voorkomt afgekapt laatste woord
+                    "vad_sensitivity": 0.3,     #GT: minder streng → blijft doorlopen bij zachte stem
+                    "beam_size": 1,             #GT: lagere latency
+                    "temperature": 0.0,         #GT: stabiele hypothese                  
                 }
                 simulstreaming_params = update_with_kwargs(simulstreaming_params, kwargs)
                 

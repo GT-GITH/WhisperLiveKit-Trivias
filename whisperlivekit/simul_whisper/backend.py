@@ -193,22 +193,26 @@ class SimulStreamingASR():
         
         self.model_name = pt_path.name.replace(".pt", "")
         
+        # ✅ maak default config instantie
+        cfg = AlignAttConfig()
+
         self.cfg = AlignAttConfig(
-                tokenizer_is_multilingual= not self.model_name.endswith(".en"),
-                segment_length=self.min_chunk_size,
-                frame_threshold=self.frame_threshold,
-                language=self.lan,
-                audio_max_len=self.audio_max_len,
-                audio_min_len=self.audio_min_len,
-                cif_ckpt_path=self.cif_ckpt_path,
-                decoder_type="beam",
-                beam_size=self.beams,
-                task=self.task,
-                never_fire=self.never_fire,
-                init_prompt=self.init_prompt,
-                max_context_tokens=self.max_context_tokens,
-                static_init_prompt=self.static_init_prompt,
-        )  
+            tokenizer_is_multilingual=not self.model_name.endswith(".en"),
+            segment_length=self.min_chunk_size or cfg.segment_length,
+            frame_threshold=self.frame_threshold or cfg.frame_threshold,
+            language=self.lang or cfg.language,
+            audio_max_len=self.audio_max_len or cfg.audio_max_len,
+            audio_min_len=self.audio_min_len or cfg.audio_min_len,
+            cif_ckpt_path=self.cif_ckpt_path or cfg.cif_ckpt_path,
+            decoder_type=cfg.decoder_type,  # 👈 respecteer config.py (greedy/beam)
+            beam_size=cfg.beam_size,
+            task=self.task or cfg.task,
+            never_fire=self.never_fire or cfg.never_fire,
+            init_prompt=self.init_prompt or cfg.init_prompt,
+            max_context_tokens=self.max_context_tokens or cfg.max_context_tokens,
+            static_init_prompt=self.static_init_prompt or cfg.static_init_prompt,
+        )
+
         
         # Set up tokenizer for translation if needed
         if self.task == "translate":

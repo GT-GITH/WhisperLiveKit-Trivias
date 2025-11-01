@@ -165,10 +165,10 @@ class VADIterator:
     
     def __init__(self,
                  model,
-                 threshold: float = 0.5,
+                 threshold: float = 0.3,    #GT: 0.5 > 0.3 minder agressief
                  sampling_rate: int = 16000,
-                 min_silence_duration_ms: int = 100,
-                 speech_pad_ms: int = 30
+                 min_silence_duration_ms: int = 800, #GT: 100> 800 :0.8 s stilte vereist ipv 0.1 s
+                 speech_pad_ms: int = 200   #GT 30>200: 0.2 s marge
                  ):
 
         """

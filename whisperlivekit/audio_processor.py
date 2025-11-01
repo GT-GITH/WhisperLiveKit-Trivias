@@ -60,7 +60,7 @@ class AudioProcessor:
         self.samples_per_sec = int(self.sample_rate * self.args.min_chunk_size)
         self.bytes_per_sample = 2
         self.bytes_per_sec = self.samples_per_sec * self.bytes_per_sample
-        self.max_bytes_per_sec = 32000 * 5  # 5 seconds of audio at 32 kHz
+        self.max_bytes_per_sec = 32000 * 10  # GT: 10 s i.p.v. 5 s of audio at 32 kHz
         self.is_pcm_input = self.args.pcm_input
 
         # State management
@@ -627,7 +627,9 @@ class AudioProcessor:
             if res.get("end", 0) > res.get("start", 0):
                 end_of_audio = True
             elif self.silence: #end of silence
-                self.silence = False
+                # GT: wacht 3 seconden echte stilte voor stoppen
+                if time() - self.start_silence < 3.0:
+                   self.silence = False
                 silence_buffer = Silence(duration=time() - self.start_silence)
 
         if silence_buffer:
