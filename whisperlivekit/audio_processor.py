@@ -642,6 +642,14 @@ class AudioProcessor:
                 # 🔁 GT: Force soft reset van de VAD bij langdurige stilte
                 if self.vac and hasattr(self.vac, "reset_if_silent"):
                     self.vac.reset_if_silent()
+                     # 🧹 GT: also reset Whisper decoder when VAD fully resets
+                    if hasattr(self.asr, "reset_stream"):
+                        logger.warning("[ASR RESET] 🧠 Resetting SimulStreamingASR kv_cache due to silence reset")
+                        try:
+                            self.asr.reset_stream()
+                        except Exception as e:
+                            logger.error(f"[ASR RESET] Failed to reset ASR stream: {e}")
+
 
         if silence_buffer:
             if not self.diarization_before_transcription and self.transcription_queue:
@@ -660,10 +668,6 @@ class AudioProcessor:
 
             self.silence_duration = 0.0
            
-            # 🔁 Auto-reset na 3s stilte om stuck VAD te voorkomen
-            if self.vac and hasattr(self.vac, "reset_if_silent"):
-                self.vac.reset_if_silent()
-
             if end_of_audio:
                 self.silence = True
                 self.start_silence = time()
