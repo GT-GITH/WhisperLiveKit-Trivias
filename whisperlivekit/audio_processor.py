@@ -640,6 +640,11 @@ class AudioProcessor:
                     if self.vac and hasattr(self.vac, "reset_if_silent"):
                         logger.warning("[VAD DEBUG] 🔁 calling reset_if_silent() at end_of_audio")
                         self.vac.reset_if_silent()
+                        # ✅ Ready to accept new audio again
+                        self.silence = False
+                        self.silence_duration = 0.0
+                        logger.debug("[FLOW] 🟢 Ready for new speech after reset")
+                
 
                     # 🧠 Reset ook Whisper decoder (SimulStreaming cache)
                     if hasattr(self.asr, "reset_stream"):
@@ -666,6 +671,11 @@ class AudioProcessor:
                         if self.vac and hasattr(self.vac, "reset_if_silent"):
                             logger.warning("[VAD DEBUG] 🔁 calling reset_if_silent() during long silence")
                             self.vac.reset_if_silent()
+                            # ✅ Ready to accept new audio again
+                            self.silence = False
+                            self.silence_duration = 0.0
+                            logger.debug("[FLOW] 🟢 Ready for new speech after reset")
+
 
                             # 🧠 Reset ook Whisper decoder volledig bij langdurige stilte
                             if hasattr(self.asr, "reset_stream"):
