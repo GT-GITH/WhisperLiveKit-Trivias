@@ -200,7 +200,7 @@ class SimulStreamingASR():
             tokenizer_is_multilingual=not self.model_name.endswith(".en"),
             segment_length=self.min_chunk_size or cfg.segment_length,
             frame_threshold=self.frame_threshold or cfg.frame_threshold,
-            language=self.lang or cfg.language,
+            language=self.lan or cfg.language,
             audio_max_len=self.audio_max_len or cfg.audio_max_len,
             audio_min_len=self.audio_min_len or cfg.audio_min_len,
             cif_ckpt_path=self.cif_ckpt_path or cfg.cif_ckpt_path,
