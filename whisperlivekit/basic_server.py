@@ -122,6 +122,10 @@ def main():
     if args.forwarded_allow_ips:
         uvicorn_kwargs = { **uvicorn_kwargs, "forwarded_allow_ips" : args.forwarded_allow_ips }
 
+    # Forceer host en port direct in de dict
+    uvicorn_kwargs["host"] = "0.0.0.0"
+    uvicorn_kwargs["port"] = 8000
+
     uvicorn.run(**uvicorn_kwargs)
  
 if __name__ == "__main__":
