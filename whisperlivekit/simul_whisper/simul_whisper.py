@@ -633,3 +633,21 @@ class PaddedAlignAttWhisper:
             logger.warning(f"[UTF-8 Fix] Holding {len(self.pending_incomplete_tokens)} incomplete tokens for next chunk: {self.pending_incomplete_tokens}")
 
         return timestamped_words
+    # ==========================================================
+    # 🧠 GT addition — Reset streaming decoder cache on VAD reset
+    # ==========================================================
+    def reset_stream(self):
+        """Clear decoder kv_cache and internal token state."""
+        try:
+            self.kv_cache = {}
+            self.hypothesis = ""
+            self.pending_incomplete_tokens = []
+            self.encoder_feature = None
+            self.context_tokens = []
+            self.tokens = []
+            self.context = None
+            self.first_timestamp = None
+            self.segments = []
+            logger.info("[ASR RESET] Cleared decoder state and kv_cache")
+        except Exception as e:
+            logger.error(f"[ASR RESET] Failed to clear decoder state: {e}")
