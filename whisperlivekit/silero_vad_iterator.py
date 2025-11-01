@@ -245,6 +245,8 @@ class VADIterator:
 
         #GT --- Periodieke reset om drift te voorkomen ---
         now = time.time()
+        logger.info(f"[VAD monitor] elapsed={now - self.last_vad_reset:.1f}s, speaking={self.currently_speaking}")
+
         if (now - self.last_vad_reset > 120) and not self.currently_speaking:
             logger.info("🔄 Resetting VAD state after 120s silence window")
             if hasattr(self.model, "reset_states"):
@@ -254,15 +256,33 @@ class VADIterator:
 
         if (speech_prob >= self.threshold) and self.temp_end:
             self.temp_end = 0
+        
+   
+            #GT --- Update speaking state eerst ---
+            self.currently_speaking = speech_prob >= self.threshold
 
-        if (speech_prob >= self.threshold) and not self.triggered:
-            
+            #GT Log huidige VAD-status
+            logger.info(
+                f"[VAD] speech_prob={speech_prob:.2f}, "
+                f"threshold={self.threshold:.2f}, "
+                f"speaking={self.currently_speaking}, "
+                f"triggered={self.triggered}"
+            )
+
+            #GT Log verandering (delta) in speech probability — handig om model freeze te detecteren
+            logger.info(f"[VAD] probΔ={(speech_prob - getattr(self, '_last_prob', 0)):.3f}")
+            self._last_prob = speech_prob
+
+
+
+        # --- Detect start of speech ---
+        if speech_prob >= self.threshold and not self.triggered:
             self.triggered = True
             speech_start = max(0, self.current_sample - self.speech_pad_samples - window_size_samples)
             return {'start': int(speech_start) if not return_seconds else round(speech_start / self.sampling_rate, time_resolution)}
-            
 
-        if (speech_prob < self.threshold - 0.15) and self.triggered:
+        # --- Detect end of speech ---
+        if speech_prob < self.threshold - 0.15 and self.triggered:
             if not self.temp_end:
                 self.temp_end = self.current_sample
             if self.current_sample - self.temp_end < self.min_silence_samples:
@@ -272,14 +292,8 @@ class VADIterator:
                 self.temp_end = 0
                 self.triggered = False
                 return {'end': int(speech_end) if not return_seconds else round(speech_end / self.sampling_rate, time_resolution)}
-        
-        if speech_prob >= self.threshold:
-            self.currently_speaking = True
-        else:
-           self.currently_speaking = False
 
         return None
-
 
 class FixedVADIterator(VADIterator):
     """
