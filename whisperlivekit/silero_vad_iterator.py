@@ -2,6 +2,11 @@ import torch
 import numpy as np
 import warnings
 from pathlib import Path
+import time
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 """
 Code is adapted from silero-vad v6: https://github.com/snakers4/silero-vad
@@ -201,6 +206,10 @@ class VADIterator:
 
         self.min_silence_samples = sampling_rate * min_silence_duration_ms / 1000
         self.speech_pad_samples = sampling_rate * speech_pad_ms / 1000
+        #GT added to prevent VAD drifting issue
+        self.last_vad_reset = time.time()
+        self.currently_speaking = False
+
         self.reset_states()
 
     def reset_states(self):
@@ -234,13 +243,24 @@ class VADIterator:
 
         speech_prob = self.model(x, self.sampling_rate).item()
 
+        #GT --- Periodieke reset om drift te voorkomen ---
+        now = time.time()
+        if (now - self.last_vad_reset > 120) and not self.currently_speaking:
+            logger.info("🔄 Resetting VAD state after 120s silence window")
+            if hasattr(self.model, "reset_states"):
+                self.model.reset_states()
+            self.last_vad_reset = now
+
+
         if (speech_prob >= self.threshold) and self.temp_end:
             self.temp_end = 0
 
         if (speech_prob >= self.threshold) and not self.triggered:
+            
             self.triggered = True
             speech_start = max(0, self.current_sample - self.speech_pad_samples - window_size_samples)
             return {'start': int(speech_start) if not return_seconds else round(speech_start / self.sampling_rate, time_resolution)}
+            
 
         if (speech_prob < self.threshold - 0.15) and self.triggered:
             if not self.temp_end:
@@ -252,6 +272,11 @@ class VADIterator:
                 self.temp_end = 0
                 self.triggered = False
                 return {'end': int(speech_end) if not return_seconds else round(speech_end / self.sampling_rate, time_resolution)}
+        
+        if speech_prob >= self.threshold:
+            self.currently_speaking = True
+        else:
+           self.currently_speaking = False
 
         return None
 
