@@ -307,14 +307,28 @@ class FixedVADIterator(VADIterator):
         self.buffer = np.array([], dtype=np.float32)
 
     def __call__(self, x, return_seconds=False):
-         # Voeg dit toe bovenaan
-        logger.info(f"[VAD] 🎧 FixedVADIterator buffering | buffer_len={len(self.buffer)} samples")
+        import time
 
+        # 🧩 Tijd tussen oproepen meten
+        now = time.time()
+        if not hasattr(self, "last_vad_tick"):
+            self.last_vad_tick = now
+        elapsed = now - self.last_vad_tick
+        self.last_vad_tick = now
+
+        # 🪵 Compacte logregel
+        logger.info(
+            f"[VAD] 🧩 FixedVADIterator buffering | buffer_len={len(self.buffer)} | "
+            f"elapsed_since_last_call={elapsed:.2f}s"
+        )
+
+        # --- Buffer vullen en chunks verwerken ---
         self.buffer = np.append(self.buffer, x)
         ret = None
         while len(self.buffer) >= 512:
             r = super().__call__(self.buffer[:512], return_seconds=return_seconds)
             self.buffer = self.buffer[512:]
+            logger.info(f"[VAD] ▶ Processed 512-sample chunk | remaining={len(self.buffer)} | r={r}")
             if ret is None:
                 ret = r
             elif r is not None:
@@ -323,7 +337,6 @@ class FixedVADIterator(VADIterator):
                 if "start" in r and "end" in ret:
                     del ret["end"]
         return ret if ret != {} else None
-
 
 if __name__ == "__main__":
     model = load_silero_vad(onnx=False)
