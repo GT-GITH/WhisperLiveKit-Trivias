@@ -7,9 +7,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-logger.warning(f"[VAD INIT] ✅ Using class {VADIterator.__name__}")
-logger.warning(f"[VAD INIT] ✅ Using FIXED class {FixedVADIterator.__name__}")
 
+try:
+    logger.warning(f"[VAD INIT] ✅ Using FIXED class {FixedVADIterator.__name__}")
+except NameError:
+    logger.warning("[VAD INIT] ⚠️ FixedVADIterator not yet defined at import time")
 
 
 """
