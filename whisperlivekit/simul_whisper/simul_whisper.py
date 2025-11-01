@@ -648,6 +648,8 @@ class PaddedAlignAttWhisper:
             self.context = None
             self.first_timestamp = None
             self.segments = []
-            logger.info("[ASR RESET] Cleared decoder state and kv_cache")
+            self.mask = None  # 🧩 Cruciaal: force new attention mask
+            logger.info("[ASR RESET] Cleared decoder state, kv_cache, and mask")
         except Exception as e:
             logger.error(f"[ASR RESET] Failed to clear decoder state: {e}")
+
