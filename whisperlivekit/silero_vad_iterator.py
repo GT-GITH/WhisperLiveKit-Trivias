@@ -307,6 +307,9 @@ class FixedVADIterator(VADIterator):
         self.buffer = np.array([], dtype=np.float32)
 
     def __call__(self, x, return_seconds=False):
+         # Voeg dit toe bovenaan
+        logger.info(f"[VAD] 🎧 FixedVADIterator buffering | buffer_len={len(self.buffer)} samples")
+
         self.buffer = np.append(self.buffer, x)
         ret = None
         while len(self.buffer) >= 512:
