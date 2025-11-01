@@ -625,6 +625,11 @@ class AudioProcessor:
 
         if self.args.vac:
             res = self.vac(pcm_array)
+            if res is not None:
+               logger.info(
+                   f"[VAD] 🔊 start={res.get('start', 0):.2f}s | end={res.get('end', 0):.2f}s | "
+                   f"speech={res.get('speech', False)} | prob={res.get('prob', 0):.3f}"
+               )
 
         if res is not None:
             if res.get("end", 0) > res.get("start", 0):
