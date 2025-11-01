@@ -7,6 +7,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+logger.warning(f"[VAD INIT] ✅ Using class {VADIterator.__name__}")
+logger.warning(f"[VAD INIT] ✅ Using FIXED class {FixedVADIterator.__name__}")
+
+
 
 """
 Code is adapted from silero-vad v6: https://github.com/snakers4/silero-vad

@@ -86,11 +86,14 @@ class AudioProcessor:
         # Models and processing
         self.asr = models.asr
         self.vac_model = models.vac_model
+        logger.warning(f"[INIT] VAC arg is {self.args.vac}")
         if self.args.vac:
             self.vac = FixedVADIterator(models.vac_model)
+            logger.warning("[INIT] ✅ Using FixedVADIterator")
         else:
+            logger.warning("[INIT] ⚠️ VAC disabled – no VAD active")
             self.vac = None
-                         
+
         self.ffmpeg_manager = None
         self.ffmpeg_reader_task = None
         self._ffmpeg_error = None
