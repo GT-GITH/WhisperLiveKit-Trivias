@@ -231,6 +231,7 @@ class VADIterator:
         time_resolution: int (default - 1)
             time resolution of speech coordinates when requested as seconds
         """
+        logger.info("[VAD] 🧩 Silero VAD iterator active — entering process loop")
 
         if not torch.is_tensor(x):
             try:
@@ -245,7 +246,8 @@ class VADIterator:
 
         #GT --- Periodieke reset om drift te voorkomen ---
         now = time.time()
-        logger.info(f"[VAD monitor] elapsed={now - self.last_vad_reset:.1f}s, speaking={self.currently_speaking}")
+        logger.info(f"[VAD monitor] 🕒 elapsed={now - self.last_vad_reset:.1f}s | speaking={self.currently_speaking}")
+
 
         if (now - self.last_vad_reset > 120) and not self.currently_speaking:
             logger.info("🔄 Resetting VAD state after 120s silence window")
