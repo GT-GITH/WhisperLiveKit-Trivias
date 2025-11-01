@@ -170,63 +170,73 @@ def load_silero_vad(model_path: str = None, onnx: bool = False, opset_version: i
 class VADIterator:
     """
     Voice Activity Detection iterator for streaming audio.
-    
     This is the Silero VAD v6 implementation.
     """
     
     def __init__(self,
                  model,
-                 threshold: float = 0.3,    #GT: 0.5 > 0.3 minder agressief
+                 threshold: float = 0.3,    # GT: 0.5 → 0.3 minder agressief
                  sampling_rate: int = 16000,
-                 min_silence_duration_ms: int = 800, #GT: 100> 800 :0.8 s stilte vereist ipv 0.1 s
-                 speech_pad_ms: int = 200   #GT 30>200: 0.2 s marge
+                 min_silence_duration_ms: int = 800,  # GT: 100 → 800 (0.8 s stilte vereist)
+                 speech_pad_ms: int = 200             # GT: 30 → 200 (0.2 s marge)
                  ):
 
         """
-        Class for stream imitation
-
         Parameters
         ----------
         model: preloaded .jit/.onnx silero VAD model
-
         threshold: float (default - 0.5)
-            Speech threshold. Silero VAD outputs speech probabilities for each audio chunk, probabilities ABOVE this value are considered as SPEECH.
-            It is better to tune this parameter for each dataset separately, but "lazy" 0.5 is pretty good for most datasets.
-
+            Speech threshold. Above this value = speech.
         sampling_rate: int (default - 16000)
-            Currently silero VAD models support 8000 and 16000 sample rates
-
-        min_silence_duration_ms: int (default - 100 milliseconds)
-            In the end of each speech chunk wait for min_silence_duration_ms before separating it
-
-        speech_pad_ms: int (default - 30 milliseconds)
-            Final speech chunks are padded by speech_pad_ms each side
+        min_silence_duration_ms: int
+            Duration of silence before we cut a segment.
+        speech_pad_ms: int
+            Padding (ms) around detected speech.
         """
 
         self.model = model
         self.threshold = threshold
         self.sampling_rate = sampling_rate
-        self.silence_threshold = 0.25  # was vaak 0.15–0.20
-        self.min_speech_duration = 0.25
-        self.min_silence_duration = 1.5  # was vaak 0.5s
 
+        # === GT tuning for natural pauses ===
+        self.silence_threshold = 0.25         # Minder gevoelig → minder false negatives
+        self.min_speech_duration = 0.25       # Minimaal 250 ms aan spraak om te triggeren
+        self.min_silence_duration = 1.5       # 1.5 s stilte voor einde van segment
 
         if sampling_rate not in [8000, 16000]:
-            raise ValueError('VADIterator does not support sampling rates other than [8000, 16000]')
+            raise ValueError('VADIterator only supports 8kHz or 16kHz')
 
         self.min_silence_samples = sampling_rate * min_silence_duration_ms / 1000
         self.speech_pad_samples = sampling_rate * speech_pad_ms / 1000
-        #GT added to prevent VAD drifting issue
+
+        # GT addition: prevent VAD drift after long silences
         self.last_vad_reset = time.time()
         self.currently_speaking = False
 
         self.reset_states()
 
     def reset_if_silent(self):
-        if getattr(self, "triggered", False) is False:
-            self.buffer = np.array([], dtype=np.float32)
-            self._last_prob = 0.0
-            self._silence_duration = 0.0
+        """Soft reset: re-arm the VAD if long silent period caused stuck state."""
+        now = time.time()
+        since_last_reset = now - getattr(self, "last_vad_reset", now)
+        triggered = getattr(self, "triggered", False)
+
+        logger.warning(
+            f"[VAD RESET] 🔁 triggered={triggered} | "
+            f"elapsed_since_last_reset={since_last_reset:.2f}s → resetting internal buffer/state"
+        )
+
+        # Buffer en counters volledig resetten
+        self.buffer = np.array([], dtype=np.float32)
+        self._last_prob = 0.0
+        self._silence_duration = 0.0
+        self.last_vad_reset = now
+
+        # Extra sanity feedback
+        logger.info(
+            f"[VAD RESET ✅] buffer cleared, _last_prob={self._last_prob:.2f}, "
+            f"_silence_duration={self._silence_duration:.2f}"
+        )
 
     def reset_states(self):
 

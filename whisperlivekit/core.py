@@ -105,7 +105,8 @@ class TranscriptionEngine:
                     "overlap_seconds": 3,       #GT: overlap voorkomt afgekapt laatste woord
                     "vad_sensitivity": 0.3,     #GT: minder streng → blijft doorlopen bij zachte stem
                     "beam_size": 1,             #GT: lagere latency
-                    "temperature": 0.0,         #GT: stabiele hypothese                  
+                    "temperature": 0.0,         #GT: stabiele hypothese      
+                    "language": "nl"            #GT: forceer hier nederlands. config waarde wordt niet gelezen. check het later
                 }
                 simulstreaming_params = update_with_kwargs(simulstreaming_params, kwargs)
                 

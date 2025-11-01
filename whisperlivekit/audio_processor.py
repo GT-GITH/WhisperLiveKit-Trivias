@@ -626,30 +626,54 @@ class AudioProcessor:
         if self.args.vac:
             res = self.vac(pcm_array)
             if res is not None:
-               logger.info(
-                   f"[VAD] 🔊 start={res.get('start', 0):.2f}s | end={res.get('end', 0):.2f}s | "
-                   f"speech={res.get('speech', False)} | prob={res.get('prob', 0):.3f}"
-               )
+                logger.info(
+                    f"[VAD] 🔊 start={res.get('start', 0):.2f}s | end={res.get('end', 0):.2f}s | "
+                    f"speech={res.get('speech', False)} | prob={res.get('prob', 0):.3f}"
+                )
 
-        if res is not None:
-            if res.get("end", 0) > res.get("start", 0):
-                end_of_audio = True
-            elif self.silence: #end of silence
-                # GT: wacht 3 seconden echte stilte voor stoppen
-                if time() - self.start_silence < 3.0:
-                   self.silence = False
-                silence_buffer = Silence(duration=time() - self.start_silence)
-                # 🔁 GT: Force soft reset van de VAD bij langdurige stilte
-                if self.vac and hasattr(self.vac, "reset_if_silent"):
-                    self.vac.reset_if_silent()
-                     # 🧹 GT: also reset Whisper decoder when VAD fully resets
+                # 🎯 1️⃣ Normaal segment-einde (spraakblok afgesloten)
+                if res.get("end", 0) > res.get("start", 0):
+                    logger.debug("[VAD FLOW] Segment ended → triggering end_of_audio reset logic")
+                    end_of_audio = True
+
+                    # 🧹 Soft reset van VAD na einde van een segment
+                    if self.vac and hasattr(self.vac, "reset_if_silent"):
+                        logger.warning("[VAD DEBUG] 🔁 calling reset_if_silent() at end_of_audio")
+                        self.vac.reset_if_silent()
+
+                    # 🧠 Reset ook Whisper decoder (SimulStreaming cache)
                     if hasattr(self.asr, "reset_stream"):
-                        logger.warning("[ASR RESET] 🧠 Resetting SimulStreamingASR kv_cache due to silence reset")
+                        logger.warning("[ASR RESET] 🧠 Resetting SimulStreamingASR kv_cache due to VAD end_of_audio")
                         try:
                             self.asr.reset_stream()
                         except Exception as e:
                             logger.error(f"[ASR RESET] Failed to reset ASR stream: {e}")
 
+                # 🕒 2️⃣ Langdurige stilte (fallback – geen nieuwe speech)
+                elif self.silence:
+                    logger.debug("[VAD FLOW] Long silence detected → triggering silence reset logic")
+
+                    # Wacht minimaal 3 seconden voordat we de stilte als ‘einde’ beschouwen
+                    elapsed_silence = time() - self.start_silence
+                    if elapsed_silence < 3.0:
+                        logger.debug(f"[VAD FLOW] Silence shorter than 3s ({elapsed_silence:.2f}s) → ignoring")
+                        self.silence = False
+                    else:
+                        silence_buffer = Silence(duration=elapsed_silence)
+                        logger.debug(f"[VAD FLOW] Silence buffer duration = {silence_buffer.duration:.2f}s")
+
+                        # 🔁 Force soft reset van de VAD bij langdurige stilte
+                        if self.vac and hasattr(self.vac, "reset_if_silent"):
+                            logger.warning("[VAD DEBUG] 🔁 calling reset_if_silent() during long silence")
+                            self.vac.reset_if_silent()
+
+                            # 🧠 Reset ook Whisper decoder volledig bij langdurige stilte
+                            if hasattr(self.asr, "reset_stream"):
+                                logger.warning("[ASR RESET] 🧠 Resetting SimulStreamingASR kv_cache due to silence reset")
+                                try:
+                                    self.asr.reset_stream()
+                                except Exception as e:
+                                    logger.error(f"[ASR RESET] Failed to reset ASR stream: {e}")
 
         if silence_buffer:
             if not self.diarization_before_transcription and self.transcription_queue:
