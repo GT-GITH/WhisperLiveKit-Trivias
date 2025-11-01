@@ -639,6 +639,9 @@ class AudioProcessor:
                 if time() - self.start_silence < 3.0:
                    self.silence = False
                 silence_buffer = Silence(duration=time() - self.start_silence)
+                # 🔁 GT: Force soft reset van de VAD bij langdurige stilte
+                if self.vac and hasattr(self.vac, "reset_if_silent"):
+                    self.vac.reset_if_silent()
 
         if silence_buffer:
             if not self.diarization_before_transcription and self.transcription_queue:
@@ -656,6 +659,10 @@ class AudioProcessor:
                 await self.diarization_queue.put(pcm_array.copy())
 
             self.silence_duration = 0.0
+           
+            # 🔁 Auto-reset na 3s stilte om stuck VAD te voorkomen
+            if self.vac and hasattr(self.vac, "reset_if_silent"):
+                self.vac.reset_if_silent()
 
             if end_of_audio:
                 self.silence = True

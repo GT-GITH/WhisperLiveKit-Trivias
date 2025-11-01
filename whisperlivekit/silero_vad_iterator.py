@@ -206,6 +206,10 @@ class VADIterator:
         self.model = model
         self.threshold = threshold
         self.sampling_rate = sampling_rate
+        self.silence_threshold = 0.25  # was vaak 0.15–0.20
+        self.min_speech_duration = 0.25
+        self.min_silence_duration = 1.5  # was vaak 0.5s
+
 
         if sampling_rate not in [8000, 16000]:
             raise ValueError('VADIterator does not support sampling rates other than [8000, 16000]')
@@ -217,6 +221,12 @@ class VADIterator:
         self.currently_speaking = False
 
         self.reset_states()
+
+    def reset_if_silent(self):
+        if getattr(self, "triggered", False) is False:
+            self.buffer = np.array([], dtype=np.float32)
+            self._last_prob = 0.0
+            self._silence_duration = 0.0
 
     def reset_states(self):
 
@@ -332,7 +342,8 @@ class FixedVADIterator(VADIterator):
         self.buffer = np.append(self.buffer, x)
         ret = None
         while len(self.buffer) >= 512:
-            r = super().__call__(self.buffer[:512], return_seconds=return_seconds)
+            r = super().__call__(self.buffer[:512], return_seconds=True)
+            logger.info(f"[VAD DEBUG] converted result: {r}")
             self.buffer = self.buffer[512:]
             logger.info(f"[VAD] ▶ Processed 512-sample chunk | remaining={len(self.buffer)} | r={r}")
             if ret is None:
