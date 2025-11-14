@@ -164,6 +164,10 @@ class SimulStreamingASR():
         
         for key, value in kwargs.items():
             setattr(self, key, value)
+        # 🧠 GT: normaliseer taal
+        # - als `language` is meegegeven en niet "auto" → gebruik die als `lan`
+        if getattr(self, "language", None) and self.language != "auto":
+            self.lan = self.language
 
         if self.decoder_type is None:
             self.decoder_type = 'greedy' if self.beams == 1 else 'beam'
@@ -196,11 +200,19 @@ class SimulStreamingASR():
         # ✅ maak default config instantie
         cfg = AlignAttConfig()
 
+        # 🎯 Bepaal effectieve taal:
+        # - 1) expliciet `lan` (uit CLI/config)
+        # - 2) anders fallback naar cfg.language (default = "nl")
+        effective_language = getattr(self, "lan", None) or cfg.language
+        if effective_language == "auto":
+            # "auto" willen we hier niet meer → val terug op default ("nl")
+            effective_language = cfg.language
+
         self.cfg = AlignAttConfig(
             tokenizer_is_multilingual=not self.model_name.endswith(".en"),
             segment_length=self.min_chunk_size or cfg.segment_length,
             frame_threshold=self.frame_threshold or cfg.frame_threshold,
-            language=self.lan or cfg.language,
+            language=effective_language,
             audio_max_len=self.audio_max_len or cfg.audio_max_len,
             audio_min_len=self.audio_min_len or cfg.audio_min_len,
             cif_ckpt_path=self.cif_ckpt_path or cfg.cif_ckpt_path,

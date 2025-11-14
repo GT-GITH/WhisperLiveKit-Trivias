@@ -57,7 +57,14 @@ class TranscriptionEngine:
             "lan": "auto",
             "task": "transcribe",
         }
-        transcription_common_params = update_with_kwargs(transcription_common_params, kwargs)                                            
+        transcription_common_params = update_with_kwargs(transcription_common_params, kwargs)        
+
+        # 🔁 GT: normaliseer taal-parameter
+        # - als `language` is meegegeven → gebruik die als `lan`
+        # - anders, als `lan` al is gezet via kwargs, laat die staan
+        explicit_language = kwargs.get("language")
+        if explicit_language:
+            transcription_common_params["lan"] = explicit_language                                    
 
         if transcription_common_params['model_size'].endswith(".en"):
             transcription_common_params["lan"] = "en"
@@ -105,8 +112,7 @@ class TranscriptionEngine:
                     "overlap_seconds": 3,       #GT: overlap voorkomt afgekapt laatste woord
                     "vad_sensitivity": 0.3,     #GT: minder streng → blijft doorlopen bij zachte stem
                     "beam_size": 1,             #GT: lagere latency
-                    "temperature": 0.0,         #GT: stabiele hypothese      
-                    "language": "nl"            #GT: forceer hier nederlands. config waarde wordt niet gelezen. check het later
+                    "temperature": 0.0          #GT: stabiele hypothese      
                 }
                 simulstreaming_params = update_with_kwargs(simulstreaming_params, kwargs)
                 
