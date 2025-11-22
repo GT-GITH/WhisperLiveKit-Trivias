@@ -46,7 +46,7 @@ class PaddedAlignAttWhisper:
     def __init__(
             self, 
             cfg: AlignAttConfig,
-            print(f"[LANG DEBUG] PaddedAlignAttWhisper init cfg.language={cfg.language}")
+            print(f"[LANG DEBUG] PaddedAlignAttWhisper init cfg.language={cfg.language}"),
             loaded_model=None,
             mlx_encoder=None,
             fw_encoder=None,
