@@ -229,13 +229,13 @@ function setupWebSocket() {
     const langSelect = document.getElementById("languageSelect");
 
     langSelect.addEventListener("change", () => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-                type: "set_language",
-                language: langSelect.value
-            }));
-            console.log("[GUI] Sent set_language =", langSelect.value);
-        }
+      if (websocket && websocket.readyState === WebSocket.OPEN) {
+        websocket.send(JSON.stringify({
+          type: "set_language",
+          language: langSelect.value || "auto",
+        }));
+        console.log("[GUI] Sent set_language =", langSelect.value || "auto");
+      }
     });
     
     websocket.onclose = () => {
