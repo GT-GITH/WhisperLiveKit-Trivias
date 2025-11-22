@@ -81,6 +81,20 @@ class SimulStreamingOnlineProcessor:
             mlx_encoder=self.asr.mlx_encoder,
             fw_encoder=self.asr.fw_encoder,
             )
+    def reset_stream(self):
+        """
+        Externe reset-hook voor de streaming decoder.
+        Wordt aangeroepen door AudioProcessor bij segment-einde of lange stilte.
+        """
+        if hasattr(self, "model") and hasattr(self.model, "reset_stream"):
+            logger.info(
+                "[ASR RESET] SimulStreamingOnlineProcessor.reset_stream → "
+                "clearing PaddedAlignAttWhisper decoder state"
+            )
+            try:
+                self.model.reset_stream()
+            except Exception as e:
+                logger.error(f"[ASR RESET] model.reset_stream() failed: {e}")
         
     def set_language(self, language: str | None):
         """Extern aanroepbare setter voor taal (voor GUI)."""

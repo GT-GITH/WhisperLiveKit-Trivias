@@ -216,26 +216,36 @@ class VADIterator:
         self.reset_states()
 
     def reset_if_silent(self):
-        """Soft reset: re-arm the VAD if long silent period caused stuck state."""
+        """Hard reset: VAD-state en counters leegmaken na lange stilte."""
         now = time.time()
         since_last_reset = now - getattr(self, "last_vad_reset", now)
         triggered = getattr(self, "triggered", False)
 
         logger.warning(
             f"[VAD RESET] 🔁 triggered={triggered} | "
-            f"elapsed_since_last_reset={since_last_reset:.2f}s → resetting internal buffer/state"
+            f"elapsed_since_last_reset={since_last_reset:.2f}s → resetting VAD state"
         )
 
-        # Buffer en counters volledig resetten
-        self.buffer = np.array([], dtype=np.float32)
+        # 🔁 Model-state resetten (RNN/LSTM geheugen)
+        if hasattr(self, "model") and hasattr(self.model, "reset_states"):
+            try:
+                self.model.reset_states()
+            except Exception as e:
+                logger.error(f"[VAD RESET] model.reset_states() failed: {e}")
+
+        # 🔁 Interne flags/counters terug naar begin
+        self.triggered = False
+        self.temp_end = 0
+        self.current_sample = 0
+        self.currently_speaking = False
         self._last_prob = 0.0
         self._silence_duration = 0.0
         self.last_vad_reset = now
 
-        # Extra sanity feedback
         logger.info(
-            f"[VAD RESET ✅] buffer cleared, _last_prob={self._last_prob:.2f}, "
-            f"_silence_duration={self._silence_duration:.2f}"
+            f"[VAD RESET ✅] state cleared | "
+            f"triggered={self.triggered}, speaking={self.currently_speaking}, "
+            f"_last_prob={self._last_prob:.2f}"
         )
 
     def reset_states(self):
