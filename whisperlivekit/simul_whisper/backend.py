@@ -225,6 +225,9 @@ class SimulStreamingASR():
             static_init_prompt=self.static_init_prompt or cfg.static_init_prompt,
         )
 
+        print(f"[LANG DEBUG] SimulStreamingASR lan={getattr(self,'lan',None)} "
+        f"language_attr={getattr(self,'language',None)} "
+        f"cfg.language={self.cfg.language}")
         
         # Set up tokenizer for translation if needed
         if self.task == "translate":
