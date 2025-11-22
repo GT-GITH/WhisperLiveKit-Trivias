@@ -223,9 +223,6 @@ class SimulStreamingASR():
         # - 1) expliciet `lan` (uit CLI/config)
         # - 2) anders fallback naar cfg.language (default = "nl")
         effective_language = getattr(self, "lan", None) or cfg.language
-        if effective_language == "auto":
-            # "auto" willen we hier niet meer → val terug op default ("nl")
-            effective_language = cfg.language
 
         self.cfg = AlignAttConfig(
             tokenizer_is_multilingual=not self.model_name.endswith(".en"),

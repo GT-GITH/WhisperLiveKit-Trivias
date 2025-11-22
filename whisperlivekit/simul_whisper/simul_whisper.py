@@ -173,23 +173,28 @@ class PaddedAlignAttWhisper:
 
     def set_language(self, language: str | None):
         """
-        Dynamisch taal voor deze stream zetten.
         - language=None of "auto"  => autodetect
         - anders bv "nl","en","ar" => vaste taal
         """
         if not language or language == "auto":
+            # AUTO-modus: toestaan dat lang-detect blok nog draait
             self.cfg.language = "auto"
             self.detected_language = None
             self.reset_tokenizer_to_auto_next_call = True
             self.create_tokenizer(None)
+            self.decode_options.language = None   # decoder ook in auto
+            self.decode_options.task = "transcribe"
             logger.info("[LANG] switched to AUTO detection")
         else:
+            # VASTE taal: geen autodetect meer
             self.cfg.language = language
             self.detected_language = language
             self.reset_tokenizer_to_auto_next_call = False
             self.create_tokenizer(language)
+            self.decode_options.language = language
+            self.decode_options.task = "transcribe"
             logger.info(f"[LANG] switched to FIXED language={language}")
-            
+
     def remove_hooks(self):
         for hook in self.l_hooks:
             hook.remove()
