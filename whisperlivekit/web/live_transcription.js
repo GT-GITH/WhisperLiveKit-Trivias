@@ -224,6 +224,18 @@ function setupWebSocket() {
 
     websocket.onopen = () => {
       statusText.textContent = "Connected to server.";
+
+       // 🔹 Stuur meteen de huidige taal mee (ook als die al vóór connect is gekozen)
+       const langSelect = document.getElementById("languageSelect");
+       if (langSelect) {
+         const initialLang = langSelect.value || "auto";
+         websocket.send(JSON.stringify({
+           type: "set_language",
+           language: initialLang,
+         }));
+         console.log("[GUI] Sent initial set_language =", initialLang);
+       }
+ 
       resolve();
     };
     const langSelect = document.getElementById("languageSelect");
