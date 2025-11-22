@@ -81,6 +81,11 @@ class SimulStreamingOnlineProcessor:
             mlx_encoder=self.asr.mlx_encoder,
             fw_encoder=self.asr.fw_encoder,
             )
+        
+    def set_language(self, language: str | None):
+        """Extern aanroepbare setter voor taal (voor GUI)."""
+        if hasattr(self, "model") and hasattr(self.model, "set_language"):
+            self.model.set_language(language)
 
     def insert_silence(self, silence_duration, offset):
         """
@@ -228,7 +233,7 @@ class SimulStreamingASR():
         print(f"[LANG DEBUG] SimulStreamingASR lan={getattr(self,'lan',None)} "
         f"language_attr={getattr(self,'language',None)} "
         f"cfg.language={self.cfg.language}")
-        
+
         # Set up tokenizer for translation if needed
         if self.task == "translate":
             self.tokenizer = self.set_translate_task()

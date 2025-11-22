@@ -12,7 +12,7 @@ class AlignAttConfig():
     audio_max_len: float = 30.0    # GT 20.0 > 30.0 meer context voor lange zinnen
     cif_ckpt_path: str = ""
     never_fire: bool = False
-    language: str = field(default="nl")  #GT: Nederlands als standaard
+    language: str = field(default="auto")  #GT: auto als standaard
     nonspeech_prob: float = 0.5
     audio_min_len: float = 0.5         # GT 1> 0.5 : sneller starten met transcriberen
     decoder_type: Literal["greedy","beam"] = "greedy"

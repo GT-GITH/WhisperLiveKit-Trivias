@@ -226,7 +226,18 @@ function setupWebSocket() {
       statusText.textContent = "Connected to server.";
       resolve();
     };
+    const langSelect = document.getElementById("languageSelect");
 
+    langSelect.addEventListener("change", () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: "set_language",
+                language: langSelect.value
+            }));
+            console.log("[GUI] Sent set_language =", langSelect.value);
+        }
+    });
+    
     websocket.onclose = () => {
       if (userClosing) {
         if (waitingForStop) {

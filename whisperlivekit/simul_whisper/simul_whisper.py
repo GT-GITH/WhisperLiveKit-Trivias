@@ -171,6 +171,25 @@ class PaddedAlignAttWhisper:
         # Tokens to carry over to next chunk for incomplete UTF-8 characters
         self.pending_incomplete_tokens = []
 
+    def set_language(self, language: str | None):
+        """
+        Dynamisch taal voor deze stream zetten.
+        - language=None of "auto"  => autodetect
+        - anders bv "nl","en","ar" => vaste taal
+        """
+        if not language or language == "auto":
+            self.cfg.language = "auto"
+            self.detected_language = None
+            self.reset_tokenizer_to_auto_next_call = True
+            self.create_tokenizer(None)
+            logger.info("[LANG] switched to AUTO detection")
+        else:
+            self.cfg.language = language
+            self.detected_language = language
+            self.reset_tokenizer_to_auto_next_call = False
+            self.create_tokenizer(language)
+            logger.info(f"[LANG] switched to FIXED language={language}")
+            
     def remove_hooks(self):
         for hook in self.l_hooks:
             hook.remove()

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from whisperlivekit import TranscriptionEngine, AudioProcessor, get_inline_ui_html, parse_args
 import asyncio
 import logging
+import json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logging.getLogger().setLevel(logging.WARNING)
@@ -69,30 +70,36 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            message = await websocket.receive_bytes()
-            await audio_processor.process_audio(message)
-    except KeyError as e:
-        if 'bytes' in str(e):
-            logger.warning(f"Client has closed the connection.")
-        else:
-            logger.error(f"Unexpected KeyError in websocket_endpoint: {e}", exc_info=True)
+            msg = await websocket.receive()
+
+            # 1️⃣ AUDIO (binary PCM)
+            if "bytes" in msg and msg["bytes"] is not None:
+                await audio_processor.process_audio(msg["bytes"])
+                continue
+
+            # 2️⃣ GUI COMMANDO'S (JSON TEXT)
+            if "text" in msg and msg["text"]:
+                try:
+                    data = json.loads(msg["text"])
+                except Exception as e:
+                    logger.warning(f"[WS] cannot decode text frame: {msg['text']!r}")
+                    continue
+
+                # COMMANDO: taal instellen
+                if data.get("type") == "set_language":
+                    lang = data.get("language")   # "nl", "en", "ar", "auto", None
+                    await audio_processor.set_language(lang)
+                    logger.info(f"[WS] GUI set_language → {lang}")
+                    continue
+
+                # hier kun je later meer text-commands toevoegen
+                continue
+
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected by client during message receiving loop.")
     except Exception as e:
         logger.error(f"Unexpected error in websocket_endpoint main loop: {e}", exc_info=True)
-    finally:
-        logger.info("Cleaning up WebSocket endpoint...")
-        if not websocket_task.done():
-            websocket_task.cancel()
-        try:
-            await websocket_task
-        except asyncio.CancelledError:
-            logger.info("WebSocket results handler task was cancelled.")
-        except Exception as e:
-            logger.warning(f"Exception while awaiting websocket_task completion: {e}")
-            
-        await audio_processor.cleanup()
-        logger.info("WebSocket endpoint cleaned up successfully.")
+
 
 def main():
     """Entry point for the CLI command."""

@@ -562,6 +562,19 @@ class AudioProcessor:
             self.diarization.close()
         logger.info("AudioProcessor cleanup complete.")
 
+    async def set_language(self, language: str | None):
+        """
+        Wordt aangeroepen vanuit WebSocket (GUI).
+        Zet dynamisch de taal van de SimulStreamingASR.
+        """
+        try:
+            if hasattr(self.transcription, "set_language"):
+                self.transcription.set_language(language)
+                logger.info(f"[LANG] Updated stream language → {language}")
+            else:
+                logger.error("[LANG] transcription object heeft geen set_language() method!")
+        except Exception as e:
+            logger.error(f"[LANG] Failed to set language: {e}")
 
     async def process_audio(self, message):
         """Process incoming audio data."""
