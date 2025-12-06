@@ -22,6 +22,9 @@ logger.setLevel(logging.DEBUG)
 SENTINEL = object() # unique sentinel object for end of stream marker
 MIN_DURATION_REAL_SILENCE = 5
 
+# Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
+SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
+
 async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.ndarray, List[Any]]:
     items: List[Any] = []
 
@@ -273,20 +276,55 @@ class AudioProcessor:
 
                 if isinstance(item, Silence):
                     if item.is_starting:
+                        # Begin van stilte → ASR informeren
                         new_tokens, current_audio_processed_upto = await asyncio.to_thread(
                             self.transcription.start_silence
                         )
                         asr_processing_logs += f" + Silence starting"
+
                     if item.has_ended:
+                        # Einde van stilte
                         asr_processing_logs += f" + Silence of = {item.duration:.2f}s"
                         cumulative_pcm_duration_stream_time += item.duration
                         current_audio_processed_upto = cumulative_pcm_duration_stream_time
-                        self.transcription.end_silence(item.duration, self.state.tokens[-1].end if self.state.tokens else 0)
+
+                        # Laat het lopende segment netjes afsluiten
+                        self.transcription.end_silence(
+                            item.duration,
+                            self.state.tokens[-1].end if self.state.tokens else 0
+                        )
+
+                        # 🔸 En nu de *enige* echte decoder-reset na lange stilte
+                        if item.duration >= SILENCE_RESET_THRESHOLD:
+                            logger.info(
+                                f"[Decoder reset] refresh_segment(complete=True) "
+                                f"na {item.duration:.2f}s stilte (threshold={SILENCE_RESET_THRESHOLD}s)"
+                            )
+
+                            # self.transcription.asr is de AlignAtt-decoder
+                            base_asr = getattr(self.transcription, "asr", None)
+                            if base_asr is not None and hasattr(base_asr, "refresh_segment"):
+                                # Dit roept onder water al aan:
+                                # - init_tokens()
+                                # - init_context()
+                                # - pending_incomplete_tokens = []
+                                # - segments leegmaken
+                                base_asr.refresh_segment(complete=True)
+                            else:
+                                logger.warning(
+                                    "[Decoder reset] self.transcription.asr of refresh_segment "
+                                    "niet gevonden – geen reset uitgevoerd"
+                                )
+
                     if self.state.tokens:
                         asr_processing_logs += f" | last_end = {self.state.tokens[-1].end} |"
+
                     logger.info(asr_processing_logs)
                     new_tokens = new_tokens or []
-                    current_audio_processed_upto = max(current_audio_processed_upto, stream_time_end_of_current_pcm)
+                    current_audio_processed_upto = max(
+                        current_audio_processed_upto,
+                        stream_time_end_of_current_pcm
+                    )
                 elif isinstance(item, ChangeSpeaker):
                     self.transcription.new_speaker(item)
                     continue
