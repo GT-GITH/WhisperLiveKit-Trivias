@@ -42,6 +42,7 @@ class SimulStreamingOnlineProcessor:
     SAMPLING_RATE = 16000
 
     def __init__(self, asr, logfile=sys.stderr):
+        logger = logging.getLogger(__name__)
         logger.error("🔥 SimulStreamingOnlineProcessor.__init__ CALLED 🔥")
         self.asr = asr
         self.logfile = logfile

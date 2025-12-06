@@ -86,6 +86,7 @@ class AlignAtt:
             mlx_encoder=None,
             fw_encoder=None,
         ) -> None:
+        logger.error("🔥 AlignAtt.__init__ CALLED 🔥")
         # Shared model reference (can be shared across sessions)
         self.model = loaded_model
         self.mlx_encoder = mlx_encoder
