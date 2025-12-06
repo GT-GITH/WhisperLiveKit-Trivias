@@ -299,6 +299,8 @@ class AudioProcessor:
                             logger.info(
                                 f"[Decoder reset] refresh_segment(complete=True) "
                                 f"na {item.duration:.2f}s stilte (threshold={SILENCE_RESET_THRESHOLD}s)"
+                                f"DEBUG-ASR: transcription object = {type(self.transcription)}"
+                                f"DEBUG-ASR: transcription attributes = {dir(self.transcription)}"
                             )
 
                             # self.transcription.asr is de AlignAtt-decoder
