@@ -17,7 +17,7 @@ class AlignAttConfig():
     decoder_type: Literal["greedy","beam"] = "beam"
     beam_size: int = 3
     task: Literal["transcribe","translate"] = "transcribe"
-    tokenizer_is_multilingual: bool = False
+    tokenizer_is_multilingual: bool = True
     init_prompt: str = field(default=None)
     static_init_prompt: str = field(default=None)
     max_context_tokens: int = field(default=None)

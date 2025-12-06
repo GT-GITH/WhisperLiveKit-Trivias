@@ -15,6 +15,18 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 args = parse_args()
+# === GT DEBUG STARTUP LOGGING ===
+logger = logging.getLogger("whisperlivekit.basic_server")
+logger.info("=== BASIC SERVER STARTUP PARAMETERS ===")
+logger.info(f"Host: {args.host}")
+logger.info(f"Port: {args.port}")
+logger.info(f"Model: {args.model}")
+logger.info(f"Language override: {args.language}")
+logger.info(f"PCM input: {args.pcm_input}")
+logger.info(f"Use GPU: {args.device if hasattr(args,'device') else 'default'}")
+logger.info("========================================")
+# === END GT DEBUG ===
+
 transcription_engine = None
 
 @asynccontextmanager

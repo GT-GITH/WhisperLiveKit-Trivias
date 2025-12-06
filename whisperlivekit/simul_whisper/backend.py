@@ -50,6 +50,18 @@ class SimulStreamingOnlineProcessor:
         self.last_result_tokens: List[ASRToken] = []        
         self.model = self._create_alignatt()
         
+        # GT Added for debug
+        logger.info("=== INITIALIZING STREAMING DECODER ===")
+        logger.info(f"Decoder type: {self.asr.cfg.decoder_type}")
+        logger.info(f"Beam size: {self.asr.cfg.beam_size}")
+        logger.info(f"Language: {self.asr.cfg.language}")
+        logger.info(f"Task: {self.asr.cfg.task}")
+        logger.info(f"Tokenizer multilingual: {self.asr.cfg.tokenizer_is_multilingual}")
+        logger.info(f"Audio min length: {self.asr.cfg.audio_min_len}")
+        logger.info(f"Audio max length: {self.asr.cfg.audio_max_len}")
+        logger.info("=== END STREAMING DECODER INIT ===")
+
+
         if asr.tokenizer:
             self.model.tokenizer = asr.tokenizer
             self.model.state.tokenizer = asr.tokenizer

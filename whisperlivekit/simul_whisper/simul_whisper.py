@@ -110,6 +110,13 @@ class AlignAtt:
         self.max_text_len = self.model.dims.n_text_ctx
         self.num_decoder_layers = len(self.model.decoder.blocks)
         self.cfg = cfg
+        
+        #GT added for debug
+        logger.info("=== ALIGNATT CONFIGURATION ===")
+        for k, v in vars(self.cfg).items():
+            logger.info(f"  {k}: {v}")
+        logger.info("=== END CONFIGURATION ===")
+
 
         if self.cfg.max_context_tokens is None:
             self.max_context_tokens = self.max_text_len
