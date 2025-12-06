@@ -86,7 +86,9 @@ class AlignAtt:
             mlx_encoder=None,
             fw_encoder=None,
         ) -> None:
-        logger.error("🔥 AlignAtt.__init__ CALLED 🔥")
+        self.logger = logging.getLogger("whisperlivekit.simul_whisper.AlignAtt")
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.debug("🔥 AlignAtt logger ACTIVE, DEBUG level 🔥")
         # Shared model reference (can be shared across sessions)
         self.model = loaded_model
         self.mlx_encoder = mlx_encoder
@@ -113,11 +115,10 @@ class AlignAtt:
         self.cfg = cfg
         
         #GT added for debug   
-        logger.info("=== ALIGNATT CONFIGURATION ===")
+        self.logger.debug("=== ALIGNATT CONFIGURATION ===")
         for k, v in vars(self.cfg).items():
-            logger.info(f"  {k}: {v}")
-        logger.info("=== END CONFIGURATION ===")
-
+            self.logger.debug(f"{k}: {v}")
+        self.logger.debug("=== END CONFIGURATION ===")
 
         if self.cfg.max_context_tokens is None:
             self.max_context_tokens = self.max_text_len
