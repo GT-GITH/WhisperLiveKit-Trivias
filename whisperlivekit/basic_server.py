@@ -15,36 +15,14 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 args = parse_args()
-args = parse_args()
 
 # === GT DEBUG STARTUP LOGGING ===
 logger = logging.getLogger("whisperlivekit.basic_server")
-logger.info("=== BASIC SERVER STARTUP PARAMETERS ===")
-
-host = getattr(args, "host", "unknown")
-port = getattr(args, "port", "unknown")
-language = getattr(args, "language", "unknown")
-
-# sommige versies gebruiken 'model', andere bv. 'whisper_model' of 'model_name'
-model = (
-    getattr(args, "model", None)
-    or getattr(args, "whisper_model", None)
-    or getattr(args, "model_name", None)
-    or "unknown"
-)
-
-pcm_input = getattr(args, "pcm_input", None)
-device = getattr(args, "device", "default")
-
-logger.info(f"Host: {host}")
-logger.info(f"Port: {port}")
-logger.info(f"Model: {model}")
-logger.info(f"Language override: {language}")
-logger.info(f"PCM input: {pcm_input}")
-logger.info(f"Use device: {device}")
-logger.info("========================================")
+logger.info("=== BASIC SERVER STARTUP PARAMETERS (RAW ARGS) ===")
+for k, v in vars(args).items():
+    logger.info(f"{k}: {v}")
+logger.info("=== END RAW ARGS ===")
 # === END GT DEBUG ===
-
 
 transcription_engine = None
 
