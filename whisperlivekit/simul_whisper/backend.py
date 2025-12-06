@@ -42,8 +42,9 @@ class SimulStreamingOnlineProcessor:
     SAMPLING_RATE = 16000
 
     def __init__(self, asr, logfile=sys.stderr):
-        logger = logging.getLogger(__name__)
-        logger.error("🔥 SimulStreamingOnlineProcessor.__init__ CALLED 🔥")
+        self.logger = logging.getLogger("whisperlivekit.backend.SimulStreamingOnlineProcessor")
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.debug("🔥 SimulStreamingOnlineProcessor logger ACTIVE, DEBUG level 🔥")
         self.asr = asr
         self.logfile = logfile
         self.end = 0.0
@@ -53,15 +54,15 @@ class SimulStreamingOnlineProcessor:
         self.model = self._create_alignatt()
         
         # GT Added for debug
-        logger.info("=== INITIALIZING STREAMING DECODER ===")
-        logger.info(f"Decoder type: {self.asr.cfg.decoder_type}")
-        logger.info(f"Beam size: {self.asr.cfg.beam_size}")
-        logger.info(f"Language: {self.asr.cfg.language}")
-        logger.info(f"Task: {self.asr.cfg.task}")
-        logger.info(f"Tokenizer multilingual: {self.asr.cfg.tokenizer_is_multilingual}")
-        logger.info(f"Audio min length: {self.asr.cfg.audio_min_len}")
-        logger.info(f"Audio max length: {self.asr.cfg.audio_max_len}")
-        logger.info("=== END STREAMING DECODER INIT ===")
+        self.logger.debug("=== INITIALIZING STREAMING DECODER ===")
+        self.logger.debug(f"Decoder type: {self.asr.cfg.decoder_type}")
+        self.logger.debug(f"Beam size: {self.asr.cfg.beam_size}")
+        self.logger.debug(f"Language: {self.asr.cfg.language}")
+        self.logger.debug(f"Task: {self.asr.cfg.task}")
+        self.logger.debug(f"Tokenizer multilingual: {self.asr.cfg.tokenizer_is_multilingual}")
+        self.logger.debug(f"Audio min length: {self.asr.cfg.audio_min_len}")
+        self.logger.debug(f"Audio max length: {self.asr.cfg.audio_max_len}")
+        self.logger.debug("=== END STREAMING DECODER INIT ===")
 
 
         if asr.tokenizer:
