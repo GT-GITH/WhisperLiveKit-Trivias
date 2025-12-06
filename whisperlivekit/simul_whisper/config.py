@@ -8,14 +8,14 @@ class AlignAttConfig():
     segment_length: float = field(default=1.0, metadata = {"help": "in second"})
     frame_threshold: int = 4
     rewind_threshold: int = 200
-    audio_max_len: float = 20.0
+    audio_max_len: float = 30.0
     cif_ckpt_path: str = ""
     never_fire: bool = False
     language: str = field(default="zh")
     nonspeech_prob: float = 0.5
-    audio_min_len: float = 1.0
-    decoder_type: Literal["greedy","beam"] = "greedy"
-    beam_size: int = 5
+    audio_min_len: float = 2.0
+    decoder_type: Literal["greedy","beam"] = "beam"
+    beam_size: int = 3
     task: Literal["transcribe","translate"] = "transcribe"
     tokenizer_is_multilingual: bool = False
     init_prompt: str = field(default=None)
