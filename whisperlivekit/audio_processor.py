@@ -303,9 +303,19 @@ class AudioProcessor:
                                 f"DEBUG-ASR: transcription attributes = {dir(self.transcription)}"
                             )
 
-                            # self.transcription.asr is de AlignAtt-decoder
-                            base_asr = getattr(self.transcription, "asr", None)
-                            if base_asr is not None and hasattr(base_asr, "refresh_segment"):
+                            # Zoek de decoder met refresh_segment (asr of model)
+                            base_asr = None
+                            for attr_name in ("asr", "model"):
+                                candidate = getattr(self.transcription, attr_name, None)
+                                if candidate is not None and hasattr(candidate, "refresh_segment"):
+                                    base_asr = candidate
+                                    logger.info(
+                                        f"[Decoder reset] gebruik decoder via "
+                                        f"self.transcription.{attr_name}.refresh_segment(complete=True)"
+                                    )
+                                    break
+
+                            if base_asr is not None:
                                 # Dit roept onder water al aan:
                                 # - init_tokens()
                                 # - init_context()
@@ -314,9 +324,10 @@ class AudioProcessor:
                                 base_asr.refresh_segment(complete=True)
                             else:
                                 logger.warning(
-                                    "[Decoder reset] self.transcription.asr of refresh_segment "
-                                    "niet gevonden – geen reset uitgevoerd"
+                                    "[Decoder reset] geen decoder met refresh_segment gevonden "
+                                    "(asr/model) – geen reset uitgevoerd"
                                 )
+
 
                     if self.state.tokens:
                         asr_processing_logs += f" | last_end = {self.state.tokens[-1].end} |"
