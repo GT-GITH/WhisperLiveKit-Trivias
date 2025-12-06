@@ -15,17 +15,36 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 args = parse_args()
+args = parse_args()
+
 # === GT DEBUG STARTUP LOGGING ===
 logger = logging.getLogger("whisperlivekit.basic_server")
 logger.info("=== BASIC SERVER STARTUP PARAMETERS ===")
-logger.info(f"Host: {args.host}")
-logger.info(f"Port: {args.port}")
-logger.info(f"Model: {args.model}")
-logger.info(f"Language override: {args.language}")
-logger.info(f"PCM input: {args.pcm_input}")
-logger.info(f"Use GPU: {args.device if hasattr(args,'device') else 'default'}")
+
+host = getattr(args, "host", "unknown")
+port = getattr(args, "port", "unknown")
+language = getattr(args, "language", "unknown")
+
+# sommige versies gebruiken 'model', andere bv. 'whisper_model' of 'model_name'
+model = (
+    getattr(args, "model", None)
+    or getattr(args, "whisper_model", None)
+    or getattr(args, "model_name", None)
+    or "unknown"
+)
+
+pcm_input = getattr(args, "pcm_input", None)
+device = getattr(args, "device", "default")
+
+logger.info(f"Host: {host}")
+logger.info(f"Port: {port}")
+logger.info(f"Model: {model}")
+logger.info(f"Language override: {language}")
+logger.info(f"PCM input: {pcm_input}")
+logger.info(f"Use device: {device}")
 logger.info("========================================")
 # === END GT DEBUG ===
+
 
 transcription_engine = None
 
