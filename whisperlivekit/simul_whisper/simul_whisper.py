@@ -111,7 +111,7 @@ class AlignAtt:
         self.num_decoder_layers = len(self.model.decoder.blocks)
         self.cfg = cfg
         
-        #GT added for debug
+        #GT added for debug   
         logger.info("=== ALIGNATT CONFIGURATION ===")
         for k, v in vars(self.cfg).items():
             logger.info(f"  {k}: {v}")
