@@ -233,12 +233,32 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   setAsrStatus("Live transcriptie actief…");
 }
 
-// NEW: microfoonlijst ophalen en dropdown vullen
+// NEW: microfoonlijst ophalen en dropdown vullen (met dedupe)
 async function refreshMicrophoneList() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
-    availableMics = devices.filter((d) => d.kind === "audioinput");
+
+    // Alleen audioinput
+    const audioInputs = devices.filter((d) => d.kind === "audioinput");
+
+    // Helper om label op te schonen
+    const baseLabel = (label) =>
+      (label || "")
+        .replace(/^Standaard\s*-\s*/i, "")
+        .replace(/^Communicatie\s*-\s*/i, "")
+        .trim();
+
+    // Dedupe: 1 per groupId / baselabel
+    const byKey = new Map();
+    for (const dev of audioInputs) {
+      const key = dev.groupId || baseLabel(dev.label) || dev.deviceId;
+      if (!byKey.has(key)) {
+        byKey.set(key, dev);
+      }
+    }
+    availableMics = Array.from(byKey.values());
 
     if (!micSelect) return;
 
@@ -254,7 +274,7 @@ async function refreshMicrophoneList() {
     for (const mic of availableMics) {
       const opt = document.createElement("option");
       opt.value = mic.deviceId;
-      opt.textContent = mic.label || `Microfoon ${idx++}`;
+      opt.textContent = baseLabel(mic.label) || `Microfoon ${idx++}`;
       micSelect.appendChild(opt);
     }
 
@@ -268,6 +288,7 @@ async function refreshMicrophoneList() {
     console.warn("Cannot enumerate audio devices:", e);
   }
 }
+
 
 async function startRecording() {
   if (isRecording) return;
