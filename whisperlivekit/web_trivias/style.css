@@ -352,20 +352,44 @@ body {
     justify-content: flex-start;
   }
 
-  .mic-select {
-  max-width: 180px;
-  width: 100%;
-  padding: 4px 8px;
+  .status-row-mic {
+  align-items: center;
+}
+
+.status-label-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.status-subtext {
+  font-size: 11px;
+  color: var(--text-soft);
+  opacity: 0.85;
+}
+
+.status-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* aangepaste mic-select */
+.mic-select {
+  max-width: 190px;
+  width: auto;
+  padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid rgba(148, 163, 184, 0.45);
-  background: rgba(15, 23, 42, 0.9);
+  background: rgba(15, 23, 42, 0.95);
   color: var(--text-muted);
   font-size: 12px;
   outline: none;
+  cursor: pointer;
 }
 
 .mic-select:focus {
-  border-color: rgba(59, 130, 246, 0.8);
+  border-color: rgba(59, 130, 246, 0.9);
 }
 
 }
