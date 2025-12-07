@@ -5,9 +5,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTMLResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query 
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 
