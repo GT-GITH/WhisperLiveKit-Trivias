@@ -232,7 +232,7 @@ def main():
     import uvicorn
 
     uvicorn_kwargs = {
-        "app": "TriviasServer:app",  # module:object (bestandsnaam = TriviasServer.py)
+        "app": "whisperlivekit.TriviasServer:app",  # module:object (bestandsnaam = TriviasServer.py)
         "host": args.host,
         "port": args.port,
         "reload": False,
