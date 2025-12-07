@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Trivias STT – Live transcriptie</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="app-title">
+          <span class="logo-dot"></span>
+          <span>Trivias STT</span>
+        </div>
+        <div class="app-header-right">
+          <span class="tag">PoC · 1 kanaal</span>
+          <span class="tag tag-model">model: large-v3</span>
+          <span class="tag tag-lang">taal: NL</span>
+        </div>
+      </header>
+
+      <main class="app-main">
+        <section class="panel panel-main">
+          <div class="panel-header">
+            <h2>Live transcriptie</h2>
+            <span id="recordingTimer" class="timer">00:00</span>
+          </div>
+          <div id="liveTranscript" class="transcript-box">
+            Nog geen tekst… Klik op <strong>Start</strong> om te beginnen.
+          </div>
+
+          <div class="panel-sub">
+            <div class="panel-sub-header">
+              <h3>Laatste definitieve blok</h3>
+            </div>
+            <div id="finalTranscript" class="final-box">
+              Nog geen definitieve blokken beschikbaar.
+            </div>
+          </div>
+        </section>
+
+        <aside class="panel panel-side">
+          <div class="panel-header">
+            <h2>Status & bediening</h2>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">Verbinding</span>
+            <span id="connectionStatus" class="status-value status-disconnected">
+              Niet verbonden
+            </span>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">Microfoon</span>
+            <span id="micStatus" class="status-value">Onbekend</span>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">Server-modus</span>
+            <span id="modeStatus" class="status-value">–</span>
+          </div>
+
+          <div class="status-row">
+            <span class="status-label">ASR-status</span>
+            <span id="asrStatus" class="status-value">Wachten op opname…</span>
+          </div>
+
+          <div class="controls">
+            <button id="recordButton" class="record-button">
+              🎙 Start
+            </button>
+            <p id="hintText" class="hint">
+              Klik op <strong>Start</strong> om de microfoon te activeren
+              en audio naar de server te sturen.
+            </p>
+          </div>
+
+          <div class="note">
+            <p>
+              Deze UI gebruikt dezelfde WebSocket- en audio-pipeline als de
+              bestaande interface, maar dan in een vereenvoudigde
+              één-kanaals weergave.
+            </p>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

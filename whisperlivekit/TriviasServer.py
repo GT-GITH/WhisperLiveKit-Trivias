@@ -5,11 +5,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
+
+from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
 
 # ====== Logging setup ======
 logging.basicConfig(
@@ -122,6 +124,10 @@ async def health():
         }
     )
 
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve de inline Trivias STT webinterface."""
+    return HTMLResponse(get_inline_ui_html())
 
 @app.get("/sessions")
 async def list_sessions():
