@@ -1,4 +1,4 @@
-// Trivias STT – Simple 1-channel UI
+// Trivias STT – Simple 1-channel UI with microphone selection
 
 let websocket = null;
 let websocketUrl = null;
@@ -21,6 +21,10 @@ let configResolve = null;
 let waitingForStop = false;
 let userClosing = false;
 
+// NEW: microphone selection state
+let availableMics = [];
+let selectedDeviceId = null;
+
 // DOM elements
 const recordButton = document.getElementById("recordButton");
 const liveTranscriptDiv = document.getElementById("liveTranscript");
@@ -31,10 +35,12 @@ const modeStatusSpan = document.getElementById("modeStatus");
 const asrStatusSpan = document.getElementById("asrStatus");
 const timerSpan = document.getElementById("recordingTimer");
 const hintText = document.getElementById("hintText");
+const micSelect = document.getElementById("micSelect");
 
 function initWebsocketUrl() {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host || "localhost:8000";
+  // We gebruiken nu /ws (server heeft compat endpoint naar /asr)
   websocketUrl = `${proto}//${host}/ws`;
 }
 
@@ -137,15 +143,15 @@ function ensureWebSocket() {
       setConnectionStatus(false);
       setAsrStatus("WebSocket-fout, controleer server.");
       if (configResolve) {
+        const r = configResolve;
         configResolve = null;
-        reject(err);
+        r(); // alsnog resolve om niet te blijven hangen
       }
     };
 
     websocket.onclose = () => {
       setConnectionStatus(false);
       if (isRecording) {
-        // Server heeft de verbinding gesloten tijdens opname
         isRecording = false;
         updateRecordButtonUI();
         updateHint();
@@ -183,16 +189,14 @@ function ensureWebSocket() {
         if (lastFullTranscript && finalTranscriptDiv) {
           finalTranscriptDiv.textContent = lastFullTranscript;
         }
-        // Server sluit meestal zelf; wij doen hier niets
         return;
       }
 
-      // Normale transcriptie-update
       const {
         lines = [],
         buffer_transcription = "",
         buffer_translation = "",
-        status = "active_transcription"
+        status = "active_transcription",
       } = data;
 
       renderTranscript(lines, buffer_transcription, buffer_translation, status);
@@ -229,6 +233,42 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   setAsrStatus("Live transcriptie actief…");
 }
 
+// NEW: microfoonlijst ophalen en dropdown vullen
+async function refreshMicrophoneList() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    availableMics = devices.filter((d) => d.kind === "audioinput");
+
+    if (!micSelect) return;
+
+    const previous = micSelect.value;
+    micSelect.innerHTML = "";
+
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = "Systeemstandaard";
+    micSelect.appendChild(defaultOption);
+
+    let idx = 1;
+    for (const mic of availableMics) {
+      const opt = document.createElement("option");
+      opt.value = mic.deviceId;
+      opt.textContent = mic.label || `Microfoon ${idx++}`;
+      micSelect.appendChild(opt);
+    }
+
+    if (previous && [...micSelect.options].some((o) => o.value === previous)) {
+      micSelect.value = previous;
+      selectedDeviceId = previous || null;
+    } else {
+      selectedDeviceId = micSelect.value || null;
+    }
+  } catch (e) {
+    console.warn("Cannot enumerate audio devices:", e);
+  }
+}
+
 async function startRecording() {
   if (isRecording) return;
 
@@ -240,9 +280,18 @@ async function startRecording() {
   }
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const audioConstraints = selectedDeviceId
+      ? { deviceId: { exact: selectedDeviceId } }
+      : true;
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: audioConstraints,
+    });
     mediaStream = stream;
     setMicStatus("Toegang verleend");
+
+    // Na succesvolle toegang: devices verversen (labels worden nu zichtbaar)
+    refreshMicrophoneList();
 
     if (!audioContext) {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -251,20 +300,23 @@ async function startRecording() {
     const useWorklet = serverUseAudioWorklet && !!audioContext.audioWorklet;
 
     if (useWorklet) {
-      // AudioWorklet + recorder_worker: zelfde basis als bestaande UI
       await audioContext.audioWorklet.addModule("/web/pcm_worklet.js");
       const source = audioContext.createMediaStreamSource(stream);
-      workletNode = new AudioWorkletNode(audioContext, "pcm-worklet-processor", {
-        numberOfInputs: 1,
-        numberOfOutputs: 0,
-        channelCount: 1
-      });
+      workletNode = new AudioWorkletNode(
+        audioContext,
+        "pcm-worklet-processor",
+        {
+          numberOfInputs: 1,
+          numberOfOutputs: 0,
+          channelCount: 1,
+        }
+      );
       source.connect(workletNode);
 
       recorderWorker = new Worker("/web/recorder_worker.js");
       recorderWorker.postMessage({
         command: "init",
-        config: { sampleRate: audioContext.sampleRate }
+        config: { sampleRate: audioContext.sampleRate },
       });
 
       recorderWorker.onmessage = (e) => {
@@ -279,7 +331,7 @@ async function startRecording() {
         recorderWorker.postMessage(
           {
             command: "record",
-            buffer: ab
+            buffer: ab,
           },
           [ab]
         );
@@ -287,7 +339,6 @@ async function startRecording() {
 
       setModeStatus("AudioWorklet (PCM)");
     } else {
-      // Fallback: MediaRecorder (WebM)
       mediaRecorder = new MediaRecorder(stream);
       mediaRecorder.ondataavailable = (e) => {
         if (websocket && websocket.readyState === WebSocket.OPEN) {
@@ -313,7 +364,7 @@ async function startRecording() {
   } catch (err) {
     console.error("Error starting recording:", err);
     setMicStatus("Toegang geweigerd of fout");
-    setAsrStatus("Kon microfoon niet gebruiken. Controleer permissies.");
+    setAsrStatus("Kon microfoon niet gebruiken. Controleer permissies of apparaat.");
   }
 }
 
@@ -362,7 +413,6 @@ function stopRecording() {
   updateHint();
 
   if (websocket && websocket.readyState === WebSocket.OPEN) {
-    // Lege blob om de server te laten weten dat we klaar zijn
     const emptyBlob = new Blob([], { type: "audio/webm" });
     websocket.send(emptyBlob);
     setAsrStatus("Opname gestopt. Server is audio aan het afronden…");
@@ -379,14 +429,30 @@ function toggleRecording() {
   }
 }
 
+// Permissions & device handling
 async function checkMicPermission() {
-  if (!navigator.permissions || !navigator.permissions.query) return;
+  if (!navigator.permissions || !navigator.permissions.query) {
+    // Geen fancy permissions-API → toch devices proberen te halen
+    refreshMicrophoneList();
+    return;
+  }
   try {
     const perm = await navigator.permissions.query({ name: "microphone" });
     setMicStatus(perm.state.toUpperCase());
-    perm.onchange = () => setMicStatus(perm.state.toUpperCase());
+
+    if (perm.state === "granted") {
+      refreshMicrophoneList();
+    }
+
+    perm.onchange = () => {
+      setMicStatus(perm.state.toUpperCase());
+      if (perm.state === "granted") {
+        refreshMicrophoneList();
+      }
+    };
   } catch {
-    // Ignored – niet alle browsers ondersteunen dit netjes
+    // Fallback: gewoon proberen
+    refreshMicrophoneList();
   }
 }
 
@@ -394,6 +460,18 @@ async function checkMicPermission() {
 if (recordButton) {
   recordButton.addEventListener("click", () => {
     toggleRecording();
+  });
+}
+
+// NEW: change handler voor micSelect
+if (micSelect) {
+  micSelect.addEventListener("change", () => {
+    selectedDeviceId = micSelect.value || null;
+    if (isRecording) {
+      setAsrStatus(
+        "Nieuwe microfoon wordt gebruikt na stoppen en opnieuw starten."
+      );
+    }
   });
 }
 
