@@ -228,6 +228,27 @@ async def websocket_endpoint(
         await audio_processor.cleanup()
         logger.info(f"WebSocket endpoint cleaned up successfully for session {sid}.")
 
+@app.websocket("/ws")
+async def websocket_ws(
+    websocket: WebSocket,
+    session_id: Optional[str] = Query(default=None),
+    source_system: Optional[str] = Query(default=None),
+    case_ref: Optional[str] = Query(default=None),
+    person_ref: Optional[str] = Query(default=None),
+    user_id: Optional[str] = Query(default=None),
+):
+    """
+    Compat-endpoint voor clients die nog /ws gebruiken.
+    Roept intern dezelfde logica aan als /asr.
+    """
+    return await websocket_endpoint(
+        websocket=websocket,
+        session_id=session_id,
+        source_system=source_system,
+        case_ref=case_ref,
+        person_ref=person_ref,
+        user_id=user_id,
+    )
 
 def main():
     """CLI entry point voor TriviasServer.
