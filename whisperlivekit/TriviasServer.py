@@ -25,10 +25,6 @@ logger.setLevel(logging.DEBUG)
 # ====== CLI args (zelfde als basic_server) ======
 args = parse_args()
 
-logger.info("=== TRIVIAS SERVER STARTUP PARAMETERS (RAW ARGS) ===")
-for k, v in vars(args).items():
-    logger.info(f"{k}: {v}")
-logger.info("=== END RAW ARGS ===")
 
 # ====== Session manager (v0.1: alleen in-memory + logging) ======
 class SessionManager:
@@ -84,6 +80,10 @@ transcription_engine: Optional[TranscriptionEngine] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("=== TRIVIAS SERVER STARTUP PARAMETERS (RAW ARGS) ===")
+    for k, v in vars(args).items():
+        logger.info(f"{k}: {v}")
+    logger.info("=== END RAW ARGS ===")
     global transcription_engine
     logger.info("Initialising TranscriptionEngine for TriviasServer...")
     transcription_engine = TranscriptionEngine(**vars(args))
