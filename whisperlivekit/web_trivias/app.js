@@ -35,7 +35,7 @@ const hintText = document.getElementById("hintText");
 function initWebsocketUrl() {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host || "localhost:8000";
-  websocketUrl = `${proto}//${host}/asr`;
+  websocketUrl = `${proto}//${host}/ws`;
 }
 
 initWebsocketUrl();
