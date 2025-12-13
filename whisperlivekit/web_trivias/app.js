@@ -325,7 +325,7 @@ async function startRecording() {
       const source = audioContext.createMediaStreamSource(stream);
       workletNode = new AudioWorkletNode(
         audioContext,
-        "pcm-worklet-processor",
+        "pcm-forwarder",
         {
           numberOfInputs: 1,
           numberOfOutputs: 0,
