@@ -615,7 +615,7 @@ class AudioProcessor:
                 segments_out: List[dict] = []
 
                 # 1) FINAL segments (al opgeslagen in self._segments_v1)
-                finals = self._segments_v1[-30:]  # laatste 3
+                finals = self._segments_v1[-30:]  # laatste 30
                 for s in finals:
                     segments_out.append({
                         "segment_id": s.segment_id,
@@ -628,12 +628,26 @@ class AudioProcessor:
                 # 2) LIVE segment (alleen als open)
                 if self._current_segment_v1 is not None:
                     cs = self._current_segment_v1
+                    # LIVE tekst = committed delta sinds segment start (+ buffer als die bestaat)
+                    full = committed_text or ""
+                    start_idx = min(cs.committed_text_start_len, len(full))
+                    committed_delta = full[start_idx:].strip()
+
+                    live_parts = []
+                    if committed_delta:
+                        live_parts.append(committed_delta)
+                    if buffer_transcription_text and buffer_transcription_text.strip():
+                        live_parts.append(buffer_transcription_text.strip())
+
+                    live_text = " ".join(live_parts).strip()
+
                     segments_out.append({
                         "segment_id": cs.segment_id,
                         "start_ms": cs.start_ms,
                         "state": "LIVE",
-                        "live_text": (buffer_transcription_text or "").strip(),
+                        "live_text": live_text,
                     })
+
 
                 payload = {
                     "type": "segments",
