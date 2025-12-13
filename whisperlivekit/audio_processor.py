@@ -33,6 +33,33 @@ MIN_DURATION_REAL_SILENCE = 5
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
 SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
 
+# ===== Segment + Audio Contract v1 (server-side state machine) =====
+SEG_SILENCE_CLOSE_SEC = 0.8     # silence-close threshold
+SEG_MIN_FINAL_SEC     = 3.0     # segment must be >= 3s to be allowed to FINAL on silence
+SEG_TARGET_CLOSE_SEC  = 12.0    # target-close
+SEG_HARD_CAP_SEC      = 25.0    # hard-cap
+
+SEG_MIN_FINAL_MS      = int(SEG_MIN_FINAL_SEC * 1000)
+
+class SegmentV1:
+    __slots__ = (
+        "segment_id", "session_id", "start_ms", "end_ms", "state",
+        "live_text", "final_text",
+        "committed_text_start_len",
+    )
+
+    def __init__(self, session_id: str, start_ms: int):
+        self.session_id = session_id
+        self.start_ms = start_ms
+        self.end_ms = None  # type: Optional[int]
+        self.segment_id = f"{session_id}:{start_ms}"
+        self.state = "LIVE"  # LIVE | FINAL
+        self.live_text = ""
+        self.final_text = ""
+        # voor debug/latere stap: waar in de committed-text deze segment begon
+        self.committed_text_start_len = 0
+
+
 async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.ndarray, List[Any]]:
     items: List[Any] = []
 
@@ -149,6 +176,14 @@ class AudioProcessor:
         self._wav_writer: Optional[wave.Wave_write] = None
         self._wav_path: Optional[Path] = None
 
+        # ===== Segment v1 state =====
+        self._segments_v1: List[SegmentV1] = []
+        self._current_segment_v1: Optional[SegmentV1] = None
+        self._pending_short_segment_v1: Optional[SegmentV1] = None
+
+        # debug/latere stap: complete committed-text snapshot
+        self._last_committed_text: str = ""
+
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
             await self.transcription_queue.put(self.current_silence)
@@ -220,6 +255,69 @@ class AudioProcessor:
             self.state.remaining_time_diarization = remaining_diarization
             
             return self.state
+    def _now_ms(self) -> int:
+        if not self.beg_loop:
+            return 0
+        return int((time() - self.beg_loop) * 1000)
+
+    def _get_committed_text_from_lines(self, lines: List[Any]) -> str:
+        # lines bevat items met .text (zoals UI nu doet)
+        parts = []
+        for item in (lines or []):
+            t = getattr(item, "text", "") or ""
+            t = t.strip()
+            if t:
+                parts.append(t)
+        return "\n".join(parts).strip()
+
+    def _ensure_segment_open_v1(self, start_ms: int, committed_text: str) -> None:
+        if self._current_segment_v1 is not None:
+            return
+        seg = SegmentV1(self.session_id, start_ms)
+        seg.committed_text_start_len = len(committed_text or "")
+        self._current_segment_v1 = seg
+        logger.info(f"[SEG] OPEN  id={seg.segment_id} start_ms={seg.start_ms}")
+
+    def _finalize_current_segment_v1(self, end_ms: int, committed_text: str) -> None:
+        seg = self._current_segment_v1
+        if seg is None:
+            return
+        if seg.state == "FINAL":
+            return
+
+        seg.end_ms = end_ms
+        seg.state = "FINAL"
+
+        # debug/latere stap: final_text snapshot (v1 simpel: substring)
+        full = committed_text or ""
+        start_idx = min(seg.committed_text_start_len, len(full))
+        seg.final_text = full[start_idx:].strip()
+
+        dur_ms = max(0, seg.end_ms - seg.start_ms)
+
+        # merge-regel: als FINAL < 3s, pending maken en niet publiceren als losse segment
+        if dur_ms < SEG_MIN_FINAL_MS:
+            logger.info(f"[SEG] FINAL-SHORT id={seg.segment_id} dur_ms={dur_ms} → pending merge")
+            self._pending_short_segment_v1 = seg
+            self._current_segment_v1 = None
+            return
+
+        # merge pending short → deze FINAL
+        if self._pending_short_segment_v1 is not None:
+            p = self._pending_short_segment_v1
+            merged = SegmentV1(self.session_id, p.start_ms)
+            merged.end_ms = seg.end_ms
+            merged.state = "FINAL"
+            merged.final_text = (p.final_text + " " + seg.final_text).strip()
+            merged.committed_text_start_len = p.committed_text_start_len
+            self._segments_v1.append(merged)
+            self._pending_short_segment_v1 = None
+            logger.info(f"[SEG] MERGE  id={merged.segment_id} start_ms={merged.start_ms} end_ms={merged.end_ms}")
+        else:
+            self._segments_v1.append(seg)
+            logger.info(f"[SEG] FINAL  id={seg.segment_id} start_ms={seg.start_ms} end_ms={seg.end_ms} dur_ms={dur_ms}")
+
+        self._current_segment_v1 = None
 
     async def ffmpeg_stdout_reader(self) -> None:
         """Read audio data from FFmpeg stdout and process it into the PCM pipeline."""
@@ -477,6 +575,34 @@ class AudioProcessor:
                 state = await self.get_current_state()
 
                 buffer_transcription_text = state.buffer_transcription.text if state.buffer_transcription else ''
+                # ===== Segment v1 policy evaluation (server-only) =====
+                committed_text = self._get_committed_text_from_lines(lines)
+                self._last_committed_text = committed_text
+
+                now_ms = self._now_ms()
+
+                # 1) Silence-close: tijdens stilte >= 0.8s EN segmentduur >= 3.0s
+                if self._current_segment_v1 is not None and self.current_silence is not None:
+                    # current_silence.start is seconds since beg_loop
+                    silence_started_ms = int((self.current_silence.start or 0.0) * 1000)
+                    silence_age_ms = max(0, now_ms - silence_started_ms)
+                    seg_dur_ms = max(0, silence_started_ms - self._current_segment_v1.start_ms)
+
+                    if silence_age_ms >= int(SEG_SILENCE_CLOSE_SEC * 1000) and seg_dur_ms >= int(SEG_MIN_FINAL_SEC * 1000):
+                        # sluiten op begin van stilte (audit-proof knip)
+                        self._finalize_current_segment_v1(end_ms=silence_started_ms, committed_text=committed_text)
+
+                # 2) Target-close: segmentduur >= 12s
+                if self._current_segment_v1 is not None:
+                    seg_dur_ms = max(0, now_ms - self._current_segment_v1.start_ms)
+                    if seg_dur_ms >= int(SEG_TARGET_CLOSE_SEC * 1000):
+                        self._finalize_current_segment_v1(end_ms=now_ms, committed_text=committed_text)
+
+                # 3) Hard-cap: segmentduur >= 25s (noodrem)
+                if self._current_segment_v1 is not None:
+                    seg_dur_ms = max(0, now_ms - self._current_segment_v1.start_ms)
+                    if seg_dur_ms >= int(SEG_HARD_CAP_SEC * 1000):
+                        self._finalize_current_segment_v1(end_ms=now_ms, committed_text=committed_text)
 
                 response_status = "active_transcription"
                 if not lines and not buffer_transcription_text and not buffer_diarization_text:
@@ -650,6 +776,14 @@ class AudioProcessor:
             logger.info("Empty audio message received, initiating stop sequence.")
             self.is_stopping = True
             
+             # Segment v1: finaliseer open segment bij stop
+            try:
+                now_ms = self._now_ms()
+                if self._current_segment_v1 is not None:
+                    self._finalize_current_segment_v1(end_ms=now_ms, committed_text=self._last_committed_text)
+            except Exception as e:
+                logger.warning(f"[SEG] Error finalizing segment on stop: {e}")
+           
             # NEW: close session WAV immediately on stop
             self._close_wav()
             
@@ -728,7 +862,16 @@ class AudioProcessor:
                 await self._begin_silence()
 
         if not self.current_silence:
+            # Segment open moment = start van dit chunk (tijd-gebaseerd)
+            chunk_start_ms = int((chunk_sample_start / self.sample_rate) * 1000)
+
+            # NB: committed_text vullen we later in results_formatter (nu nog leeg OK)
+            # Hier openen we alleen als er nog geen segment open is.
+            if self._current_segment_v1 is None:
+                self._ensure_segment_open_v1(start_ms=chunk_start_ms, committed_text=self._last_committed_text)
+
             await self._enqueue_active_audio(pcm_array)
+
 
         self.total_pcm_samples = chunk_sample_end
 
