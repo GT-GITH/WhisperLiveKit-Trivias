@@ -140,9 +140,34 @@ class SimulStreamingOnlineProcessor:
             self.committed.extend(timestamped_words)
             self.buffer = []
             return timestamped_words, self.end
+        except RuntimeError as e:
+            # Handle CUDA OOM gracefully
+            msg = str(e).lower()
+            if "out of memory" in msg or "cuda failed with error out of memory" in msg:
+                logger.error(f"CUDA OOM in process_iter (is_last={is_last}). Resetting decoder and clearing cache.")
+                try:
+                    if torch is not None and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+                # Reset streaming decoder state so we can continue
+                try:
+                    self.model.refresh_segment(complete=True)
+                except Exception:
+                    pass
+
+                # Drop current buffer content (avoid repeating the same huge batch)
+                self.buffer = []
+                return [], self.end
+
+            # Not an OOM -> rethrow to be handled below/logged
+            raise
+
         except Exception as e:
             logger.exception(f"SimulStreaming processing error: {e}")
             return [], self.end
+
 
     def warmup(self, audio, init_prompt=""):
         """Warmup the SimulStreaming model."""
