@@ -5,7 +5,7 @@ from argparse import Namespace
 from whisperlivekit.local_agreement.online_asr import OnlineASRProcessor
 from whisperlivekit.local_agreement.whisper_online import backend_factory
 from whisperlivekit.simul_whisper import SimulStreamingASR
-from whisperlivekit.backend import BatchFasterWhisperASR 
+from .backend import BatchFasterWhisperASR 
 
 
 def update_with_kwargs(_dict, kwargs):
