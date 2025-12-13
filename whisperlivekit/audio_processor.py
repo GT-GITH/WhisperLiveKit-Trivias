@@ -574,7 +574,7 @@ class AudioProcessor:
                 break
             except Exception as e:
                 logger.error(f"Error in watchdog task: {e}", exc_info=True)
-                
+
     def _ensure_wav_open(self) -> None:
         if self._wav_writer is not None:
             return
@@ -649,7 +649,10 @@ class AudioProcessor:
         if not message:
             logger.info("Empty audio message received, initiating stop sequence.")
             self.is_stopping = True
-             
+            
+            # NEW: close session WAV immediately on stop
+            self._close_wav()
+            
             if self.transcription_queue:
                 await self.transcription_queue.put(SENTINEL)
 
