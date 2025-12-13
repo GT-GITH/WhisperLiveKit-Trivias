@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
-import torch
+try:
+    import torch
+except Exception:
+    torch = None
 
 from whisperlivekit.backend_support import (faster_backend_available,
                                             mlx_backend_available)
@@ -36,6 +39,48 @@ else:
     WhisperModel = None
 
 MIN_DURATION_REAL_SILENCE = 5
+
+class BatchFasterWhisperASR:
+    """
+    Offline/batch ASR op basis van faster-whisper WhisperModel.
+    Los van SimulStreaming/AlignAtt, zodat batch andere decode settings kan hebben.
+    """
+    def __init__(
+        self,
+        model: str,
+        device: str = "auto",
+        compute_type: str = "auto",
+        language: str = "nl",
+        beam_size: int = 5,
+        condition_on_previous_text: bool = False,
+        temperature: float = 0.0,
+    ):
+        if WhisperModel is None:
+            raise RuntimeError("faster-whisper is not available (WhisperModel import failed).")
+
+        self.language = language
+        self.beam_size = beam_size
+        self.condition_on_previous_text = condition_on_previous_text
+        self.temperature = temperature
+
+        self.model = WhisperModel(
+            model,
+            device=device,
+            compute_type=compute_type,
+        )
+
+    def transcribe_text(self, audio_f32: np.ndarray) -> str:
+        # faster-whisper verwacht float32 numpy array in [-1,1] (dat heb jij al)
+        segments, info = self.model.transcribe(
+            audio_f32,
+            language=self.language if self.language and self.language != "auto" else None,
+            beam_size=self.beam_size,
+            condition_on_previous_text=self.condition_on_previous_text,
+            temperature=self.temperature,
+            vad_filter=False,  # jij knipt zelf al op segment
+        )
+        parts = [s.text.strip() for s in segments if getattr(s, "text", None)]
+        return " ".join([p for p in parts if p]).strip()
 
 class SimulStreamingOnlineProcessor:
     """Online processor for SimulStreaming ASR."""

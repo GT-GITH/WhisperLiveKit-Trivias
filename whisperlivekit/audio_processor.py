@@ -100,8 +100,14 @@ class AudioProcessor:
         else:
             models = TranscriptionEngine(**kwargs)
         
+        # Batch refinement (Stap 3)
+        self._batch_queue: asyncio.Queue = asyncio.Queue()
+        self._batch_worker_task: Optional[asyncio.Task] = None
+        self._batch_refine_enabled: bool = True
+
         # Audio processing settings
         self.args = models.args
+        self.batch_asr = getattr(models, "batch_asr", None)
         self.sample_rate = 16000
         self.channels = 1
         self.samples_per_sec = int(self.sample_rate * self.args.min_chunk_size)
@@ -314,10 +320,27 @@ class AudioProcessor:
             merged.final_text = (p.final_text + " " + seg.final_text).strip()
             merged.committed_text_start_len = p.committed_text_start_len
             self._segments_v1.append(merged)
+            # Batch refinement job (Stap 3) – alleen voor gepubliceerde FINAL segmenten
+            if self._batch_refine_enabled:
+                try:
+                    if self._segments_v1:
+                        seg_for_refine = self._segments_v1[-1]
+                        if seg_for_refine.end_ms is not None:
+                            self._batch_queue.put_nowait(seg_for_refine)
+                            logger.info(f"[BATCH] queued segment {seg_for_refine.segment_id} for refinement")
+                except Exception as e:
+                    logger.warning(f"[BATCH] queue failed: {e}")
+
             self._pending_short_segment_v1 = None
             logger.info(f"[SEG] MERGE  id={merged.segment_id} start_ms={merged.start_ms} end_ms={merged.end_ms}")
         else:
             self._segments_v1.append(seg)
+            if self._batch_refine_enabled:
+                try:
+                    self._batch_queue.put_nowait(seg)
+                    logger.info(f"[BATCH] queued segment {seg.segment_id} for refinement")
+                except Exception as e:
+                    logger.warning(f"[BATCH] queue failed: {e}")
             logger.info(f"[SEG] FINAL  id={seg.segment_id} start_ms={seg.start_ms} end_ms={seg.end_ms} dur_ms={dur_ms}")
 
         self._current_segment_v1 = None
@@ -710,6 +733,11 @@ class AudioProcessor:
         self.watchdog_task = asyncio.create_task(self.watchdog(processing_tasks_for_watchdog))
         self.all_tasks_for_cleanup.append(self.watchdog_task)
         
+        # Batch refinement worker
+        if self._batch_refine_enabled and self._batch_worker_task is None:
+            self._batch_worker_task = asyncio.create_task(self._batch_refiner_worker())
+            self.all_tasks_for_cleanup.append(self._batch_worker_task)
+
         return self.results_formatter()
 
     async def watchdog(self, tasks_to_monitor: List[asyncio.Task]) -> None:
@@ -765,6 +793,81 @@ class AudioProcessor:
             logger.warning(f"[SESSION WAV] Error closing WAV: {e}")
         finally:
             self._wav_writer = None
+
+    def _flush_wav(self) -> None:
+        try:
+            wf = self._wav_writer
+            if wf is None:
+                return
+            f = getattr(wf, "_file", None)
+            if f:
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _read_wav_slice_float32(self, start_ms: int, end_ms: int) -> Optional[np.ndarray]:
+        if not getattr(self, "_wav_path", None):
+            return None
+        if end_ms <= start_ms:
+            return None
+
+        self._flush_wav()
+
+        start_frame = int((start_ms / 1000.0) * self.sample_rate)
+        end_frame   = int((end_ms   / 1000.0) * self.sample_rate)
+        n_frames    = max(0, end_frame - start_frame)
+        if n_frames <= 0:
+            return None
+
+        try:
+            with wave.open(str(self._wav_path), "rb") as rf:
+                rf.setpos(min(start_frame, rf.getnframes()))
+                raw = rf.readframes(n_frames)
+            if not raw:
+                return None
+            # raw is s16le mono
+            return self.convert_pcm_to_float(raw)
+        except Exception as e:
+            logger.warning(f"[BATCH] WAV slice read failed: {e}")
+            return None
+
+    def _batch_transcribe_text(self, audio_f32: np.ndarray) -> Optional[str]:
+        try:
+            if not self.batch_asr:
+                return None
+            txt = self.batch_asr.transcribe_text(audio_f32)
+            return txt or None
+        except Exception as e:
+            logger.warning(f"[BATCH] transcribe failed: {e}")
+            return None
+
+
+    async def _batch_refiner_worker(self) -> None:
+        while True:
+            seg: SegmentV1 = await self._batch_queue.get()
+            try:
+                if not seg or seg.end_ms is None:
+                    continue
+
+                audio = await asyncio.to_thread(self._read_wav_slice_float32, seg.start_ms, seg.end_ms)
+                if audio is None or audio.size == 0:
+                    continue
+
+                refined = await asyncio.to_thread(self._batch_transcribe_text, audio)
+                if refined:
+                    # 1x vervangen door batch output
+                    seg.final_text = refined.strip()
+                    logger.info(f"[BATCH] refined segment {seg.segment_id} ({seg.start_ms}-{seg.end_ms}ms)")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[BATCH] worker error: {e}")
+            finally:
+                self._batch_queue.task_done()
     
     async def cleanup(self) -> None:
         """Clean up resources when processing is complete."""
@@ -787,6 +890,13 @@ class AudioProcessor:
                 logger.warning(f"Error stopping FFmpeg manager: {e}")
         if self.diarization:
             self.diarization.close()
+            
+        # Stop batch worker netjes
+        try:
+            if self._batch_worker_task and not self._batch_worker_task.done():
+                self._batch_worker_task.cancel()
+        except Exception:
+            pass
 
         self._close_wav()    
         logger.info("AudioProcessor cleanup complete.")

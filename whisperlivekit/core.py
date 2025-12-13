@@ -5,6 +5,7 @@ from argparse import Namespace
 from whisperlivekit.local_agreement.online_asr import OnlineASRProcessor
 from whisperlivekit.local_agreement.whisper_online import backend_factory
 from whisperlivekit.simul_whisper import SimulStreamingASR
+from whisperlivekit.backend import BatchFasterWhisperASR 
 
 
 def update_with_kwargs(_dict, kwargs):
@@ -93,6 +94,8 @@ class TranscriptionEngine:
                 )
         backend_policy = self.args.backend_policy
         if self.args.transcription:
+
+            self.batch_asr = None      
             if backend_policy == "simulstreaming":                 
                 simulstreaming_params = {
                     "disable_fast_encoder": False,
@@ -119,6 +122,16 @@ class TranscriptionEngine:
                 logger.info(
                     "Using SimulStreaming policy with %s backend",
                     getattr(self.asr, "encoder_backend", "whisper"),
+                )
+
+                # batch gebruikt dezelfde weights als je encoder/model keuze
+                model_for_batch = self.args.model_path or self.args.model_size
+                self.batch_asr = BatchFasterWhisperASR(
+                    model=model_for_batch,
+                    language=self.args.lan,
+                    beam_size=5,  # hoger dan streaming
+                    condition_on_previous_text=False,
+                    temperature=0.0,
                 )
             else:
                 

@@ -1,0 +1,54 @@
+[33mtag stable_segment_streaming_v1[m
+Tagger: GT-GITH <topcug1975@gmail.com>
+Date:   Sat Dec 13 18:03:32 2025 +0100
+
+Stable: smooth live streaming with segment states (graywhite, no batch yet)
+
+[33mcommit f1d70f2fa9e727e37338cec8e29a6287daa9f556[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mfeat-segment-contract-v1[m[33m, [m[1;33mtag: [m[1;33mstable_segment_streaming_v1[m[33m, [m[1;31morigin/feat-segment-contract-v1[m[33m)[m
+Author: GT-GITH <topcug1975@gmail.com>
+Date:   Sat Dec 13 17:52:59 2025 +0100
+
+    [segment-contract] Fix: LIVE text uses committed delta + buffer (restore smooth streaming)
+
+[1mdiff --git a/whisperlivekit/audio_processor.py b/whisperlivekit/audio_processor.py[m
+[1mindex 87c2dd6..5f0d0d3 100644[m
+[1m--- a/whisperlivekit/audio_processor.py[m
+[1m+++ b/whisperlivekit/audio_processor.py[m
+[36m@@ -615,7 +615,7 @@[m [mclass AudioProcessor:[m
+                 segments_out: List[dict] = [][m
+ [m
+                 # 1) FINAL segments (al opgeslagen in self._segments_v1)[m
+[31m-                finals = self._segments_v1[-30:]  # laatste 3[m
+[32m+[m[32m                finals = self._segments_v1[-30:]  # laatste 30[m
+                 for s in finals:[m
+                     segments_out.append({[m
+                         "segment_id": s.segment_id,[m
+[36m@@ -628,13 +628,27 @@[m [mclass AudioProcessor:[m
+                 # 2) LIVE segment (alleen als open)[m
+                 if self._current_segment_v1 is not None:[m
+                     cs = self._current_segment_v1[m
+[32m+[m[32m                    # LIVE tekst = committed delta sinds segment start (+ buffer als die bestaat)[m
+[32m+[m[32m                    full = committed_text or ""[m
+[32m+[m[32m                    start_idx = min(cs.committed_text_start_len, len(full))[m
+[32m+[m[32m                    committed_delta = full[start_idx:].strip()[m
+[32m+[m
+[32m+[m[32m                    live_parts = [][m
+[32m+[m[32m                    if committed_delta:[m
+[32m+[m[32m                        live_parts.append(committed_delta)[m
+[32m+[m[32m                    if buffer_transcription_text and buffer_transcription_text.strip():[m
+[32m+[m[32m                        live_parts.append(buffer_transcription_text.strip())[m
+[32m+[m
+[32m+[m[32m                    live_text = " ".join(live_parts).strip()[m
+[32m+[m
+                     segments_out.append({[m
+                         "segment_id": cs.segment_id,[m
+                         "start_ms": cs.start_ms,[m
+                         "state": "LIVE",[m
+[31m-                        "live_text": (buffer_transcription_text or "").strip(),[m
+[32m+[m[32m                        "live_text": live_text,[m
+                     })[m
+ [m
+[32m+[m
+                 payload = {[m
+                     "type": "segments",[m
+                     "session_id": self.session_id,[m
