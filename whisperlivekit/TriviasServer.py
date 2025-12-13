@@ -157,7 +157,10 @@ async def handle_websocket_results(websocket: WebSocket, results_generator):
     try:
         async for response in results_generator:
             # WhisperLiveKit geeft een object met .to_dict()
-            await websocket.send_json(response.to_dict())
+            if hasattr(response, "to_dict"):
+                await websocket.send_json(response.to_dict())
+            else:
+                await websocket.send_json(response)
         logger.info("Results generator finished. Sending 'ready_to_stop' to client.")
         await websocket.send_json({"type": "ready_to_stop"})
     except WebSocketDisconnect:

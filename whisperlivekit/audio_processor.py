@@ -180,9 +180,12 @@ class AudioProcessor:
         self._segments_v1: List[SegmentV1] = []
         self._current_segment_v1: Optional[SegmentV1] = None
         self._pending_short_segment_v1: Optional[SegmentV1] = None
-
+       
         # debug/latere stap: complete committed-text snapshot
         self._last_committed_text: str = ""
+       
+        self._last_segments_payload_str: str = ""
+
 
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
@@ -608,21 +611,41 @@ class AudioProcessor:
                 if not lines and not buffer_transcription_text and not buffer_diarization_text:
                     response_status = "no_audio_detected"
 
-                response = FrontData(
-                    status=response_status,
-                    lines=lines,
-                    buffer_transcription=buffer_transcription_text,
-                    buffer_diarization=buffer_diarization_text,
-                    buffer_translation=buffer_translation_text,
-                    remaining_time_transcription=state.remaining_time_transcription,
-                    remaining_time_diarization=state.remaining_time_diarization if self.args.diarization else 0
-                )
-                                
-                should_push = (response != self.last_response_content)
-                if should_push:
-                    yield response
-                    self.last_response_content = response
-                
+                # ===== Contract v1 payload: segments[] =====
+                segments_out: List[dict] = []
+
+                # 1) FINAL segments (al opgeslagen in self._segments_v1)
+                for s in self._segments_v1:
+                    segments_out.append({
+                        "segment_id": s.segment_id,
+                        "start_ms": s.start_ms,
+                        "end_ms": s.end_ms,
+                        "state": "FINAL",
+                        "final_text": (s.final_text or "").strip(),
+                    })
+
+                # 2) LIVE segment (alleen als open)
+                if self._current_segment_v1 is not None:
+                    cs = self._current_segment_v1
+                    segments_out.append({
+                        "segment_id": cs.segment_id,
+                        "start_ms": cs.start_ms,
+                        "state": "LIVE",
+                        "live_text": (buffer_transcription_text or "").strip(),
+                    })
+
+                payload = {
+                    "type": "segments",
+                    "session_id": self.session_id,
+                    "segments": segments_out,
+                    "status": response_status,
+                }
+
+                payload_str = str(payload)
+                if payload_str != self._last_segments_payload_str:
+                    yield payload
+                    self._last_segments_payload_str = payload_str
+
                 if self.is_stopping and self._processing_tasks_done():
                     logger.info("Results formatter: All upstream processors are done and in stopping state. Terminating.")
                     return
@@ -775,7 +798,7 @@ class AudioProcessor:
         if not message:
             logger.info("Empty audio message received, initiating stop sequence.")
             self.is_stopping = True
-            
+
              # Segment v1: finaliseer open segment bij stop
             try:
                 now_ms = self._now_ms()

@@ -28,7 +28,6 @@ let selectedDeviceId = null;
 // DOM elements
 const recordButton = document.getElementById("recordButton");
 const liveTranscriptDiv = document.getElementById("liveTranscript");
-const finalTranscriptDiv = document.getElementById("finalTranscript");
 const connectionStatusSpan = document.getElementById("connectionStatus");
 const micStatusSpan = document.getElementById("micStatus");
 const modeStatusSpan = document.getElementById("modeStatus");
@@ -186,9 +185,6 @@ function ensureWebSocket() {
       if (data.type === "ready_to_stop") {
         waitingForStop = false;
         setAsrStatus("Verwerking voltooid. Gereed voor nieuwe opname.");
-        if (lastFullTranscript && finalTranscriptDiv) {
-          finalTranscriptDiv.textContent = lastFullTranscript;
-        }
         return;
       }
 
@@ -198,6 +194,11 @@ function ensureWebSocket() {
         buffer_translation = "",
         status = "active_transcription",
       } = data;
+
+      if (data.type === "segments") {
+        renderSegments(data.segments || [], data.status || "active_transcription");
+        return;
+      }
 
       renderTranscript(lines, buffer_transcription, buffer_translation, status);
     };
@@ -227,9 +228,45 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   liveTranscriptDiv.textContent = liveText || "Nog geen tekst ontvangen…";
   lastFullTranscript = liveText || lastFullTranscript;
 
-  if (bufferTranslation && bufferTranslation.trim().length > 0 && finalTranscriptDiv) {
-    finalTranscriptDiv.textContent = bufferTranslation.trim();
+  setAsrStatus("Live transcriptie actief…");
+}
+
+function escapeHtml(s) {
+  return (s || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function renderSegments(segments, status) {
+  if (!liveTranscriptDiv) return;
+
+  if (status === "no_audio_detected") {
+    liveTranscriptDiv.innerHTML =
+      "<em>Geen audio gedetecteerd. Probeer iets dichter bij de microfoon te spreken.</em>";
+    return;
   }
+
+  const segs = (segments || []).slice().sort((a, b) => (a.start_ms || 0) - (b.start_ms || 0));
+
+  let html = "";
+  for (const s of segs) {
+    if (s.state === "FINAL") {
+      const t = (s.final_text || "").trim();
+      if (t) {
+        html += `<span>${escapeHtml(t)}</span>\n`;
+      }
+    } else if (s.state === "LIVE") {
+      const t = (s.live_text || "").trim();
+      if (t) {
+        html += `<span style="opacity:0.65">${escapeHtml(t)}</span>\n`;
+      }
+    }
+  }
+
+  liveTranscriptDiv.innerHTML = html || "Nog geen tekst ontvangen…";
   setAsrStatus("Live transcriptie actief…");
 }
 
