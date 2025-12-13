@@ -25,6 +25,10 @@ let userClosing = false;
 let availableMics = [];
 let selectedDeviceId = null;
 
+let pendingSegments = null;
+let pendingStatus = "active_transcription";
+let renderTimer = null;
+
 // DOM elements
 const recordButton = document.getElementById("recordButton");
 const liveTranscriptDiv = document.getElementById("liveTranscript");
@@ -241,33 +245,38 @@ function escapeHtml(s) {
 }
 
 function renderSegments(segments, status) {
-  if (!liveTranscriptDiv) return;
+  pendingSegments = segments || [];
+  pendingStatus = status || "active_transcription";
 
-  if (status === "no_audio_detected") {
-    liveTranscriptDiv.innerHTML =
-      "<em>Geen audio gedetecteerd. Probeer iets dichter bij de microfoon te spreken.</em>";
-    return;
-  }
+  // throttle naar 10 fps
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => {
+    renderTimer = null;
 
-  const segs = (segments || []).slice().sort((a, b) => (a.start_ms || 0) - (b.start_ms || 0));
+    if (!liveTranscriptDiv) return;
 
-  let html = "";
-  for (const s of segs) {
-    if (s.state === "FINAL") {
-      const t = (s.final_text || "").trim();
-      if (t) {
-        html += `<span>${escapeHtml(t)}</span>\n`;
-      }
-    } else if (s.state === "LIVE") {
-      const t = (s.live_text || "").trim();
-      if (t) {
-        html += `<span style="opacity:0.65">${escapeHtml(t)}</span>\n`;
+    if (pendingStatus === "no_audio_detected") {
+      liveTranscriptDiv.innerHTML =
+        "<em>Geen audio gedetecteerd. Probeer iets dichter bij de microfoon te spreken.</em>";
+      return;
+    }
+
+    const segs = pendingSegments.slice().sort((a, b) => (a.start_ms || 0) - (b.start_ms || 0));
+
+    let html = "";
+    for (const s of segs) {
+      if (s.state === "FINAL") {
+        const t = (s.final_text || "").trim();
+        if (t) html += `<span>${escapeHtml(t)}</span>\n`;
+      } else if (s.state === "LIVE") {
+        const t = (s.live_text || "").trim();
+        if (t) html += `<span style="opacity:0.65">${escapeHtml(t)}</span>\n`;
       }
     }
-  }
 
-  liveTranscriptDiv.innerHTML = html || "Nog geen tekst ontvangen…";
-  setAsrStatus("Live transcriptie actief…");
+    liveTranscriptDiv.innerHTML = html || "Nog geen tekst ontvangen…";
+    setAsrStatus("Live transcriptie actief…");
+  }, 100);
 }
 
 // NEW: microfoonlijst ophalen en dropdown vullen (met dedupe)

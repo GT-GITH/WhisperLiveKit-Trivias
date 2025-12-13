@@ -615,7 +615,8 @@ class AudioProcessor:
                 segments_out: List[dict] = []
 
                 # 1) FINAL segments (al opgeslagen in self._segments_v1)
-                for s in self._segments_v1:
+                finals = self._segments_v1[-30:]  # laatste 3
+                for s in finals:
                     segments_out.append({
                         "segment_id": s.segment_id,
                         "start_ms": s.start_ms,
