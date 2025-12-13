@@ -195,7 +195,7 @@ async def websocket_endpoint(
         user_id=user_id,
     )
 
-    audio_processor = AudioProcessor(transcription_engine=transcription_engine)
+    audio_processor = AudioProcessor(transcription_engine=transcription_engine, session_id=sid)
 
     await websocket.accept()
     logger.info(f"WebSocket connection opened for session {sid}.")

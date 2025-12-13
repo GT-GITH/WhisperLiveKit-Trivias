@@ -1,6 +1,14 @@
 import asyncio
 import logging
 import traceback
+
+import uuid
+
+import os
+import wave
+from pathlib import Path
+from datetime import datetime
+
 from time import time
 from typing import Any, AsyncGenerator, List, Optional, Union
 
@@ -132,6 +140,14 @@ class AudioProcessor:
             self.diarization = online_diarization_factory(self.args, models.diarization_model)
         if models.translation_model:
             self.translation = online_translation_factory(self.args, models.translation_model)
+
+        # ====== Session WAV recording (1 file per session) ======
+        self.session_id: str = str(kwargs.get("session_id") or uuid.uuid4())
+        self.recordings_dir: Path = Path(kwargs.get("recordings_dir") or "recordings")
+        self.recordings_dir.mkdir(parents=True, exist_ok=True)
+
+        self._wav_writer: Optional[wave.Wave_write] = None
+        self._wav_path: Optional[Path] = None
 
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
@@ -558,7 +574,34 @@ class AudioProcessor:
                 break
             except Exception as e:
                 logger.error(f"Error in watchdog task: {e}", exc_info=True)
-        
+                
+    def _ensure_wav_open(self) -> None:
+        if self._wav_writer is not None:
+            return
+
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        filename = f"session_{self.session_id}_{ts}.wav"
+        self._wav_path = self.recordings_dir / filename
+
+        wf = wave.open(str(self._wav_path), "wb")
+        wf.setnchannels(self.channels)        # 1
+        wf.setsampwidth(self.bytes_per_sample) # 2 bytes (int16)
+        wf.setframerate(self.sample_rate)     # 16000 Hz
+        self._wav_writer = wf
+
+        logger.info(f"[SESSION WAV] Recording to {self._wav_path}")
+
+    def _close_wav(self) -> None:
+        if self._wav_writer is None:
+            return
+        try:
+            self._wav_writer.close()
+            logger.info(f"[SESSION WAV] Closed {self._wav_path}")
+        except Exception as e:
+            logger.warning(f"[SESSION WAV] Error closing WAV: {e}")
+        finally:
+            self._wav_writer = None
+    
     async def cleanup(self) -> None:
         """Clean up resources when processing is complete."""
         logger.info("Starting cleanup of AudioProcessor resources.")
@@ -580,6 +623,8 @@ class AudioProcessor:
                 logger.warning(f"Error stopping FFmpeg manager: {e}")
         if self.diarization:
             self.diarization.close()
+
+        self._close_wav()    
         logger.info("AudioProcessor cleanup complete.")
 
     def _processing_tasks_done(self) -> bool:
@@ -648,8 +693,16 @@ class AudioProcessor:
         
         if aligned_chunk_size == 0:
             return
-        pcm_array = self.convert_pcm_to_float(self.pcm_buffer[:aligned_chunk_size])
+        raw_pcm = bytes(self.pcm_buffer[:aligned_chunk_size])
+
+        # Session WAV opnemen (bronbestand)
+        self._ensure_wav_open()
+        if self._wav_writer is not None:
+            self._wav_writer.writeframes(raw_pcm)
+
+        pcm_array = self.convert_pcm_to_float(raw_pcm)
         self.pcm_buffer = self.pcm_buffer[aligned_chunk_size:]
+
 
         num_samples = len(pcm_array)
         chunk_sample_start = self.total_pcm_samples
