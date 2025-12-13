@@ -9,6 +9,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 
+from starlette.staticfiles import StaticFiles
+import pathlib
+import whisperlivekit.web_trivias as webpkg
+
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
@@ -100,6 +104,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# ====== Static files for PCM AudioWorklet / Worker ======
+web_dir = pathlib.Path(webpkg.__file__).parent
+app.mount("/web", StaticFiles(directory=str(web_dir)), name="web")
 
 app.add_middleware(
     CORSMiddleware,
