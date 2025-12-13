@@ -130,9 +130,9 @@ class TranscriptionEngine:
                 self.batch_asr = BatchFasterWhisperASR(
                     model=model_for_batch,
                     language=self.args.lan,
-                    beam_size=7,  # hoger dan streaming
+                    beam_size=6,  # hoger dan streaming
                     condition_on_previous_text=False,
-                    temperature=0.0,
+                    temperature=[0.0, 0.2, 0.4],
                 )
             else:
                 
