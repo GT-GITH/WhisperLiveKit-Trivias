@@ -853,7 +853,23 @@ class AudioProcessor:
                 if not seg or seg.end_ms is None:
                     continue
 
-                audio = await asyncio.to_thread(self._read_wav_slice_float32, seg.start_ms, seg.end_ms)
+                PAD_MS = 200  # start met 200, later tunen 100..400
+
+                start_ms = max(0, int(seg.start_ms) - PAD_MS)
+                end_ms   = int(seg.end_ms) + PAD_MS
+
+                audio = await asyncio.to_thread(self._read_wav_slice_float32, start_ms, end_ms)
+                if audio is None or audio.size == 0:
+                    continue
+
+                refined = await asyncio.to_thread(self._batch_transcribe_text, audio)
+                if refined:
+                    seg.final_text = refined.strip()
+                    logger.info(
+                        f"[BATCH] refined segment {seg.segment_id} "
+                        f"(orig {seg.start_ms}-{seg.end_ms}ms, padded {start_ms}-{end_ms}ms)"
+                    )
+
                 if audio is None or audio.size == 0:
                     continue
 
