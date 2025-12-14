@@ -320,17 +320,6 @@ class AudioProcessor:
             merged.final_text = (p.final_text + " " + seg.final_text).strip()
             merged.committed_text_start_len = p.committed_text_start_len
             self._segments_v1.append(merged)
-            # Batch refinement job (Stap 3) – alleen voor gepubliceerde FINAL segmenten
-            if self._batch_refine_enabled:
-                try:
-                    if self._segments_v1:
-                        seg_for_refine = self._segments_v1[-1]
-                        if seg_for_refine.end_ms is not None:
-                            self._batch_queue.put_nowait(seg_for_refine)
-                            logger.info(f"[BATCH] queued segment {seg_for_refine.segment_id} for refinement")
-                except Exception as e:
-                    logger.warning(f"[BATCH] queue failed: {e}")
-
             self._pending_short_segment_v1 = None
             logger.info(f"[SEG] MERGE  id={merged.segment_id} start_ms={merged.start_ms} end_ms={merged.end_ms}")
         else:
