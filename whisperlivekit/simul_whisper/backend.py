@@ -66,7 +66,7 @@ class BatchFasterWhisperASR:
         self.beam_size = beam_size
         self.condition_on_previous_text = condition_on_previous_text
         self.temperature = temperature
-        self.initial_prompt = initial_prompt,
+        self.initial_prompt = initial_prompt
         self.model = WhisperModel(
             model,
             device=device,
