@@ -859,14 +859,6 @@ class AudioProcessor:
                         f"(orig {seg.start_ms}-{seg.end_ms}ms, padded {start_ms}-{end_ms}ms)"
                     )
 
-                if audio is None or audio.size == 0:
-                    continue
-
-                refined = await asyncio.to_thread(self._batch_transcribe_text, audio)
-                if refined:
-                    # 1x vervangen door batch output
-                    seg.final_text = refined.strip()
-                    logger.info(f"[BATCH] refined segment {seg.segment_id} ({seg.start_ms}-{seg.end_ms}ms)")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
