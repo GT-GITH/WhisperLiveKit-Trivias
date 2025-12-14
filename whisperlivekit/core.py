@@ -133,6 +133,7 @@ class TranscriptionEngine:
                     beam_size=7,  # hoger dan streaming 
                     condition_on_previous_text=False,
                     temperature=[0.0, 0.2],
+                    initial_prompt="Dit is een Nederlands interview. Namen: Eus, Özcan Akyol, Rhodia Maas. Organisatie: IND.",
                     #best_of=5,
                     #patience=1.2,
                     #length_penalty=0.6,

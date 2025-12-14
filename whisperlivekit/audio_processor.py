@@ -36,7 +36,7 @@ SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
 # ===== Segment + Audio Contract v1 (server-side state machine) =====
 SEG_SILENCE_CLOSE_SEC = 0.8     # silence-close threshold
 SEG_MIN_FINAL_SEC     = 3.0     # segment must be >= 3s to be allowed to FINAL on silence
-SEG_TARGET_CLOSE_SEC  = 20.0    # target-close
+SEG_TARGET_CLOSE_SEC  = 18.0    # target-close
 SEG_HARD_CAP_SEC      = 25.0    # hard-cap
 
 SEG_MIN_FINAL_MS      = int(SEG_MIN_FINAL_SEC * 1000)
