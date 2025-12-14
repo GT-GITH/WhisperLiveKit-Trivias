@@ -133,12 +133,12 @@ class TranscriptionEngine:
                     beam_size=7,  # hoger dan streaming 
                     condition_on_previous_text=True,
                     temperature=[0.0, 0.2],
-                    best_of=5,
-                    patience=1.2,
-                    length_penalty=0.6,
-                    no_speech_threshold=0.6,
-                    log_prob_threshold=-1.0,
-                    compression_ratio_threshold=2.4,
+                    #best_of=5,
+                    #patience=1.2,
+                    #length_penalty=0.6,
+                    #no_speech_threshold=0.6,
+                    #log_prob_threshold=-1.0,
+                    #compression_ratio_threshold=2.4,
 
                 )
             else:

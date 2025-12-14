@@ -54,13 +54,13 @@ class BatchFasterWhisperASR:
         beam_size: int = 5,
         condition_on_previous_text: bool = False,
         temperature: float = 0.0,
-        best_of=None,   
-        patience=None,
+        #best_of=None,   
+        #patience=None,
     ):
         if WhisperModel is None:
             raise RuntimeError("faster-whisper is not available (WhisperModel import failed).")
-        self.best_of = best_of
-        self.patience = patience
+        #self.best_of = best_of
+        #self.patience = patience
         self.language = language
         self.beam_size = beam_size
         self.condition_on_previous_text = condition_on_previous_text
