@@ -36,7 +36,7 @@ SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
 # ===== Segment + Audio Contract v1 (server-side state machine) =====
 SEG_SILENCE_CLOSE_SEC = 0.8     # silence-close threshold
 SEG_MIN_FINAL_SEC     = 3.0     # segment must be >= 3s to be allowed to FINAL on silence
-SEG_TARGET_CLOSE_SEC  = 12.0    # target-close
+SEG_TARGET_CLOSE_SEC  = 20.0    # target-close
 SEG_HARD_CAP_SEC      = 25.0    # hard-cap
 
 SEG_MIN_FINAL_MS      = int(SEG_MIN_FINAL_SEC * 1000)
@@ -842,10 +842,11 @@ class AudioProcessor:
                 if not seg or seg.end_ms is None:
                     continue
 
-                PAD_MS = 200  # start met 200, later tunen 100..400
+                PRE_MS  = 1000   # 1.0s context vóór
+                POST_MS = 200    # 0.2s context ná
 
-                start_ms = max(0, int(seg.start_ms) - PAD_MS)
-                end_ms   = int(seg.end_ms) + PAD_MS
+                start_ms = max(0, int(seg.start_ms) - PRE_MS)
+                end_ms   = int(seg.end_ms) + POST_MS
 
                 audio = await asyncio.to_thread(self._read_wav_slice_float32, start_ms, end_ms)
                 if audio is None or audio.size == 0:

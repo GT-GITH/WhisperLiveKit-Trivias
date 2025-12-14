@@ -131,7 +131,7 @@ class TranscriptionEngine:
                     model=model_for_batch,
                     language=self.args.lan,
                     beam_size=7,  # hoger dan streaming 
-                    condition_on_previous_text=True,
+                    condition_on_previous_text=False,
                     temperature=[0.0, 0.2],
                     #best_of=5,
                     #patience=1.2,
