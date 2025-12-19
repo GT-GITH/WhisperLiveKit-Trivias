@@ -14,6 +14,8 @@ set -euo pipefail
 #   bash scripts/init.sh --deps           # apt deps only
 #   bash scripts/init.sh --venv           # venv + pip install only
 # ------------------------------------------------------------
+INIT_VERSION="main-2025-12-19"
+echo "[init] init.sh version: $INIT_VERSION"
 
 # --- helpers ---
 log() { echo -e "[init] $*"; }
@@ -30,8 +32,8 @@ WORKSPACE="${WORKSPACE:-/workspace}"
 APP_DIR="${APP_DIR:-$WORKSPACE/WhisperLiveKit-Trivias}"
 VENV_DIR="${VENV_DIR:-$APP_DIR/.venv}"
 
-REMOTE_BRANCH="${REMOTE_BRANCH:-feat-batch-tuning-copt}"
-LOCAL_BRANCH="${LOCAL_BRANCH:-stable-segment-batch-v1}"
+REMOTE_BRANCH="${REMOTE_BRANCH:-main}"
+LOCAL_BRANCH="${LOCAL_BRANCH:-main}"
 
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
