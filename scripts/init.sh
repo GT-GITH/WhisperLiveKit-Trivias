@@ -108,7 +108,7 @@ setup_venv_pip() {
   pip install -U pip setuptools wheel >/dev/null
 
   log "Install project + deps (editable) via pyproject.toml..."
-  pip install -e . >/dev/null
+  pip install -e .
 
   log "Sanity import checks..."
   python -c "import torch" >/dev/null 2>&1 || die "torch ontbreekt"
