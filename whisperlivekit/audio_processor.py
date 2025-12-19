@@ -990,6 +990,8 @@ class AudioProcessor:
         num_samples = len(pcm_array)
         chunk_sample_start = self.total_pcm_samples
         chunk_sample_end = chunk_sample_start + num_samples
+        speech_start_sample = None  # absolute sample index (stream) waar speech start binnen deze chunk
+
 
         res = None
         if self.args.vac:
@@ -997,6 +999,8 @@ class AudioProcessor:
 
         if res is not None:
             if "start" in res and self.current_silence:
+                # VAD start geeft absolute sample index in stream (zoals je end ook gebruikt)
+                speech_start_sample = res.get("start")
                 await self._end_silence()
             
             if "end" in res and not self.current_silence:
@@ -1008,16 +1012,26 @@ class AudioProcessor:
                 await self._begin_silence()
 
         if not self.current_silence:
-            # Segment open moment = start van dit chunk (tijd-gebaseerd)
-            chunk_start_ms = int((chunk_sample_start / self.sample_rate) * 1000)
+            # Als speech midden in de chunk startte, knip leading-silence weg en open segment op speech-start
+            if speech_start_sample is not None:
+                rel = int(speech_start_sample - chunk_sample_start)
+                rel = max(0, min(rel, len(pcm_array)))  # clamp
 
-            # NB: committed_text vullen we later in results_formatter (nu nog leeg OK)
-            # Hier openen we alleen als er nog geen segment open is.
-            if self._current_segment_v1 is None:
-                self._ensure_segment_open_v1(start_ms=chunk_start_ms, committed_text=self._last_committed_text)
+                active_pcm = pcm_array[rel:] if rel > 0 else pcm_array
+                speech_start_ms = int((speech_start_sample / self.sample_rate) * 1000)
 
-            await self._enqueue_active_audio(pcm_array)
+                if self._current_segment_v1 is None:
+                    self._ensure_segment_open_v1(start_ms=speech_start_ms, committed_text=self._last_committed_text)
 
+                await self._enqueue_active_audio(active_pcm)
+            else:
+                # Geen VAD start in deze chunk → bestaand gedrag
+                chunk_start_ms = int((chunk_sample_start / self.sample_rate) * 1000)
+
+                if self._current_segment_v1 is None:
+                    self._ensure_segment_open_v1(start_ms=chunk_start_ms, committed_text=self._last_committed_text)
+
+                await self._enqueue_active_audio(pcm_array)
 
         self.total_pcm_samples = chunk_sample_end
 
