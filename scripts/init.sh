@@ -2,19 +2,22 @@
 set -euo pipefail
 
 # ------------------------------------------------------------
-# RunPod init script (idempotent) - NO POETRY
-# - Repo: https://github.com/GT-GITH/WhisperLiveKit-Trivias.git
-# - Target remote branch: main
-# - Local working branch: main (points to remote branch)
+# RunPod init script (idempotent)
+#
+# Defaults:
+#   REMOTE_BRANCH=main
+#   LOCAL_BRANCH=main
 #
 # Usage:
-#   bash scripts/init.sh --all            # full setup
-#   bash scripts/init.sh --start          # setup + start server
-#   bash scripts/init.sh --update         # git update only
-#   bash scripts/init.sh --deps           # apt deps only
-#   bash scripts/init.sh --venv           # venv + pip install only
+#   bash scripts/init.sh --setup         # deps + git + venv + pip
+#   bash scripts/init.sh --setup-start   # setup + start server
+#   bash scripts/init.sh --start         # start server ONLY (no setup)
+#   bash scripts/init.sh --update        # git update only
+#   bash scripts/init.sh --deps          # apt deps only
+#   bash scripts/init.sh --venv          # venv + pip only
 # ------------------------------------------------------------
-INIT_VERSION="main-2025-12-19"
+
+INIT_VERSION="main-2025-12-19-new"
 echo "[init] init.sh version: $INIT_VERSION"
 
 # --- helpers ---
@@ -121,6 +124,10 @@ setup_venv_pip() {
 
 # --- run ---
 startlive() {
+  # IMPORTANT: --start should NOT do setup. It assumes repo+venv are already ready.
+  [[ -d "$APP_DIR/.git" ]] || die "Repo niet gevonden in $APP_DIR. Run eerst: bash scripts/init.sh --setup"
+  [[ -d "$VENV_DIR" ]] || die "Venv niet gevonden in $VENV_DIR. Run eerst: bash scripts/init.sh --setup"
+
   cd "$APP_DIR"
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
@@ -140,7 +147,7 @@ gpustat() {
 }
 
 # --- orchestrators ---
-do_all() {
+do_setup() {
   git_identity
   install_deps
   setup_repo
@@ -156,13 +163,35 @@ do_update() {
 MODE="${1:-}"
 
 case "$MODE" in
-  --deps)   git_identity; install_deps ;;
-  --update) do_update ;;
-  --venv)   git_identity; setup_venv_pip ;;
-  --start)  do_all; startlive ;;
-  --all|"") do_all ;;
+  --deps)
+    git_identity
+    install_deps
+    ;;
+  --update)
+    do_update
+    ;;
+  --venv)
+    git_identity
+    setup_venv_pip
+    ;;
+  --setup)
+    do_setup
+    ;;
+  --setup-start)
+    do_setup
+    startlive
+    ;;
+  --start)
+    startlive
+    ;;
   *)
-    echo "Usage: source scripts/init.sh  |  bash scripts/init.sh [--all|--start|--update|--deps|--venv]"
+    echo "Usage:"
+    echo "  bash scripts/init.sh --setup         # deps + git + venv + pip"
+    echo "  bash scripts/init.sh --setup-start   # setup + start server"
+    echo "  bash scripts/init.sh --start         # start server only (no setup)"
+    echo "  bash scripts/init.sh --update        # git update only"
+    echo "  bash scripts/init.sh --deps          # apt deps only"
+    echo "  bash scripts/init.sh --venv          # venv + pip only"
     exit 2
     ;;
 esac
