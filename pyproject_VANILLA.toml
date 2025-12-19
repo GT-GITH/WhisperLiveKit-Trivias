@@ -26,9 +26,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Multimedia :: Sound/Audio :: Speech"
 ]
-
 dependencies = [
-    # --- existing core deps ---
     "fastapi",
     "librosa",
     "soundfile",
@@ -39,19 +37,7 @@ dependencies = [
     "huggingface-hub>=0.25.0",
     "tqdm",
     "tiktoken",
-    'triton>=2.0.0; platform_machine == "x86_64" and (sys_platform == "linux" or sys_platform == "linux2")',
-
-    # --- REQUIRED for your current TriviasServer startup path ---
-    "faster-whisper",
-    "onnxruntime",
-
-    # --- diarization stack (you said: everything ON by default) ---
-    "pyannote.audio",
-    "pyannote.core",
-    "pyannote.pipeline",
-
-    # (optional but commonly needed in audio pipelines; keep only if your code imports it)
-    # "numpy<2",
+    'triton>=2.0.0; platform_machine == "x86_64" and (sys_platform == "linux" or sys_platform == "linux2")'
 ]
 
 [project.optional-dependencies]
@@ -59,11 +45,11 @@ translation = ["nllw"]
 sentence_tokenizer = ["mosestokenizer", "wtpsplit"]
 
 [project.urls]
-Homepage = "https://github.com/GT-GITH/WhisperLiveKit-Trivias.git"
+Homepage = "https://github.com/QuentinFuxa/WhisperLiveKit"
 
 [project.scripts]
-whisperlivekit-server = "whisperlivekit.TriviasServer:main"
-wlk = "whisperlivekit.TriviasServer:main"
+whisperlivekit-server = "whisperlivekit.basic_server:main"
+wlk = "whisperlivekit.basic_server:main"
 
 [tool.setuptools]
 packages = [

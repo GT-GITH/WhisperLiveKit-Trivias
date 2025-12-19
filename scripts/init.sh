@@ -2,18 +2,17 @@
 set -euo pipefail
 
 # ------------------------------------------------------------
-# RunPod init script (idempotent)
+# RunPod init script (idempotent) - NO POETRY
 # - Repo: https://github.com/GT-GITH/WhisperLiveKit-Trivias.git
 # - Target remote branch: origin/feat-batch-tuning-copt
 # - Local working branch: stable-segment-batch-v1 (points to remote branch)
 #
 # Usage:
-#   source scripts/init.sh                # load functions + run default setup
-#   bash scripts/init.sh --all            # run full setup (no functions kept)
+#   bash scripts/init.sh --all            # full setup
 #   bash scripts/init.sh --start          # setup + start server
 #   bash scripts/init.sh --update         # git update only
 #   bash scripts/init.sh --deps           # apt deps only
-#   bash scripts/init.sh --venv           # venv + poetry install only
+#   bash scripts/init.sh --venv           # venv + pip install only
 # ------------------------------------------------------------
 
 # --- helpers ---
@@ -43,8 +42,6 @@ AUDIO_MIN_LEN="${AUDIO_MIN_LEN:-0.0}"
 AUDIO_MAX_LEN="${AUDIO_MAX_LEN:-30.0}"
 BEAMS="${BEAMS:-1}"
 
-export PATH="$PATH:/root/.local/bin"
-
 # --- ensure bash ---
 [[ -n "${BASH_VERSION:-}" ]] || die "Dit script vereist bash. Run: bash $0 ..."
 
@@ -62,19 +59,13 @@ install_deps() {
   apt-get install -y git curl ffmpeg python3-venv >/dev/null
 }
 
-ensure_poetry() {
-  if command -v poetry >/dev/null 2>&1; then
-    return 0
-  fi
-  log "Poetry niet gevonden → installeren..."
-  # official installer puts poetry under /root/.local/bin
-  curl -sSL https://install.python-poetry.org | python3 - >/dev/null
-  command -v poetry >/dev/null 2>&1 || die "Poetry installatie faalde."
-}
-
 # --- repo ---
 setup_repo() {
   mkdir -p "$WORKSPACE"
+
+  if [[ -e "$APP_DIR" && ! -d "$APP_DIR/.git" ]]; then
+    die "APP_DIR bestaat maar is geen git repo: $APP_DIR (verwijder/maak leeg of zet APP_DIR anders)"
+  fi
 
   if [[ ! -d "$APP_DIR/.git" ]]; then
     log "Clone repo → $APP_DIR"
@@ -99,8 +90,8 @@ setup_repo() {
   git reset --hard "origin/$REMOTE_BRANCH" >/dev/null
 }
 
-# --- venv + poetry ---
-setup_venv_poetry() {
+# --- venv + pip ---
+setup_venv_pip() {
   cd "$APP_DIR"
 
   if [[ ! -d "$VENV_DIR" ]]; then
@@ -113,14 +104,17 @@ setup_venv_poetry() {
   source "$VENV_DIR/bin/activate"
   log "Venv actief: $VIRTUAL_ENV"
 
-  ensure_poetry
+  log "Upgrade pip tooling..."
+  pip install -U pip setuptools wheel >/dev/null
 
-  # Force poetry to use this in-project venv
-  poetry config virtualenvs.in-project true >/dev/null
-  poetry env use "$VENV_DIR/bin/python" >/dev/null || true
+  log "Install project + deps (editable) via pyproject.toml..."
+  pip install -e . >/dev/null
 
-  log "Poetry install (no-interaction)..."
-  poetry install --no-interaction >/dev/null
+  log "Sanity import checks..."
+  python -c "import torch" >/dev/null 2>&1 || die "torch ontbreekt"
+  python -c "import faster_whisper" >/dev/null 2>&1 || die "faster-whisper ontbreekt (check pyproject.toml)"
+  python -c "import onnxruntime" >/dev/null 2>&1 || die "onnxruntime ontbreekt (check pyproject.toml)"
+  python -c "import pyannote.audio" >/dev/null 2>&1 || die "pyannote.audio ontbreekt (check pyproject.toml)"
 }
 
 # --- run ---
@@ -130,7 +124,7 @@ startlive() {
   source "$VENV_DIR/bin/activate"
 
   log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE"
-  exec poetry run python -m whisperlivekit.TriviasServer \
+  exec python -m whisperlivekit.TriviasServer \
     --host "$HOST" --port "$PORT" \
     --model "$MODEL" --language "$LANGUAGE" \
     --frame-threshold "$FRAME_THRESHOLD" \
@@ -148,7 +142,7 @@ do_all() {
   git_identity
   install_deps
   setup_repo
-  setup_venv_poetry
+  setup_venv_pip
 }
 
 do_update() {
@@ -162,7 +156,7 @@ MODE="${1:-}"
 case "$MODE" in
   --deps)   git_identity; install_deps ;;
   --update) do_update ;;
-  --venv)   git_identity; ensure_poetry; setup_venv_poetry ;;
+  --venv)   git_identity; setup_venv_pip ;;
   --start)  do_all; startlive ;;
   --all|"") do_all ;;
   *)
