@@ -46,8 +46,12 @@ else
   echo "🔄  Update bestaande repo..."
   cd "$APP_DIR"
   git fetch --all >/dev/null
-  #git reset --hard origin/main >/dev/null
-  git checkout -b stable-segment-batch-v1 origin/feat-batch-tuning-copt
+
+  git checkout stable-segment-batch-v1 2>/dev/null || \
+  git checkout -b stable-segment-batch-v1 origin/feat-batch-tuning-copt >/dev/null
+
+  git reset --hard origin/feat-batch-tuning-copt >/dev/null
+
 fi
 
 # === 5) Virtuele omgeving ===
