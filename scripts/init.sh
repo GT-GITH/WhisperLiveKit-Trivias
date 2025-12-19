@@ -1,108 +1,182 @@
-#!/bin/sh
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# --- Force Bash when executed via Dash ---
-[ -z "$BASH_VERSION" ] && exec bash "$0" "$@"
+# ------------------------------------------------------------
+# RunPod init script (idempotent)
+# - Repo: https://github.com/GT-GITH/WhisperLiveKit-Trivias.git
+# - Target remote branch: origin/feat-batch-tuning-copt
+# - Local working branch: stable-segment-batch-v1 (points to remote branch)
+#
+# Usage:
+#   source scripts/init.sh                # load functions + run default setup
+#   bash scripts/init.sh --all            # run full setup (no functions kept)
+#   bash scripts/init.sh --start          # setup + start server
+#   bash scripts/init.sh --update         # git update only
+#   bash scripts/init.sh --deps           # apt deps only
+#   bash scripts/init.sh --venv           # venv + poetry install only
+# ------------------------------------------------------------
 
-# === Git identity instellen zodat git pull nooit vraagt ===
-git config --global user.email "topcug1975@gmail.com"
-git config --global user.name "Gokhan Topcu"
+# --- helpers ---
+log() { echo -e "[init] $*"; }
+die() { echo -e "[init] ❌ $*" >&2; exit 1; }
 
-# === Config ===
-REPO_URL="https://github.com/GT-GITH/WhisperLiveKit-Trivias.git"
-WORKSPACE="/workspace"
-APP_DIR="$WORKSPACE/WhisperLiveKit-Trivias"
-VENV_DIR="$APP_DIR/.venv"
-POETRY_BIN="/root/.local/bin/poetry"
+IS_SOURCED=0
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  IS_SOURCED=1
+fi
 
-echo "------------------------------------------"
-echo " 🧠 WhisperLiveKit-Trivias setup starten..."
-echo "------------------------------------------"
+# --- config ---
+REPO_URL="${REPO_URL:-https://github.com/GT-GITH/WhisperLiveKit-Trivias.git}"
+WORKSPACE="${WORKSPACE:-/workspace}"
+APP_DIR="${APP_DIR:-$WORKSPACE/WhisperLiveKit-Trivias}"
+VENV_DIR="${VENV_DIR:-$APP_DIR/.venv}"
 
-# === 1) Cache directories ===
-export CACHE_BASE="$WORKSPACE/cache"
-export TMPDIR="$CACHE_BASE/tmp"
-export PIP_CACHE_DIR="$CACHE_BASE/pip"
-export POETRY_CACHE_DIR="$CACHE_BASE/poetry"
-mkdir -p "$CACHE_BASE" "$TMPDIR" "$PIP_CACHE_DIR" "$POETRY_CACHE_DIR"
+REMOTE_BRANCH="${REMOTE_BRANCH:-feat-batch-tuning-copt}"
+LOCAL_BRANCH="${LOCAL_BRANCH:-stable-segment-batch-v1}"
 
-# === 2) Basis packages ===
-apt update -y >/dev/null
-apt install -y git curl ffmpeg python3-venv >/dev/null
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8000}"
+MODEL="${MODEL:-large-v3}"
+LANGUAGE="${LANGUAGE:-nl}"
+FRAME_THRESHOLD="${FRAME_THRESHOLD:-25}"
+AUDIO_MIN_LEN="${AUDIO_MIN_LEN:-0.0}"
+AUDIO_MAX_LEN="${AUDIO_MAX_LEN:-30.0}"
+BEAMS="${BEAMS:-1}"
 
-# === 3) Poetry installeren ===
-export PATH="/root/.local/bin:$PATH"
-if ! command -v poetry >/dev/null 2>&1; then
-  echo "📦 Installeer Poetry..."
+export PATH="$PATH:/root/.local/bin"
+
+# --- ensure bash ---
+[[ -n "${BASH_VERSION:-}" ]] || die "Dit script vereist bash. Run: bash $0 ..."
+
+# --- git identity (to prevent prompts) ---
+git_identity() {
+  git config --global user.email "topcug1975@gmail.com" >/dev/null 2>&1 || true
+  git config --global user.name "Gokhan Topcu" >/dev/null 2>&1 || true
+}
+
+# --- deps ---
+install_deps() {
+  log "Install OS deps (git, curl, ffmpeg, python3-venv)..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y >/dev/null
+  apt-get install -y git curl ffmpeg python3-venv >/dev/null
+}
+
+ensure_poetry() {
+  if command -v poetry >/dev/null 2>&1; then
+    return 0
+  fi
+  log "Poetry niet gevonden → installeren..."
+  # official installer puts poetry under /root/.local/bin
   curl -sSL https://install.python-poetry.org | python3 - >/dev/null
-  export PATH="/root/.local/bin:$PATH"
-fi
+  command -v poetry >/dev/null 2>&1 || die "Poetry installatie faalde."
+}
 
-# === 4) Repo klonen of updaten ===
-if [ ! -d "$APP_DIR/.git" ]; then
-  echo "⬇️  Clone repo..."
-  git clone "$REPO_URL" "$APP_DIR"
-else
-  echo "🔄  Update bestaande repo..."
+# --- repo ---
+setup_repo() {
+  mkdir -p "$WORKSPACE"
+
+  if [[ ! -d "$APP_DIR/.git" ]]; then
+    log "Clone repo → $APP_DIR"
+    git clone "$REPO_URL" "$APP_DIR"
+  fi
+
+  log "Update repo (fetch/prune)..."
   cd "$APP_DIR"
-  git fetch --all >/dev/null
+  git remote set-url origin "$REPO_URL" >/dev/null 2>&1 || true
+  git fetch --all --prune >/dev/null
 
-  git checkout stable-segment-batch-v1 2>/dev/null || \
-  git checkout -b stable-segment-batch-v1 origin/feat-batch-tuning-copt >/dev/null
+  # verify remote branch exists
+  if ! git show-ref --verify --quiet "refs/remotes/origin/$REMOTE_BRANCH"; then
+    die "Remote branch bestaat niet: origin/$REMOTE_BRANCH"
+  fi
 
-  git reset --hard origin/feat-batch-tuning-copt >/dev/null
+  # Idempotent: create or overwrite local branch to point to remote branch
+  log "Checkout local '$LOCAL_BRANCH' ← origin/$REMOTE_BRANCH"
+  git checkout -B "$LOCAL_BRANCH" "origin/$REMOTE_BRANCH" >/dev/null
 
-fi
+  log "Hard reset working tree → origin/$REMOTE_BRANCH"
+  git reset --hard "origin/$REMOTE_BRANCH" >/dev/null
+}
 
-# === 5) Virtuele omgeving ===
-if [ -z "$VIRTUAL_ENV" ]; then
-  if [ ! -d "$VENV_DIR" ]; then
-    echo "[init] Maak nieuwe venv aan: $VENV_DIR"
+# --- venv + poetry ---
+setup_venv_poetry() {
+  cd "$APP_DIR"
+
+  if [[ ! -d "$VENV_DIR" ]]; then
+    log "Maak venv: $VENV_DIR"
     python3 -m venv "$VENV_DIR"
   fi
+
+  # activate venv
   # shellcheck disable=SC1091
-  . "$VENV_DIR/bin/activate"
-  echo "[init] venv geactiveerd: $VENV_DIR"
-else
-  echo "[init] venv al actief: $VIRTUAL_ENV"
-fi
+  source "$VENV_DIR/bin/activate"
+  log "Venv actief: $VIRTUAL_ENV"
 
-# === 6) Dependencies via Poetry ===
-cd "$APP_DIR"
-poetry config virtualenvs.in-project true
-echo "[init] Installeer dependencies..."
-poetry install --no-interaction --no-root
+  ensure_poetry
 
-# === 7) Hugging Face hf_transfer fix ===
-echo "[init] Controleer Hugging Face-transferondersteuning..."
-if [ "${HF_HUB_ENABLE_HF_TRANSFER:-1}" = "1" ]; then
-  "$VENV_DIR/bin/pip" install -q hf_transfer || export HF_HUB_ENABLE_HF_TRANSFER=0
-fi
+  # Force poetry to use this in-project venv
+  poetry config virtualenvs.in-project true >/dev/null
+  poetry env use "$VENV_DIR/bin/python" >/dev/null || true
 
-# === 8) Helperfuncties ===
+  log "Poetry install (no-interaction)..."
+  poetry install --no-interaction >/dev/null
+}
+
+# --- run ---
 startlive() {
-  cd "$APP_DIR" || return
-  export PATH="/root/.local/bin:$PATH"
-  export PYTHONPATH="$APP_DIR"
+  cd "$APP_DIR"
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
 
-  # Detecteer RunPod-host IP voor externe toegang
-  HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-  echo "🌐 RunPod-host gedetecteerd: $HOST_IP"
-
-  # Start server bindend aan 0.0.0.0 zodat hij buiten RunPod bereikbaar is
-  "$POETRY_BIN" run python -m whisperlivekit.basic_server --host 0.0.0.0 --port 8000
+  log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE"
+  exec poetry run python -m whisperlivekit.TriviasServer \
+    --host "$HOST" --port "$PORT" \
+    --model "$MODEL" --language "$LANGUAGE" \
+    --frame-threshold "$FRAME_THRESHOLD" \
+    --audio-min-len "$AUDIO_MIN_LEN" \
+    --audio-max-len "$AUDIO_MAX_LEN" \
+    --beams "$BEAMS"
 }
 
-gpuprep() {
-  nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
+gpustat() {
+  nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader || true
 }
 
-echo ""
-echo "[init] Functies geladen in huidige sessie:"
-echo "  ▶ startlive   → Start de live server (extern bereikbaar)"
-echo "  ▶ gpuprep     → Bekijk GPU-status"
-echo ""
-echo "✅ Setup voltooid en venv actief!"
-echo "Actieve Python: $(which python)"
-echo "Gebruik nu: startlive"
-echo "------------------------------------------"
+# --- orchestrators ---
+do_all() {
+  git_identity
+  install_deps
+  setup_repo
+  setup_venv_poetry
+}
+
+do_update() {
+  git_identity
+  setup_repo
+}
+
+# --- CLI ---
+MODE="${1:-}"
+
+case "$MODE" in
+  --deps)   git_identity; install_deps ;;
+  --update) do_update ;;
+  --venv)   git_identity; ensure_poetry; setup_venv_poetry ;;
+  --start)  do_all; startlive ;;
+  --all|"") do_all ;;
+  *)
+    echo "Usage: source scripts/init.sh  |  bash scripts/init.sh [--all|--start|--update|--deps|--venv]"
+    exit 2
+    ;;
+esac
+
+if [[ "$IS_SOURCED" -eq 1 ]]; then
+  log ""
+  log "Functies geladen in huidige sessie:"
+  log "  ▶ startlive   → start server"
+  log "  ▶ gpustat     → GPU status"
+  log ""
+  log "✅ Setup voltooid. Actieve Python: $(command -v python)"
+  log "Tip: startlive"
+fi
