@@ -40,6 +40,23 @@ const timerSpan = document.getElementById("recordingTimer");
 const hintText = document.getElementById("hintText");
 const micSelect = document.getElementById("micSelect");
 
+if (liveTranscriptDiv) {
+  liveTranscriptDiv.addEventListener("click", (e) => {
+    const item = e.target.closest(".segment-item");
+    if (!item) return;
+
+    if (item.dataset.clickable !== "true") return;
+
+    const segmentId = item.dataset.segmentId;
+    const startMs = Number(item.dataset.startMs || 0);
+    const endMs = Number(item.dataset.endMs || 0);
+
+    // Voor nu: alleen bewijs dat klik werkt.
+    // Volgende stap: hier de audio-call doen.
+    console.log("[SEGMENT CLICK]", { segmentId, startMs, endMs });
+  });
+}
+
 function initWebsocketUrl() {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host || "localhost:8000";
@@ -204,7 +221,7 @@ function ensureWebSocket() {
         return;
       }
 
-      renderTranscript(lines, buffer_transcription, buffer_translation, status);
+      //renderTranscript(lines, buffer_transcription, buffer_translation, status);
     };
   });
 }
@@ -244,6 +261,14 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
+function msToTime(ms) {
+  const totalSec = Math.max(0, Math.floor((ms || 0) / 1000));
+  const mm = String(Math.floor(totalSec / 60)).padStart(2, "0");
+  const ss = String(totalSec % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+
 function renderSegments(segments, status) {
   pendingSegments = segments || [];
   pendingStatus = status || "active_transcription";
@@ -263,19 +288,45 @@ function renderSegments(segments, status) {
 
     const segs = pendingSegments.slice().sort((a, b) => (a.start_ms || 0) - (b.start_ms || 0));
 
-    let html = "";
-    for (const s of segs) {
-      if (s.state === "FINAL") {
-        const t = (s.final_text || "").trim();
-        if (t) html += `<span>${escapeHtml(t)}</span>\n`;
-      } else if (s.state === "LIVE") {
-        const t = (s.live_text || "").trim();
-        if (t) html += `<span style="opacity:0.65">${escapeHtml(t)}</span>\n`;
-      }
-    }
+let html = "";
+for (const s of segs) {
+  const state = s.state || "LIVE";
+  const segId = s.segment_id || "";
+  const startMs = s.start_ms ?? 0;
+  const endMs = s.end_ms ?? null;
 
-    liveTranscriptDiv.innerHTML = html || "Nog geen tekst ontvangen…";
-    setAsrStatus("Live transcriptie actief…");
+  const text =
+    state === "FINAL"
+      ? (s.final_text || "").trim()
+      : (s.live_text || "").trim();
+
+  if (!text) continue;
+
+  const timeLabel =
+    state === "FINAL" && endMs != null
+      ? `${msToTime(startMs)} – ${msToTime(endMs)}`
+      : `LIVE vanaf ${msToTime(startMs)}`;
+
+  html += `
+    <div class="segment-item segment-${state.toLowerCase()}"
+         data-clickable="${state === "FINAL" ? "true" : "false"}"
+         data-segment-id="${escapeHtml(segId)}"
+         data-start-ms="${startMs}"
+         data-end-ms="${endMs ?? ""}">
+      <button class="segment-play" ${state === "FINAL" ? "" : "disabled"} title="Terugluisteren">
+        ▶
+      </button>
+      <div class="segment-body">
+        <div class="segment-meta">${escapeHtml(timeLabel)}</div>
+        <div class="segment-text">${escapeHtml(text)}</div>
+      </div>
+    </div>
+  `;
+}
+
+liveTranscriptDiv.innerHTML = html || "Nog geen tekst ontvangen…";
+setAsrStatus("Live transcriptie actief…");
+
   }, 100);
 }
 
