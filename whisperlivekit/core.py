@@ -98,11 +98,13 @@ class TranscriptionEngine:
 
             self.batch_asr = None      
             anti_metadata_prompt = (
-            "Letterlijk transcript. "
-            "Geen titels, geen bronvermelding, geen metadata. "
-            "Alleen uitgesproken woorden."
+                "Letterlijk transcript van een gesprek; "
+                "alleen uitgesproken woorden; "
+                "geen titels, geen bronvermelding, geen metadata; "
+                "behoud de taal van de spreker; "
+                "gebruik normale leestekens, verander geen woorden."
             )
-           
+
             if backend_policy == "simulstreaming":                 
                 simulstreaming_params = {
                     "disable_fast_encoder": False,
@@ -115,7 +117,7 @@ class TranscriptionEngine:
                     "cif_ckpt_path": None,
                     "never_fire": False,
                     "init_prompt": anti_metadata_prompt,
-                    "static_init_prompt": anti_metadata_prompt,
+                    "static_init_prompt": None,
                     "max_context_tokens": None,
                 }
                 simulstreaming_params = update_with_kwargs(simulstreaming_params, kwargs)
