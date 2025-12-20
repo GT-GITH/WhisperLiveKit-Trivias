@@ -34,7 +34,7 @@ MIN_DURATION_REAL_SILENCE = 5
 SILENCE_RESET_THRESHOLD = 8.0  # kun je later tweaken (3–10s)
 
 # ===== Segment + Audio Contract v1 (server-side state machine) =====
-SEG_SILENCE_CLOSE_SEC = 1.0     # silence-close threshold
+SEG_SILENCE_CLOSE_SEC = 0.8     # silence-close threshold
 SEG_MIN_FINAL_SEC     = 3.0     # segment must be >= 3s to be allowed to FINAL on silence
 SEG_TARGET_CLOSE_SEC  = 18.0    # target-close
 SEG_HARD_CAP_SEC      = 25.0    # hard-cap
@@ -842,7 +842,7 @@ class AudioProcessor:
                 if not seg or seg.end_ms is None:
                     continue
 
-                PRE_MS  = 900  # 1s context vóór
+                PRE_MS  = 1000  # 1s context vóór
                 POST_MS = 250    # 0.3s context ná
 
                 start_ms = max(0, int(seg.start_ms) - PRE_MS)
