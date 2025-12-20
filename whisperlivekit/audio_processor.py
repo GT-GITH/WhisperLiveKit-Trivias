@@ -888,8 +888,13 @@ class AudioProcessor:
                 if prev_end_ms is None:
                     prev_end_ms = int(seg.start_ms)
 
+                MIN_PRE_MS = 300      # minimale context voor Whisper
+                PRE_MS_CFG = 1000
+
                 gap_ms = int(seg.start_ms) - int(prev_end_ms)
-                pre_eff = min(PRE_MS_CFG, max(0, gap_ms - 50))  # 50ms marge
+
+                pre_candidate = min(PRE_MS_CFG, max(0, gap_ms - 50))
+                pre_eff = max(MIN_PRE_MS, pre_candidate)
 
                 start_ms = max(0, int(seg.start_ms) - pre_eff)
                 end_ms   = int(seg.end_ms) + POST_MS
