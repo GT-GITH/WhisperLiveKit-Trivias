@@ -31,7 +31,7 @@ SENTINEL = object() # unique sentinel object for end of stream marker
 MIN_DURATION_REAL_SILENCE = 5
 
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
-SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
+SILENCE_RESET_THRESHOLD = 8.0  # kun je later tweaken (3–10s)
 
 # ===== Segment + Audio Contract v1 (server-side state machine) =====
 SEG_SILENCE_CLOSE_SEC = 0.8     # silence-close threshold
@@ -627,7 +627,7 @@ class AudioProcessor:
                 segments_out: List[dict] = []
 
                 # 1) FINAL segments (al opgeslagen in self._segments_v1)
-                finals = self._segments_v1[-30:]  # laatste 30
+                finals = self._segments_v1[-3500:]  # laatste 3500
                 for s in finals:
                     segments_out.append({
                         "segment_id": s.segment_id,
@@ -842,7 +842,7 @@ class AudioProcessor:
                 if not seg or seg.end_ms is None:
                     continue
 
-                PRE_MS  = 1000   # 1.0s context vóór
+                PRE_MS  = 500   # 0.5s context vóór
                 POST_MS = 200    # 0.2s context ná
 
                 start_ms = max(0, int(seg.start_ms) - PRE_MS)
