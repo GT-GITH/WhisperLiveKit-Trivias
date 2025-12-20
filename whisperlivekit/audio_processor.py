@@ -191,6 +191,9 @@ class AudioProcessor:
         self._last_committed_text: str = ""
        
         self._last_segments_payload_str: str = ""
+        # Snapshot van tokens voor segment-finalisatie (voorkomt substring-missers)
+        self._tokens_snapshot: List[ASRToken] = []
+
 
 
     async def _push_silence_event(self) -> None:
@@ -287,6 +290,40 @@ class AudioProcessor:
         self._current_segment_v1 = seg
         logger.info(f"[SEG] OPEN  id={seg.segment_id} start_ms={seg.start_ms}")
 
+    def _tokens_text(self, toks: List[ASRToken]) -> str:
+        """
+        Maak tekst uit ASRToken lijst.
+        Bij SimulStreaming is sep vaak "" en tokens bevatten leading spaces.
+        Daarom: join met "" als sep leeg is, anders spatie-join.
+        """
+        parts = [getattr(t, "text", "") or "" for t in toks]
+        if not parts:
+            return ""
+        if self.sep == "":
+            return "".join(parts).strip()
+        # defensief: tokens kunnen al spaces bevatten; strip per token
+        return " ".join([p.strip() for p in parts if p.strip()]).strip()
+
+
+    def _tokens_in_window(self, start_ms: int, end_ms: int) -> List[ASRToken]:
+        """
+        Selecteer tokens waarvan het tijdvak overlapt met [start_ms, end_ms].
+        We gebruiken overlap i.p.v. strict containment, zodat je geen woorden mist
+        die net voor/na de grens vallen.
+        """
+        out: List[ASRToken] = []
+        for t in (self._tokens_snapshot or []):
+            ts = int((getattr(t, "start", 0.0) or 0.0) * 1000)
+            te = int((getattr(t, "end", 0.0) or 0.0) * 1000)
+
+            # overlap check: token overlapt segment-window
+            if te <= start_ms:
+                continue
+            if ts >= end_ms:
+                continue
+            out.append(t)
+        return out
+
     def _finalize_current_segment_v1(self, end_ms: int, committed_text: str) -> None:
         seg = self._current_segment_v1
         if seg is None:
@@ -297,10 +334,21 @@ class AudioProcessor:
         seg.end_ms = end_ms
         seg.state = "FINAL"
 
-        # debug/latere stap: final_text snapshot (v1 simpel: substring)
-        full = committed_text or ""
-        start_idx = min(seg.committed_text_start_len, len(full))
-        seg.final_text = full[start_idx:].strip()
+        # FINAL tekst token-based (voorkomt substring-missers / ontbrekende zinnen)
+        if seg.end_ms is not None:
+            toks = self._tokens_in_window(seg.start_ms, seg.end_ms)
+            token_text = self._tokens_text(toks)
+        else:
+            token_text = ""
+
+        if token_text:
+            seg.final_text = token_text
+        else:
+            # fallback: oude substring-methode als er (nog) geen tokens in snapshot zitten
+            full = committed_text or ""
+            start_idx = min(seg.committed_text_start_len, len(full))
+            seg.final_text = full[start_idx:].strip()
+
 
         dur_ms = max(0, seg.end_ms - seg.start_ms)
 
@@ -588,6 +636,10 @@ class AudioProcessor:
                     current_silence=self.current_silence
                 )
                 state = await self.get_current_state()
+
+                # Snapshot tokens voor FINAL segment build (token-based, voorkomt tekstverlies)
+                self._tokens_snapshot = list(getattr(state, "tokens", []) or [])
+
 
                 buffer_transcription_text = state.buffer_transcription.text if state.buffer_transcription else ''
                 # ===== Segment v1 policy evaluation (server-only) =====
