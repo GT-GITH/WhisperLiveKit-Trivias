@@ -287,7 +287,13 @@ class AudioProcessor:
         self._current_segment_v1 = seg
         logger.info(f"[SEG] OPEN  id={seg.segment_id} start_ms={seg.start_ms}")
 
-    def _finalize_current_segment_v1(self, end_ms: int, committed_text: str) -> None:
+    def _finalize_current_segment_v1(
+        self,
+        end_ms: int,
+        committed_text: str,
+        final_text_snapshot: Optional[str] = None
+    ) -> None:
+
         seg = self._current_segment_v1
         if seg is None:
             return
@@ -298,9 +304,14 @@ class AudioProcessor:
         seg.state = "FINAL"
 
         # debug/latere stap: final_text snapshot (v1 simpel: substring)
-        full = committed_text or ""
-        start_idx = min(seg.committed_text_start_len, len(full))
-        seg.final_text = full[start_idx:].strip()
+        # FINAL tekst: gebruik snapshot (committed_delta + buffer) als die is meegegeven
+        if final_text_snapshot and final_text_snapshot.strip():
+            seg.final_text = final_text_snapshot.strip()
+        else:
+            full = committed_text or ""
+            start_idx = min(seg.committed_text_start_len, len(full))
+            seg.final_text = full[start_idx:].strip()
+
 
         dur_ms = max(0, seg.end_ms - seg.start_ms)
 
@@ -604,8 +615,26 @@ class AudioProcessor:
                     seg_dur_ms = max(0, silence_started_ms - self._current_segment_v1.start_ms)
 
                     if silence_age_ms >= int(SEG_SILENCE_CLOSE_SEC * 1000) and seg_dur_ms >= int(SEG_MIN_FINAL_SEC * 1000):
-                        # sluiten op begin van stilte (audit-proof knip)
-                        self._finalize_current_segment_v1(end_ms=silence_started_ms, committed_text=committed_text)
+                        cs = self._current_segment_v1
+                        full = committed_text or ""
+                        start_idx = min(cs.committed_text_start_len, len(full))
+                        committed_delta = full[start_idx:].strip()
+
+                        # EXACT zoals LIVE: committed_delta + buffer
+                        final_parts = []
+                        if committed_delta:
+                            final_parts.append(committed_delta)
+                        if buffer_transcription_text and buffer_transcription_text.strip():
+                            final_parts.append(buffer_transcription_text.strip())
+
+                        final_snapshot = " ".join(final_parts).strip()
+
+                        self._finalize_current_segment_v1(
+                            end_ms=silence_started_ms,
+                            committed_text=committed_text,
+                            final_text_snapshot=final_snapshot
+                        )
+
 
                 # 2) Target-close: segmentduur >= 12s
                 if self._current_segment_v1 is not None:
@@ -854,11 +883,31 @@ class AudioProcessor:
 
                 refined = await asyncio.to_thread(self._batch_transcribe_text, audio)
                 if refined:
-                    seg.final_text = refined.strip()
+                    new_txt = refined.strip()
+                    old_txt = (seg.final_text or "").strip()
+
+                    logger.info(
+                        f"[BATCH] refined_text_len={len(new_txt)} old_len={len(old_txt)} seg={seg.segment_id}"
+                    )
+
+                    # Alleen overschrijven als refine niet duidelijk korter is
+                    # (korter kan gebeuren door overlap/boundaries → lijkt dan alsof tekst verdwijnt)
+                    if not old_txt:
+                        seg.final_text = new_txt
+                    else:
+                        ratio = (len(new_txt) / max(1, len(old_txt)))
+                        if ratio >= 0.85:
+                            seg.final_text = new_txt
+                        else:
+                            logger.warning(
+                                f"[BATCH] SKIP overwrite: refined too short (ratio={ratio:.2f}) seg={seg.segment_id}"
+                            )
+
                     logger.info(
                         f"[BATCH] refined segment {seg.segment_id} "
                         f"(orig {seg.start_ms}-{seg.end_ms}ms, padded {start_ms}-{end_ms}ms)"
                     )
+
 
             except asyncio.CancelledError:
                 raise
