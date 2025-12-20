@@ -1052,14 +1052,20 @@ class AudioProcessor:
             res = self.vac(pcm_array)
 
         if res is not None:
+            logger.info(f"[VADDBG] chunk_start={chunk_sample_start} res={res}")
             if "start" in res and self.current_silence:
-                # VAD start geeft absolute sample index in stream (zoals je end ook gebruikt)
-                speech_start_sample = res.get("start")
+                # Silero VAD geeft doorgaans start RELATIEF binnen deze chunk
+                rel_start = int(res.get("start") or 0)
+                speech_start_sample = chunk_sample_start + rel_start  # <-- FIX
                 await self._end_silence()
-            
+
             if "end" in res and not self.current_silence:
+                # Silero VAD geeft doorgaans end RELATIEF binnen deze chunk
+                rel_end = int(res.get("end") or 0)
+                abs_end = chunk_sample_start + rel_end  # <-- FIX
+
                 pre_silence_chunk = self._slice_before_silence(
-                    pcm_array, chunk_sample_start, res.get("end")
+                    pcm_array, chunk_sample_start, abs_end
                 )
                 if pre_silence_chunk is not None and pre_silence_chunk.size > 0:
                     await self._enqueue_active_audio(pre_silence_chunk)
