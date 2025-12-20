@@ -97,6 +97,12 @@ class TranscriptionEngine:
         if self.args.transcription:
 
             self.batch_asr = None      
+            anti_metadata_prompt = (
+            "Letterlijk transcript. "
+            "Geen titels, geen bronvermelding, geen metadata. "
+            "Alleen uitgesproken woorden."
+            )
+           
             if backend_policy == "simulstreaming":                 
                 simulstreaming_params = {
                     "disable_fast_encoder": False,
@@ -108,8 +114,8 @@ class TranscriptionEngine:
                     "audio_min_len": 0.0,
                     "cif_ckpt_path": None,
                     "never_fire": False,
-                    "init_prompt": None,
-                    "static_init_prompt": None,
+                    "init_prompt": anti_metadata_prompt,
+                    "static_init_prompt": anti_metadata_prompt,
                     "max_context_tokens": None,
                 }
                 simulstreaming_params = update_with_kwargs(simulstreaming_params, kwargs)
@@ -125,6 +131,7 @@ class TranscriptionEngine:
                     getattr(self.asr, "encoder_backend", "whisper"),
                 )
 
+
                 # batch gebruikt dezelfde weights als je encoder/model keuze
                 model_for_batch = self.args.model_path or self.args.model_size
                 self.batch_asr = BatchFasterWhisperASR(
@@ -132,8 +139,8 @@ class TranscriptionEngine:
                     language=self.args.lan,
                     beam_size=7,  # hoger dan streaming 
                     condition_on_previous_text=False,
-                    temperature=[0.0, 0.2],
-                    initial_prompt="Dit is een Nederlands interview. Namen: Eus, Özcan Akyol, Rhodia Maas. Organisatie: IND.",
+                    temperature=0.0,
+                    initial_prompt=anti_metadata_prompt,
                     #best_of=5,
                     #patience=1.2,
                     #length_penalty=0.6,
