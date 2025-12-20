@@ -324,7 +324,8 @@ class AudioProcessor:
             out.append(t)
         return out
 
-    def _finalize_current_segment_v1(self, end_ms: int, committed_text: str) -> None:
+    def _finalize_current_segment_v1(self, end_ms: int, committed_text: str, final_text_snapshot: Optional[str] = None) -> None:
+
         seg = self._current_segment_v1
         if seg is None:
             return
@@ -333,21 +334,26 @@ class AudioProcessor:
 
         seg.end_ms = end_ms
         seg.state = "FINAL"
-
-        # FINAL tekst token-based (voorkomt substring-missers / ontbrekende zinnen)
-        if seg.end_ms is not None:
-            toks = self._tokens_in_window(seg.start_ms, seg.end_ms)
-            token_text = self._tokens_text(toks)
+        # ===== FINAL TEXT SNAPSHOT (voorkomt verdwijnende zinnen) =====
+        if final_text_snapshot and final_text_snapshot.strip():
+            seg.final_text = final_text_snapshot.strip()
         else:
-            token_text = ""
+            # bestaande token-based logica blijft hieronder intact
 
-        if token_text:
-            seg.final_text = token_text
-        else:
-            # fallback: oude substring-methode als er (nog) geen tokens in snapshot zitten
-            full = committed_text or ""
-            start_idx = min(seg.committed_text_start_len, len(full))
-            seg.final_text = full[start_idx:].strip()
+            # FINAL tekst token-based (voorkomt substring-missers / ontbrekende zinnen)
+            if seg.end_ms is not None:
+                toks = self._tokens_in_window(seg.start_ms, seg.end_ms)
+                token_text = self._tokens_text(toks)
+            else:
+                token_text = ""
+
+            if token_text:
+                seg.final_text = token_text
+            else:
+                # fallback: oude substring-methode als er (nog) geen tokens in snapshot zitten
+                full = committed_text or ""
+                start_idx = min(seg.committed_text_start_len, len(full))
+                seg.final_text = full[start_idx:].strip()
 
 
         dur_ms = max(0, seg.end_ms - seg.start_ms)
@@ -657,7 +663,25 @@ class AudioProcessor:
 
                     if silence_age_ms >= int(SEG_SILENCE_CLOSE_SEC * 1000) and seg_dur_ms >= int(SEG_MIN_FINAL_SEC * 1000):
                         # sluiten op begin van stilte (audit-proof knip)
-                        self._finalize_current_segment_v1(end_ms=silence_started_ms, committed_text=committed_text)
+                        cs = self._current_segment_v1
+                        full = committed_text or ""
+                        start_idx = min(cs.committed_text_start_len, len(full))
+                        committed_delta = full[start_idx:].strip()
+
+                        final_parts = []
+                        if committed_delta:
+                            final_parts.append(committed_delta)
+                        if buffer_transcription_text and buffer_transcription_text.strip():
+                            final_parts.append(buffer_transcription_text.strip())
+
+                        final_snapshot = " ".join(final_parts).strip()
+
+                        self._finalize_current_segment_v1(
+                            end_ms=silence_started_ms,
+                            committed_text=committed_text,
+                            final_text_snapshot=final_snapshot
+                        )
+
 
                 # 2) Target-close: segmentduur >= 12s
                 if self._current_segment_v1 is not None:
