@@ -679,8 +679,9 @@ class AudioProcessor:
                 segments_out: List[dict] = []
 
                 # 1) FINAL segments (al opgeslagen in self._segments_v1)
-                finals = self._segments_v1[-30:]  # laatste 30
+                finals = self._segments_v1[-500:]  # laatste 500
                 for s in finals:
+                    logger.info(f"[OUT] FINAL seg={s.segment_id} len={len((s.final_text or '').strip())}")
                     segments_out.append({
                         "segment_id": s.segment_id,
                         "start_ms": s.start_ms,
@@ -906,6 +907,7 @@ class AudioProcessor:
 
                 refined = await asyncio.to_thread(self._batch_transcribe_text, audio)
                 if refined:
+                    logger.info(f"[BATCH] refined_text_len={len(refined or '')} seg={seg.segment_id}")
                     seg.final_text = refined.strip()
                     logger.info(
                         f"[BATCH] refined segment {seg.segment_id} "
