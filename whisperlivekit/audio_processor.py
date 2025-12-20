@@ -871,10 +871,27 @@ class AudioProcessor:
                 if not seg or seg.end_ms is None:
                     continue
 
-                PRE_MS  = 1000  # 1s context vóór
-                POST_MS = 250    # 0.3s context ná
+                PRE_MS_CFG  = 1000
+                POST_MS     = 250
 
-                start_ms = max(0, int(seg.start_ms) - PRE_MS)
+                # Bepaal vorige segment-einde (laatste FINAL vóór deze seg)
+                prev_end_ms = None
+                try:
+                    # _segments_v1 staat in tijdsvolgorde; pak laatste met end_ms <= seg.start_ms
+                    for s in reversed(self._segments_v1):
+                        if s.end_ms is not None and s.end_ms <= seg.start_ms:
+                            prev_end_ms = int(s.end_ms)
+                            break
+                except Exception:
+                    prev_end_ms = None
+
+                if prev_end_ms is None:
+                    prev_end_ms = int(seg.start_ms)
+
+                gap_ms = int(seg.start_ms) - int(prev_end_ms)
+                pre_eff = min(PRE_MS_CFG, max(0, gap_ms - 50))  # 50ms marge
+
+                start_ms = max(0, int(seg.start_ms) - pre_eff)
                 end_ms   = int(seg.end_ms) + POST_MS
 
                 audio = await asyncio.to_thread(self._read_wav_slice_float32, start_ms, end_ms)
@@ -887,17 +904,35 @@ class AudioProcessor:
                     old_txt = (seg.final_text or "").strip()
 
                     logger.info(
-                        f"[BATCH] refined_text_len={len(new_txt)} old_len={len(old_txt)} seg={seg.segment_id}"
+                        f"[BATCH] refined_text_len={len(new_txt)} old_len={len(old_txt)} "
+                        f"seg={seg.segment_id} pre_eff={pre_eff} gap_ms={gap_ms} "
+                        f"slice={start_ms}-{end_ms} orig={seg.start_ms}-{seg.end_ms}"
                     )
 
-                    # Alleen overschrijven als refine niet duidelijk korter is
-                    # (korter kan gebeuren door overlap/boundaries → lijkt dan alsof tekst verdwijnt)
                     if not old_txt:
                         seg.final_text = new_txt
                     else:
                         ratio = (len(new_txt) / max(1, len(old_txt)))
-                        if ratio >= 0.85:
+
+                        if ratio >= 0.95:
+                            # veilig overschrijven
                             seg.final_text = new_txt
+
+                        elif ratio >= 0.70:
+                            # MERGE: behoud coverage van old, maar neem refined als kern
+                            # eenvoudige strategie: als refined substring is van old -> old houden
+                            # anders: combineer zodat je niets verliest
+                            if new_txt and new_txt in old_txt:
+                                seg.final_text = old_txt
+                            else:
+                                # heuristiek: neem de langste van de twee, maar voorkom dubbel
+                                if len(new_txt) >= len(old_txt):
+                                    seg.final_text = new_txt
+                                else:
+                                    # refined + rest van old (tail) als die niet al voorkomt
+                                    # (simpele tail-merge; werkt verrassend goed in praktijk)
+                                    seg.final_text = (new_txt + " " + old_txt).strip()
+
                         else:
                             logger.warning(
                                 f"[BATCH] SKIP overwrite: refined too short (ratio={ratio:.2f}) seg={seg.segment_id}"
