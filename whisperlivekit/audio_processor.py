@@ -282,10 +282,27 @@ class AudioProcessor:
     def _ensure_segment_open_v1(self, start_ms: int, committed_text: str) -> None:
         if self._current_segment_v1 is not None:
             return
+
+        # --- CLAMP: voorkom overlap met laatste FINAL segment ---
+        try:
+            if self._segments_v1:
+                last = self._segments_v1[-1]
+                if last.end_ms is not None:
+                    if start_ms < int(last.end_ms):
+                        logger.warning(
+                            f"[SEG] OPEN clamp: start_ms {start_ms} -> {int(last.end_ms)} "
+                            f"(overlap {int(last.end_ms) - start_ms}ms) last={last.segment_id}"
+                        )
+                        start_ms = int(last.end_ms)
+        except Exception:
+            pass
+
         seg = SegmentV1(self.session_id, start_ms)
         seg.committed_text_start_len = len(committed_text or "")
         self._current_segment_v1 = seg
-        logger.info(f"[SEG] OPEN  id={seg.segment_id} start_ms={seg.start_ms}")
+
+        logger.info(f"[SEG] OPEN id={seg.segment_id} start_ms={seg.start_ms}")
+
 
     def _finalize_current_segment_v1(
         self,
