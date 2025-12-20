@@ -31,7 +31,7 @@ SENTINEL = object() # unique sentinel object for end of stream marker
 MIN_DURATION_REAL_SILENCE = 5
 
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
-SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
+SILENCE_RESET_THRESHOLD = 8.0  # kun je later tweaken (2–10s)
 
 # ===== Segment + Audio Contract v1 (server-side state machine) =====
 SEG_SILENCE_CLOSE_SEC = 0.8     # silence-close threshold
