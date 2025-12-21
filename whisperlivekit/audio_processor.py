@@ -842,7 +842,7 @@ class AudioProcessor:
                 if not seg or seg.end_ms is None:
                     continue
 
-                PRE_MS  = 1000   # 1.0s context vóór
+                PRE_MS  = 200    # 1.0s context vóór
                 POST_MS = 200    # 0.2s context ná
 
                 start_ms = max(0, int(seg.start_ms) - PRE_MS)
