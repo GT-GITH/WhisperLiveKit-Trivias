@@ -33,33 +33,6 @@ MIN_DURATION_REAL_SILENCE = 5
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
 SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
 
-# ===== Segment + Audio Contract v1 (server-side state machine) =====
-SEG_SILENCE_CLOSE_SEC = 0.8     # silence-close threshold
-SEG_MIN_FINAL_SEC     = 3.0     # segment must be >= 3s to be allowed to FINAL on silence
-SEG_TARGET_CLOSE_SEC  = 18.0    # target-close
-SEG_HARD_CAP_SEC      = 25.0    # hard-cap
-
-SEG_MIN_FINAL_MS      = int(SEG_MIN_FINAL_SEC * 1000)
-
-class SegmentV1:
-    __slots__ = (
-        "segment_id", "session_id", "start_ms", "end_ms", "state",
-        "live_text", "final_text",
-        "committed_text_start_len",
-    )
-
-    def __init__(self, session_id: str, start_ms: int):
-        self.session_id = session_id
-        self.start_ms = start_ms
-        self.end_ms = None  # type: Optional[int]
-        self.segment_id = f"{session_id}:{start_ms}"
-        self.state = "LIVE"  # LIVE | FINAL
-        self.live_text = ""
-        self.final_text = ""
-        # voor debug/latere stap: waar in de committed-text deze segment begon
-        self.committed_text_start_len = 0
-
-
 async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.ndarray, List[Any]]:
     items: List[Any] = []
 
@@ -103,7 +76,6 @@ class AudioProcessor:
         # Batch refinement (Stap 3)
         self._batch_queue: asyncio.Queue = asyncio.Queue()
         self._batch_worker_task: Optional[asyncio.Task] = None
-        self._batch_refine_enabled: bool = True
 
         # Audio processing settings
         self.args = models.args
@@ -182,16 +154,6 @@ class AudioProcessor:
         self._wav_writer: Optional[wave.Wave_write] = None
         self._wav_path: Optional[Path] = None
 
-        # ===== Segment v1 state =====
-        self._segments_v1: List[SegmentV1] = []
-        self._current_segment_v1: Optional[SegmentV1] = None
-        self._pending_short_segment_v1: Optional[SegmentV1] = None
-       
-        # debug/latere stap: complete committed-text snapshot
-        self._last_committed_text: str = ""
-       
-        self._last_segments_payload_str: str = ""
-
 
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
@@ -264,76 +226,12 @@ class AudioProcessor:
             self.state.remaining_time_diarization = remaining_diarization
             
             return self.state
+        
     def _now_ms(self) -> int:
         if not self.beg_loop:
             return 0
         return int((time() - self.beg_loop) * 1000)
-
-    def _get_committed_text_from_lines(self, lines: List[Any]) -> str:
-        # lines bevat items met .text (zoals UI nu doet)
-        parts = []
-        for item in (lines or []):
-            t = getattr(item, "text", "") or ""
-            t = t.strip()
-            if t:
-                parts.append(t)
-        return "\n".join(parts).strip()
-
-    def _ensure_segment_open_v1(self, start_ms: int, committed_text: str) -> None:
-        if self._current_segment_v1 is not None:
-            return
-        seg = SegmentV1(self.session_id, start_ms)
-        seg.committed_text_start_len = len(committed_text or "")
-        self._current_segment_v1 = seg
-        logger.info(f"[SEG] OPEN  id={seg.segment_id} start_ms={seg.start_ms}")
-
-    def _finalize_current_segment_v1(self, end_ms: int, committed_text: str) -> None:
-        seg = self._current_segment_v1
-        if seg is None:
-            return
-        if seg.state == "FINAL":
-            return
-
-        seg.end_ms = end_ms
-        seg.state = "FINAL"
-
-        # debug/latere stap: final_text snapshot (v1 simpel: substring)
-        full = committed_text or ""
-        start_idx = min(seg.committed_text_start_len, len(full))
-        seg.final_text = full[start_idx:].strip()
-
-        dur_ms = max(0, seg.end_ms - seg.start_ms)
-
-        # merge-regel: als FINAL < 3s, pending maken en niet publiceren als losse segment
-        if dur_ms < SEG_MIN_FINAL_MS:
-            logger.info(f"[SEG] FINAL-SHORT id={seg.segment_id} dur_ms={dur_ms} → pending merge")
-            self._pending_short_segment_v1 = seg
-            self._current_segment_v1 = None
-            return
-
-        # merge pending short → deze FINAL
-        if self._pending_short_segment_v1 is not None:
-            p = self._pending_short_segment_v1
-            merged = SegmentV1(self.session_id, p.start_ms)
-            merged.end_ms = seg.end_ms
-            merged.state = "FINAL"
-            merged.final_text = (p.final_text + " " + seg.final_text).strip()
-            merged.committed_text_start_len = p.committed_text_start_len
-            self._segments_v1.append(merged)
-            self._pending_short_segment_v1 = None
-            logger.info(f"[SEG] MERGE  id={merged.segment_id} start_ms={merged.start_ms} end_ms={merged.end_ms}")
-        else:
-            self._segments_v1.append(seg)
-            if self._batch_refine_enabled:
-                try:
-                    self._batch_queue.put_nowait(seg)
-                    logger.info(f"[BATCH] queued segment {seg.segment_id} for refinement")
-                except Exception as e:
-                    logger.warning(f"[BATCH] queue failed: {e}")
-            logger.info(f"[SEG] FINAL  id={seg.segment_id} start_ms={seg.start_ms} end_ms={seg.end_ms} dur_ms={dur_ms}")
-
-        self._current_segment_v1 = None
-
+  
     async def ffmpeg_stdout_reader(self) -> None:
         """Read audio data from FFmpeg stdout and process it into the PCM pipeline."""
         beg = time()
@@ -571,117 +469,25 @@ class AudioProcessor:
                 logger.warning(f"Traceback: {traceback.format_exc()}")
         logger.info("Translation processor task finished.")
 
-    async def results_formatter(self) -> AsyncGenerator[FrontData, None]:
-        """Format processing results for output."""
+    async def results_formatter(self):
         while True:
-            try:
-                if self._ffmpeg_error:
-                    yield FrontData(status="error", error=f"FFmpeg error: {self._ffmpeg_error}")
-                    self._ffmpeg_error = None
-                    await asyncio.sleep(1)
-                    continue
+            lines, buffer_transcription_text, buffer_translation_text, response_status = \
+                self._build_transcript_output()
 
-                self.tokens_alignment.update()
-                lines, buffer_diarization_text, buffer_translation_text = self.tokens_alignment.get_lines(
-                    diarization=self.args.diarization,
-                    translation=bool(self.translation),
-                    current_silence=self.current_silence
-                )
-                state = await self.get_current_state()
+            yield {
+                "type": "transcript",
+                "lines": [{"text": x.text} for x in (lines or [])],
+                "buffer_transcription": buffer_transcription_text or "",
+                "buffer_translation": buffer_translation_text or "",
+                "status": response_status,
+            }
 
-                buffer_transcription_text = state.buffer_transcription.text if state.buffer_transcription else ''
-                # ===== Segment v1 policy evaluation (server-only) =====
-                committed_text = self._get_committed_text_from_lines(lines)
-                self._last_committed_text = committed_text
+            if self.is_stopping and self._processing_tasks_done():
+                logger.info("Results formatter: stopping and upstream done. Terminating.")
+                return
 
-                now_ms = self._now_ms()
+            await asyncio.sleep(0.05)
 
-                # 1) Silence-close: tijdens stilte >= 0.8s EN segmentduur >= 3.0s
-                if self._current_segment_v1 is not None and self.current_silence is not None:
-                    # current_silence.start is seconds since beg_loop
-                    silence_started_ms = int((self.current_silence.start or 0.0) * 1000)
-                    silence_age_ms = max(0, now_ms - silence_started_ms)
-                    seg_dur_ms = max(0, silence_started_ms - self._current_segment_v1.start_ms)
-
-                    if silence_age_ms >= int(SEG_SILENCE_CLOSE_SEC * 1000) and seg_dur_ms >= int(SEG_MIN_FINAL_SEC * 1000):
-                        # sluiten op begin van stilte (audit-proof knip)
-                        self._finalize_current_segment_v1(end_ms=silence_started_ms, committed_text=committed_text)
-
-                # 2) Target-close: segmentduur >= 12s
-                if self._current_segment_v1 is not None:
-                    seg_dur_ms = max(0, now_ms - self._current_segment_v1.start_ms)
-                    if seg_dur_ms >= int(SEG_TARGET_CLOSE_SEC * 1000):
-                        self._finalize_current_segment_v1(end_ms=now_ms, committed_text=committed_text)
-
-                # 3) Hard-cap: segmentduur >= 25s (noodrem)
-                if self._current_segment_v1 is not None:
-                    seg_dur_ms = max(0, now_ms - self._current_segment_v1.start_ms)
-                    if seg_dur_ms >= int(SEG_HARD_CAP_SEC * 1000):
-                        self._finalize_current_segment_v1(end_ms=now_ms, committed_text=committed_text)
-
-                response_status = "active_transcription"
-                if not lines and not buffer_transcription_text and not buffer_diarization_text:
-                    response_status = "no_audio_detected"
-
-                # ===== Contract v1 payload: segments[] =====
-                segments_out: List[dict] = []
-
-                # 1) FINAL segments (al opgeslagen in self._segments_v1)
-                finals = self._segments_v1[-30:]  # laatste 30
-                for s in finals:
-                    segments_out.append({
-                        "segment_id": s.segment_id,
-                        "start_ms": s.start_ms,
-                        "end_ms": s.end_ms,
-                        "state": "FINAL",
-                        "final_text": (s.final_text or "").strip(),
-                    })
-
-                # 2) LIVE segment (alleen als open)
-                if self._current_segment_v1 is not None:
-                    cs = self._current_segment_v1
-                    # LIVE tekst = committed delta sinds segment start (+ buffer als die bestaat)
-                    full = committed_text or ""
-                    start_idx = min(cs.committed_text_start_len, len(full))
-                    committed_delta = full[start_idx:].strip()
-
-                    live_parts = []
-                    if committed_delta:
-                        live_parts.append(committed_delta)
-                    if buffer_transcription_text and buffer_transcription_text.strip():
-                        live_parts.append(buffer_transcription_text.strip())
-
-                    live_text = " ".join(live_parts).strip()
-
-                    segments_out.append({
-                        "segment_id": cs.segment_id,
-                        "start_ms": cs.start_ms,
-                        "state": "LIVE",
-                        "live_text": live_text,
-                    })
-
-
-                payload = {
-                    "type": "segments",
-                    "session_id": self.session_id,
-                    "segments": segments_out,
-                    "status": response_status,
-                }
-
-                payload_str = str(payload)
-                if payload_str != self._last_segments_payload_str:
-                    yield payload
-                    self._last_segments_payload_str = payload_str
-
-                if self.is_stopping and self._processing_tasks_done():
-                    logger.info("Results formatter: All upstream processors are done and in stopping state. Terminating.")
-                    return
-                
-                await asyncio.sleep(0.05)
-                
-            except Exception as e:
-                logger.warning(f"Exception in results_formatter. Traceback: {traceback.format_exc()}")
-                await asyncio.sleep(0.5)
         
     async def create_tasks(self) -> AsyncGenerator[FrontData, None]:
         """Create and start processing tasks."""
@@ -721,11 +527,6 @@ class AudioProcessor:
         # Monitor overall system health
         self.watchdog_task = asyncio.create_task(self.watchdog(processing_tasks_for_watchdog))
         self.all_tasks_for_cleanup.append(self.watchdog_task)
-        
-        # Batch refinement worker
-        if self._batch_refine_enabled and self._batch_worker_task is None:
-            self._batch_worker_task = asyncio.create_task(self._batch_refiner_worker())
-            self.all_tasks_for_cleanup.append(self._batch_worker_task)
 
         return self.results_formatter()
 
@@ -833,39 +634,6 @@ class AudioProcessor:
         except Exception as e:
             logger.warning(f"[BATCH] transcribe failed: {e}")
             return None
-
-
-    async def _batch_refiner_worker(self) -> None:
-        while True:
-            seg: SegmentV1 = await self._batch_queue.get()
-            try:
-                if not seg or seg.end_ms is None:
-                    continue
-
-                PRE_MS  = 1000   # 1.0s context vóór
-                POST_MS = 200    # 0.2s context ná
-
-                start_ms = max(0, int(seg.start_ms) - PRE_MS)
-                end_ms   = int(seg.end_ms) + POST_MS
-
-                audio = await asyncio.to_thread(self._read_wav_slice_float32, start_ms, end_ms)
-                if audio is None or audio.size == 0:
-                    continue
-
-                refined = await asyncio.to_thread(self._batch_transcribe_text, audio)
-                if refined:
-                    seg.final_text = refined.strip()
-                    logger.info(
-                        f"[BATCH] refined segment {seg.segment_id} "
-                        f"(orig {seg.start_ms}-{seg.end_ms}ms, padded {start_ms}-{end_ms}ms)"
-                    )
-
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[BATCH] worker error: {e}")
-            finally:
-                self._batch_queue.task_done()
     
     async def cleanup(self) -> None:
         """Clean up resources when processing is complete."""
@@ -921,14 +689,6 @@ class AudioProcessor:
         if not message:
             logger.info("Empty audio message received, initiating stop sequence.")
             self.is_stopping = True
-
-             # Segment v1: finaliseer open segment bij stop
-            try:
-                now_ms = self._now_ms()
-                if self._current_segment_v1 is not None:
-                    self._finalize_current_segment_v1(end_ms=now_ms, committed_text=self._last_committed_text)
-            except Exception as e:
-                logger.warning(f"[SEG] Error finalizing segment on stop: {e}")
            
             # NEW: close session WAV immediately on stop
             self._close_wav()
@@ -1008,14 +768,6 @@ class AudioProcessor:
                 await self._begin_silence()
 
         if not self.current_silence:
-            # Segment open moment = start van dit chunk (tijd-gebaseerd)
-            chunk_start_ms = int((chunk_sample_start / self.sample_rate) * 1000)
-
-            # NB: committed_text vullen we later in results_formatter (nu nog leeg OK)
-            # Hier openen we alleen als er nog geen segment open is.
-            if self._current_segment_v1 is None:
-                self._ensure_segment_open_v1(start_ms=chunk_start_ms, committed_text=self._last_committed_text)
-
             await self._enqueue_active_audio(pcm_array)
 
 

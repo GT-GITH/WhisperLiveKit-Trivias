@@ -191,6 +191,16 @@ function ensureWebSocket() {
         setAsrStatus("Verwerking voltooid. Gereed voor nieuwe opname.");
         return;
       }
+      
+      if (data.type === "transcript") {
+        renderTranscript(
+          data.lines || [],
+          data.buffer_transcription || "",
+          data.buffer_translation || "",
+          data.status || "active_transcription"
+        );
+        return;
+      }
 
       const {
         lines = [],
@@ -200,7 +210,7 @@ function ensureWebSocket() {
       } = data;
 
       if (data.type === "segments") {
-        renderSegments(data.segments || [], data.status || "active_transcription");
+        // Segments voorlopig alleen intern (audio-index). Niet renderen.
         return;
       }
 
