@@ -472,64 +472,57 @@ class AudioProcessor:
 
     async def results_formatter(self):
         while True:
-            lines, buffer_transcription_text, buffer_translation_text, response_status = \
-                self._build_transcript_output()
+            try:
+                if self._ffmpeg_error:
+                    yield {
+                        "type": "transcript",
+                        "lines": [],
+                        "buffer_transcription": "",
+                        "buffer_translation": "",
+                        "status": "error",
+                        "error": f"FFmpeg error: {self._ffmpeg_error}",
+                    }
+                    self._ffmpeg_error = None
+                    await asyncio.sleep(1)
+                    continue
 
-            yield {
-                "type": "transcript",
-                "lines": [{"text": x.text} for x in (lines or [])],
-                "buffer_transcription": buffer_transcription_text or "",
-                "buffer_translation": buffer_translation_text or "",
-                "status": response_status,
-            }
+                # ✅ Dit is de originele stabiele flow
+                self.tokens_alignment.update()
+                lines, _, buffer_translation_text = self.tokens_alignment.get_lines(
+                    diarization=self.args.diarization,
+                    translation=bool(self.translation),
+                    current_silence=self.current_silence
+                )
 
-            if self.is_stopping and self._processing_tasks_done():
-                logger.info("Results formatter: stopping and upstream done. Terminating.")
-                return
+                state = await self.get_current_state()
+                buffer_transcription_text = state.buffer_transcription.text if state.buffer_transcription else ""
 
-            await asyncio.sleep(0.05)
+                # status: kies iets simpels en stabiels
+                response_status = "active_transcription"
+                if self.is_stopping:
+                    response_status = "stopping"
 
-    def _build_transcript_output(self):
-        """
-        Bouwt de payload voor de UI op basis van de huidige state.
-        GEEN segment-logica; alleen committed tokens + buffer (live tail).
-        """
-        try:
-            # 1) committed transcript uit tokens
-            committed_parts = []
-            for tok in (getattr(self.state, "tokens", None) or []):
-                txt = getattr(tok, "text", None)
-                if isinstance(txt, str) and txt.strip():
-                    committed_parts.append(txt.strip())
+                yield {
+                    "type": "transcript",
+                    "lines": [{"text": x.text} for x in (lines or [])],
+                    "buffer_transcription": buffer_transcription_text or "",
+                    "buffer_translation": buffer_translation_text or "",
+                    "status": response_status,
+                }
 
-            committed_text = self.sep.join(committed_parts).strip()
+                if self.is_stopping and self._processing_tasks_done():
+                    logger.info("Results formatter: stopping and upstream done. Terminating.")
+                    return
 
-            # 2) live buffer (grijs)
-            buffer_transcription_text = ""
-            bt = getattr(self.state, "buffer_transcription", None)
-            if bt is not None:
-                buffer_transcription_text = getattr(bt, "text", "") or ""
+                await asyncio.sleep(0.05)
 
-            # 3) translation buffer (optioneel)
-            buffer_translation_text = ""
-            tb = getattr(self.state, "new_translation_buffer", None)
-            if tb is not None:
-                buffer_translation_text = getattr(tb, "text", "") or ""
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"Error in results_formatter: {e}", exc_info=True)
+                await asyncio.sleep(0.2)
 
-            # 4) status (minimaal)
-            response_status = "active_transcription"
-            if getattr(self, "_ffmpeg_error", None):
-                response_status = "error"
 
-            # lines moet objects met .text hebben (we mappen ze meteen naar dict in results_formatter)
-            lines = [SimpleNamespace(text=committed_text)] if committed_text else []
-
-            return lines, buffer_transcription_text, buffer_translation_text, response_status
-
-        except Exception as e:
-            logger.warning(f"_build_transcript_output failed: {e}")
-            return [], "", "", "error"
-   
     async def create_tasks(self) -> AsyncGenerator[FrontData, None]:
         """Create and start processing tasks."""
         self.all_tasks_for_cleanup = []
