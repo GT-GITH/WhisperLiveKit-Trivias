@@ -60,6 +60,7 @@ class SegmentV1:
         self.committed_text_start_len = 0
 
 
+
 async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.ndarray, List[Any]]:
     items: List[Any] = []
 
@@ -104,7 +105,8 @@ class AudioProcessor:
         self._batch_queue: asyncio.Queue = asyncio.Queue()
         self._batch_worker_task: Optional[asyncio.Task] = None
         self._batch_refine_enabled: bool = True
-
+        self._last_final_end_ms: int = 0
+        
         # Audio processing settings
         self.args = models.args
         self.batch_asr = getattr(models, "batch_asr", None)
@@ -320,6 +322,15 @@ class AudioProcessor:
             merged.final_text = (p.final_text + " " + seg.final_text).strip()
             merged.committed_text_start_len = p.committed_text_start_len
             self._segments_v1.append(merged)
+
+            # ✅ nieuw teogeveogd voor merge refine
+            if self._batch_refine_enabled:
+                try:
+                    self._batch_queue.put_nowait(merged)
+                    logger.info(f"[BATCH] queued MERGED segment {merged.segment_id} for refinement")
+                except Exception as e:
+                    logger.warning(f"[BATCH] queue failed (merged): {e}")
+
             self._pending_short_segment_v1 = None
             logger.info(f"[SEG] MERGE  id={merged.segment_id} start_ms={merged.start_ms} end_ms={merged.end_ms}")
         else:
@@ -331,6 +342,8 @@ class AudioProcessor:
                 except Exception as e:
                     logger.warning(f"[BATCH] queue failed: {e}")
             logger.info(f"[SEG] FINAL  id={seg.segment_id} start_ms={seg.start_ms} end_ms={seg.end_ms} dur_ms={dur_ms}")
+
+        self._last_final_end_ms = max(self._last_final_end_ms, int(end_ms))
 
         self._current_segment_v1 = None
 
@@ -842,7 +855,7 @@ class AudioProcessor:
                 if not seg or seg.end_ms is None:
                     continue
 
-                PRE_MS  = 200    # 1.0s context vóór
+                PRE_MS  = 600    # 0.6s context vóór
                 POST_MS = 200    # 0.2s context ná
 
                 start_ms = max(0, int(seg.start_ms) - PRE_MS)
@@ -854,12 +867,21 @@ class AudioProcessor:
 
                 refined = await asyncio.to_thread(self._batch_transcribe_text, audio)
                 if refined:
-                    seg.final_text = refined.strip()
-                    logger.info(
-                        f"[BATCH] refined segment {seg.segment_id} "
-                        f"(orig {seg.start_ms}-{seg.end_ms}ms, padded {start_ms}-{end_ms}ms)"
-                    )
+                    refined = refined.strip()
+                    orig = (seg.final_text or "").strip()
 
+                    # Alleen overschrijven als refined niet verdacht veel korter is
+                    if (not orig) or (len(refined) >= int(len(orig) * 0.90)):
+                        seg.final_text = refined
+                        logger.info(
+                            f"[BATCH] refined segment {seg.segment_id} "
+                            f"(orig {seg.start_ms}-{seg.end_ms}ms, padded {start_ms}-{end_ms}ms)"
+                        )
+                    else:
+                        logger.warning(
+                            f"[BATCH] SKIP overwrite for {seg.segment_id}: "
+                            f"refined too short (ref={len(refined)} < orig={len(orig)})"
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1010,6 +1032,8 @@ class AudioProcessor:
         if not self.current_silence:
             # Segment open moment = start van dit chunk (tijd-gebaseerd)
             chunk_start_ms = int((chunk_sample_start / self.sample_rate) * 1000)
+            chunk_start_ms = max(chunk_start_ms, self._last_final_end_ms)  # voorkom overlap
+
 
             # NB: committed_text vullen we later in results_formatter (nu nog leeg OK)
             # Hier openen we alleen als er nog geen segment open is.
