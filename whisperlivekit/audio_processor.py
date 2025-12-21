@@ -872,17 +872,17 @@ class AudioProcessor:
                     orig = (seg.final_text or "").strip()
 
                     # Alleen overschrijven als refined niet verdacht veel korter is
-                    if (not orig) or (len(refined) >= int(len(orig) * 0.90)):
-                        seg.final_text = refined
-                        logger.info(
-                            f"[BATCH] refined segment {seg.segment_id} "
-                            f"(orig {seg.start_ms}-{seg.end_ms}ms, padded {start_ms}-{end_ms}ms)"
+                   # if (not orig) or (len(refined) >= int(len(orig) * 0.90)):
+                    #    seg.final_text = refined
+                     #   logger.info(
+                     #       f"[BATCH] refined segment {seg.segment_id} "
+                     #       f"(orig {seg.start_ms}-{seg.end_ms}ms, padded {start_ms}-{end_ms}ms)"
                         )
-                    else:
-                        logger.warning(
-                            f"[BATCH] SKIP overwrite for {seg.segment_id}: "
-                            f"refined too short (ref={len(refined)} < orig={len(orig)})"
-                        )
+                    #else:
+                     #   logger.warning(
+                     #       f"[BATCH] SKIP overwrite for {seg.segment_id}: "
+                     #       f"refined too short (ref={len(refined)} < orig={len(orig)})"
+                     #   )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
