@@ -13,6 +13,7 @@ from time import time
 from typing import Any, AsyncGenerator, List, Optional, Union
 
 import numpy as np
+from types import SimpleNamespace   
 
 from whisperlivekit.core import (TranscriptionEngine,
                                  online_diarization_factory, online_factory,
@@ -488,7 +489,47 @@ class AudioProcessor:
 
             await asyncio.sleep(0.05)
 
-        
+    def _build_transcript_output(self):
+        """
+        Bouwt de payload voor de UI op basis van de huidige state.
+        GEEN segment-logica; alleen committed tokens + buffer (live tail).
+        """
+        try:
+            # 1) committed transcript uit tokens
+            committed_parts = []
+            for tok in (getattr(self.state, "tokens", None) or []):
+                txt = getattr(tok, "text", None)
+                if isinstance(txt, str) and txt.strip():
+                    committed_parts.append(txt.strip())
+
+            committed_text = self.sep.join(committed_parts).strip()
+
+            # 2) live buffer (grijs)
+            buffer_transcription_text = ""
+            bt = getattr(self.state, "buffer_transcription", None)
+            if bt is not None:
+                buffer_transcription_text = getattr(bt, "text", "") or ""
+
+            # 3) translation buffer (optioneel)
+            buffer_translation_text = ""
+            tb = getattr(self.state, "new_translation_buffer", None)
+            if tb is not None:
+                buffer_translation_text = getattr(tb, "text", "") or ""
+
+            # 4) status (minimaal)
+            response_status = "active_transcription"
+            if getattr(self, "_ffmpeg_error", None):
+                response_status = "error"
+
+            # lines moet objects met .text hebben (we mappen ze meteen naar dict in results_formatter)
+            lines = [SimpleNamespace(text=committed_text)] if committed_text else []
+
+            return lines, buffer_transcription_text, buffer_translation_text, response_status
+
+        except Exception as e:
+            logger.warning(f"_build_transcript_output failed: {e}")
+            return [], "", "", "error"
+   
     async def create_tasks(self) -> AsyncGenerator[FrontData, None]:
         """Create and start processing tasks."""
         self.all_tasks_for_cleanup = []
