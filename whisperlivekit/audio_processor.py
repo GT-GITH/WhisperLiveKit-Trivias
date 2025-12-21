@@ -46,6 +46,7 @@ class SegmentV1:
         "segment_id", "session_id", "start_ms", "end_ms", "state",
         "live_text", "final_text",
         "committed_text_start_len",
+        "start_ms_fixed",
     )
 
     def __init__(self, session_id: str, start_ms: int):
@@ -58,7 +59,7 @@ class SegmentV1:
         self.final_text = ""
         # voor debug/latere stap: waar in de committed-text deze segment begon
         self.committed_text_start_len = 0
-
+        self.start_ms_fixed = False
 
 
 async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.ndarray, List[Any]]:
@@ -855,7 +856,7 @@ class AudioProcessor:
                 if not seg or seg.end_ms is None:
                     continue
 
-                PRE_MS  = 600    # 0.6s context vóór
+                PRE_MS  = 200    # 0.6s context vóór
                 POST_MS = 200    # 0.2s context ná
 
                 start_ms = max(0, int(seg.start_ms) - PRE_MS)
@@ -1020,7 +1021,24 @@ class AudioProcessor:
         if res is not None:
             if "start" in res and self.current_silence:
                 await self._end_silence()
-            
+
+            if "start" in res and self._current_segment_v1 is not None and not self._current_segment_v1.start_ms_fixed:
+                vad_start_sample = int(res["start"])
+                vad_start_ms = int((vad_start_sample / self.sample_rate) * 1000)
+
+                # Clamp: niet vóór vorige FINAL en niet ná huidige now
+                vad_start_ms = max(vad_start_ms, self._last_final_end_ms)
+
+                # Alleen aanpassen als het echt later is dan de huidige start (we willen geen “terug” springen)
+                if vad_start_ms > self._current_segment_v1.start_ms:
+                    logger.info(
+                        f"[SEG] ADJUST start_ms {self._current_segment_v1.segment_id}: "
+                        f"{self._current_segment_v1.start_ms} -> {vad_start_ms} (vad start)"
+                    )
+                    self._current_segment_v1.start_ms = vad_start_ms
+
+                self._current_segment_v1.start_ms_fixed = True
+                    
             if "end" in res and not self.current_silence:
                 pre_silence_chunk = self._slice_before_silence(
                     pcm_array, chunk_sample_start, res.get("end")
