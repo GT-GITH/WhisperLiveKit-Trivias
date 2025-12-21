@@ -1037,7 +1037,9 @@ class AudioProcessor:
                     )
                     self._current_segment_v1.start_ms = vad_start_ms
                     # 🔴 NIEUW
-                    self._current_segment_v1.committed_text_start_len = len(self.committed_text)
+                    curr_len = len(self._last_committed_text or "") 
+                    self._current_segment_v1.committed_text_start_len = curr_len
+                    logger.info(f"[SEG] ADJUST committed_idx -> {self._current_segment_v1.committed_text_start_len}")
 
                 self._current_segment_v1.start_ms_fixed = True
                     
