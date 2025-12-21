@@ -877,7 +877,7 @@ class AudioProcessor:
                      #   logger.info(
                      #       f"[BATCH] refined segment {seg.segment_id} "
                      #       f"(orig {seg.start_ms}-{seg.end_ms}ms, padded {start_ms}-{end_ms}ms)"
-                        )
+                     #   )
                     #else:
                      #   logger.warning(
                      #       f"[BATCH] SKIP overwrite for {seg.segment_id}: "
