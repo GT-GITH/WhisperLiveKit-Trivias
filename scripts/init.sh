@@ -4,8 +4,8 @@ set -euo pipefail
 # ------------------------------------------------------------
 # RunPod init script (idempotent) - NO POETRY
 # - Repo: https://github.com/GT-GITH/WhisperLiveKit-Trivias.git
-# - Target remote branch: main
-# - Local working branch: main (points to remote branch)
+# - Target remote branch: origin/feat-batch-tuning-copt
+# - Local working branch: stable-segment-batch-v1 (points to remote branch)
 #
 # Usage:
 #   bash scripts/init.sh --all            # full setup
