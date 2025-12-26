@@ -46,6 +46,8 @@ FRAME_THRESHOLD="${FRAME_THRESHOLD:-25}"
 AUDIO_MIN_LEN="${AUDIO_MIN_LEN:-0.0}"
 AUDIO_MAX_LEN="${AUDIO_MAX_LEN:-30.0}"
 BEAMS="${BEAMS:-1}"
+DIARIZATION="${DIARIZATION:-0}"
+
 
 # --- ensure bash ---
 [[ -n "${BASH_VERSION:-}" ]] || die "Dit script vereist bash. Run: bash $0 ..."
@@ -127,6 +129,11 @@ startlive() {
   # IMPORTANT: --start should NOT do setup. It assumes repo+venv are already ready.
   [[ -d "$APP_DIR/.git" ]] || die "Repo niet gevonden in $APP_DIR. Run eerst: bash scripts/init.sh --setup"
   [[ -d "$VENV_DIR" ]] || die "Venv niet gevonden in $VENV_DIR. Run eerst: bash scripts/init.sh --setup"
+  DIAR_ARGS=()
+  if [[ "$DIARIZATION" == "1" ]]; then
+    DIAR_ARGS+=(--diarization --diarization-backend diart)
+  fi
+
 
   cd "$APP_DIR"
   # shellcheck disable=SC1091
@@ -139,8 +146,8 @@ startlive() {
     --frame-threshold "$FRAME_THRESHOLD" \
     --audio-min-len "$AUDIO_MIN_LEN" \
     --audio-max-len "$AUDIO_MAX_LEN" \
-    --beams "$BEAMS"\
-    --diarization: True
+    --beams "$BEAMS" \
+    "${DIAR_ARGS[@]}"
 }
 
 gpustat() {
