@@ -1,98 +1,3 @@
-# ============================================================
-# sounddevice stub (RunPod / no PortAudio environment)
-# ============================================================
-import sys
-import types
-
-if "sounddevice" not in sys.modules:
-    sd = types.ModuleType("sounddevice")
-
-    def _not_available(*args, **kwargs):
-        raise RuntimeError("sounddevice is not available in this environment")
-
-    # minimal API surface that diart may touch
-    sd.query_devices = _not_available
-    sd.default = None
-    sd.InputStream = _not_available
-    sd.OutputStream = _not_available
-
-    sys.modules["sounddevice"] = sd
-# ============================================================
-# ============================================================
-# torchaudio compatibility shim (for pyannote + torchaudio 2.9)
-# ============================================================
-import torchaudio
-
-if not hasattr(torchaudio, "AudioMetaData"):
-    # Try to import from known internal locations first
-    AudioMetaData = None
-    for modpath in (
-        "torchaudio.backend.common",
-        "torchaudio._backend.common",
-        "torchaudio._backend.utils",
-        "torchaudio.backend.utils",
-    ):
-        try:
-            m = __import__(modpath, fromlist=["AudioMetaData"])
-            AudioMetaData = getattr(m, "AudioMetaData", None)
-            if AudioMetaData is not None:
-                break
-        except Exception:
-            pass
-
-    # If not found anywhere, provide a minimal stub that satisfies pyannote
-    if AudioMetaData is None:
-        from dataclasses import dataclass
-        from typing import Optional
-
-        @dataclass(frozen=True)
-        class AudioMetaData:  # type: ignore
-            sample_rate: int
-            num_frames: int
-            num_channels: int
-            bits_per_sample: Optional[int] = None
-            encoding: Optional[str] = None
-
-    torchaudio.AudioMetaData = AudioMetaData  # type: ignore
-# ============================================================
-# ============================================================
-# torchaudio API compatibility shim (pyannote expects legacy API)
-# ============================================================
-
-# list_audio_backends
-if not hasattr(torchaudio, "list_audio_backends"):
-    try:
-        # some builds expose it here
-        from torchaudio.backend import list_audio_backends as _lab  # type: ignore
-        torchaudio.list_audio_backends = _lab  # type: ignore
-    except Exception:
-        # minimal fallback: pretend we have at least "soundfile" backend
-        def _lab():  # type: ignore
-            return ["soundfile"]
-        torchaudio.list_audio_backends = _lab  # type: ignore
-
-# set_audio_backend (pyannote may call it)
-if not hasattr(torchaudio, "set_audio_backend"):
-    try:
-        from torchaudio.backend import set_audio_backend as _sab  # type: ignore
-        torchaudio.set_audio_backend = _sab  # type: ignore
-    except Exception:
-        def _sab(name: str):  # type: ignore
-            # no-op fallback
-            return None
-        torchaudio.set_audio_backend = _sab  # type: ignore
-
-# get_audio_backend (some libs use it)
-if not hasattr(torchaudio, "get_audio_backend"):
-    try:
-        from torchaudio.backend import get_audio_backend as _gab  # type: ignore
-        torchaudio.get_audio_backend = _gab  # type: ignore
-    except Exception:
-        def _gab():  # type: ignore
-            return "soundfile"
-        torchaudio.get_audio_backend = _gab  # type: ignore
-# ============================================================
-
 import asyncio
 import logging
 import re
@@ -105,8 +10,7 @@ import diart.models as m
 import numpy as np
 from diart import SpeakerDiarization, SpeakerDiarizationConfig
 from diart.inference import StreamingInference
-#from diart.sources import AudioSource, MicrophoneAudioSource
-from diart.sources import AudioSource
+from diart.sources import AudioSource, MicrophoneAudioSource
 from pyannote.core import Annotation
 from rx.core import Observer
 
@@ -262,7 +166,7 @@ class WebSocketAudioSource(AudioSource):
 
 
 class DiartDiarization:
-    def __init__(self, sample_rate: int = 16000, config : SpeakerDiarizationConfig = None,  block_duration: float = 1.5, segmentation_model_name: str = "pyannote/segmentation-3.0", embedding_model_name: str = "pyannote/embedding"):
+    def __init__(self, sample_rate: int = 16000, config : SpeakerDiarizationConfig = None, use_microphone: bool = False, block_duration: float = 1.5, segmentation_model_name: str = "pyannote/segmentation-3.0", embedding_model_name: str = "pyannote/embedding"):
         segmentation_model = m.SegmentationModel.from_pretrained(segmentation_model_name)
         embedding_model = m.EmbeddingModel.from_pretrained(embedding_model_name)
         
@@ -275,13 +179,16 @@ class DiartDiarization:
         self.pipeline = SpeakerDiarization(config=config)        
         self.observer = DiarizationObserver()
         
-        # RunPod/WebSocket use-case: always use WebSocketAudioSource (no PortAudio/sounddevice)
-        self.custom_source = WebSocketAudioSource(
-            uri="websocket_source", 
-            sample_rate=sample_rate,
-            block_duration=block_duration
-        )
-        self.source = self.custom_source
+        if use_microphone:
+            self.source = MicrophoneAudioSource(block_duration=block_duration)
+            self.custom_source = None
+        else:
+            self.custom_source = WebSocketAudioSource(
+                uri="websocket_source", 
+                sample_rate=sample_rate,
+                block_duration=block_duration
+            )
+            self.source = self.custom_source
             
         self.inference = StreamingInference(
             pipeline=self.pipeline,

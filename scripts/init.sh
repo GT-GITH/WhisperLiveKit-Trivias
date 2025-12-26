@@ -131,7 +131,7 @@ startlive() {
   [[ -d "$VENV_DIR" ]] || die "Venv niet gevonden in $VENV_DIR. Run eerst: bash scripts/init.sh --setup"
   DIAR_ARGS=()
   if [[ "$DIARIZATION" == "1" ]]; then
-    DIAR_ARGS+=(--diarization --diarization-backend diart)
+    DIAR_ARGS+=(--diarization --diarization-backend sortformer)
   fi
 
 
