@@ -1,20 +1,41 @@
 # ============================================================
-# torchaudio compatibility shim (REQUIRED for torchaudio 2.9+)
+# torchaudio compatibility shim (for pyannote + torchaudio 2.9)
 # ============================================================
 import torchaudio
 
 if not hasattr(torchaudio, "AudioMetaData"):
-    try:
-        from torchaudio.backend.common import AudioMetaData  # type: ignore
-    except Exception:
+    # Try to import from known internal locations first
+    AudioMetaData = None
+    for modpath in (
+        "torchaudio.backend.common",
+        "torchaudio._backend.common",
+        "torchaudio._backend.utils",
+        "torchaudio.backend.utils",
+    ):
         try:
-            from torchaudio._backend.common import AudioMetaData  # type: ignore
+            m = __import__(modpath, fromlist=["AudioMetaData"])
+            AudioMetaData = getattr(m, "AudioMetaData", None)
+            if AudioMetaData is not None:
+                break
         except Exception:
-            AudioMetaData = None
+            pass
 
-    if AudioMetaData is not None:
-        torchaudio.AudioMetaData = AudioMetaData  # type: ignore
+    # If not found anywhere, provide a minimal stub that satisfies pyannote
+    if AudioMetaData is None:
+        from dataclasses import dataclass
+        from typing import Optional
+
+        @dataclass(frozen=True)
+        class AudioMetaData:  # type: ignore
+            sample_rate: int
+            num_frames: int
+            num_channels: int
+            bits_per_sample: Optional[int] = None
+            encoding: Optional[str] = None
+
+    torchaudio.AudioMetaData = AudioMetaData  # type: ignore
 # ============================================================
+
 import asyncio
 import logging
 import re
