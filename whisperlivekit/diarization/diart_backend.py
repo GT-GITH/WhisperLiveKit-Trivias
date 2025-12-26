@@ -85,7 +85,8 @@ import diart.models as m
 import numpy as np
 from diart import SpeakerDiarization, SpeakerDiarizationConfig
 from diart.inference import StreamingInference
-from diart.sources import AudioSource, MicrophoneAudioSource
+#from diart.sources import AudioSource, MicrophoneAudioSource
+from diart.sources import AudioSource
 from pyannote.core import Annotation
 from rx.core import Observer
 
@@ -241,7 +242,7 @@ class WebSocketAudioSource(AudioSource):
 
 
 class DiartDiarization:
-    def __init__(self, sample_rate: int = 16000, config : SpeakerDiarizationConfig = None, use_microphone: bool = False, block_duration: float = 1.5, segmentation_model_name: str = "pyannote/segmentation-3.0", embedding_model_name: str = "pyannote/embedding"):
+    def __init__(self, sample_rate: int = 16000, config : SpeakerDiarizationConfig = None,  block_duration: float = 1.5, segmentation_model_name: str = "pyannote/segmentation-3.0", embedding_model_name: str = "pyannote/embedding"):
         segmentation_model = m.SegmentationModel.from_pretrained(segmentation_model_name)
         embedding_model = m.EmbeddingModel.from_pretrained(embedding_model_name)
         
@@ -254,16 +255,13 @@ class DiartDiarization:
         self.pipeline = SpeakerDiarization(config=config)        
         self.observer = DiarizationObserver()
         
-        if use_microphone:
-            self.source = MicrophoneAudioSource(block_duration=block_duration)
-            self.custom_source = None
-        else:
-            self.custom_source = WebSocketAudioSource(
-                uri="websocket_source", 
-                sample_rate=sample_rate,
-                block_duration=block_duration
-            )
-            self.source = self.custom_source
+        # RunPod/WebSocket use-case: always use WebSocketAudioSource (no PortAudio/sounddevice)
+        self.custom_source = WebSocketAudioSource(
+            uri="websocket_source", 
+            sample_rate=sample_rate,
+            block_duration=block_duration
+        )
+        self.source = self.custom_source
             
         self.inference = StreamingInference(
             pipeline=self.pipeline,
