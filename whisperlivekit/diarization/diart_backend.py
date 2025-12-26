@@ -1,4 +1,24 @@
 # ============================================================
+# sounddevice stub (RunPod / no PortAudio environment)
+# ============================================================
+import sys
+import types
+
+if "sounddevice" not in sys.modules:
+    sd = types.ModuleType("sounddevice")
+
+    def _not_available(*args, **kwargs):
+        raise RuntimeError("sounddevice is not available in this environment")
+
+    # minimal API surface that diart may touch
+    sd.query_devices = _not_available
+    sd.default = None
+    sd.InputStream = _not_available
+    sd.OutputStream = _not_available
+
+    sys.modules["sounddevice"] = sd
+# ============================================================
+# ============================================================
 # torchaudio compatibility shim (for pyannote + torchaudio 2.9)
 # ============================================================
 import torchaudio
