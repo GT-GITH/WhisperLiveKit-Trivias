@@ -35,6 +35,43 @@ if not hasattr(torchaudio, "AudioMetaData"):
 
     torchaudio.AudioMetaData = AudioMetaData  # type: ignore
 # ============================================================
+# ============================================================
+# torchaudio API compatibility shim (pyannote expects legacy API)
+# ============================================================
+
+# list_audio_backends
+if not hasattr(torchaudio, "list_audio_backends"):
+    try:
+        # some builds expose it here
+        from torchaudio.backend import list_audio_backends as _lab  # type: ignore
+        torchaudio.list_audio_backends = _lab  # type: ignore
+    except Exception:
+        # minimal fallback: pretend we have at least "soundfile" backend
+        def _lab():  # type: ignore
+            return ["soundfile"]
+        torchaudio.list_audio_backends = _lab  # type: ignore
+
+# set_audio_backend (pyannote may call it)
+if not hasattr(torchaudio, "set_audio_backend"):
+    try:
+        from torchaudio.backend import set_audio_backend as _sab  # type: ignore
+        torchaudio.set_audio_backend = _sab  # type: ignore
+    except Exception:
+        def _sab(name: str):  # type: ignore
+            # no-op fallback
+            return None
+        torchaudio.set_audio_backend = _sab  # type: ignore
+
+# get_audio_backend (some libs use it)
+if not hasattr(torchaudio, "get_audio_backend"):
+    try:
+        from torchaudio.backend import get_audio_backend as _gab  # type: ignore
+        torchaudio.get_audio_backend = _gab  # type: ignore
+    except Exception:
+        def _gab():  # type: ignore
+            return "soundfile"
+        torchaudio.get_audio_backend = _gab  # type: ignore
+# ============================================================
 
 import asyncio
 import logging
