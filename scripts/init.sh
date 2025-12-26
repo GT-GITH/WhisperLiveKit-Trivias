@@ -139,7 +139,8 @@ startlive() {
     --frame-threshold "$FRAME_THRESHOLD" \
     --audio-min-len "$AUDIO_MIN_LEN" \
     --audio-max-len "$AUDIO_MAX_LEN" \
-    --beams "$BEAMS"
+    --beams "$BEAMS"\
+    --diarization: True
 }
 
 gpustat() {
