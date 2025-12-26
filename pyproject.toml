@@ -45,10 +45,11 @@ dependencies = [
     "faster-whisper",
     "onnxruntime",
 
-    # --- diarization stack (you said: everything ON by default) ---
+    # --- diarization stack ---
     "pyannote.audio",
     "pyannote.core",
     "pyannote.pipeline",
+    "diart",
 
     # (optional but commonly needed in audio pipelines; keep only if your code imports it)
     # "numpy<2",

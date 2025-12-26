@@ -1,3 +1,20 @@
+# ============================================================
+# torchaudio compatibility shim (REQUIRED for torchaudio 2.9+)
+# ============================================================
+import torchaudio
+
+if not hasattr(torchaudio, "AudioMetaData"):
+    try:
+        from torchaudio.backend.common import AudioMetaData  # type: ignore
+    except Exception:
+        try:
+            from torchaudio._backend.common import AudioMetaData  # type: ignore
+        except Exception:
+            AudioMetaData = None
+
+    if AudioMetaData is not None:
+        torchaudio.AudioMetaData = AudioMetaData  # type: ignore
+# ============================================================
 import asyncio
 import logging
 import re
