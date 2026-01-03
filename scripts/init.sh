@@ -61,11 +61,19 @@ git_identity() {
 
 # --- deps ---
 install_deps() {
-  log "Install OS deps (git, curl, ffmpeg, python3-venv)..."
+  local marker="$WORKSPACE/.os_deps_installed"
+  if [[ -f "$marker" ]]; then
+    log "OS deps al gedaan → skip"
+    return 0
+  fi
+
+  log "Install OS deps..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y >/dev/null
   apt-get install -y git curl ffmpeg python3-venv >/dev/null
-  apt-get install -y python3.11 python3.11-venv
+  apt-get install -y python3.11 python3.11-venv >/dev/null
+
+  touch "$marker"
 }
 
 # --- repo ---
@@ -100,14 +108,40 @@ setup_repo() {
 }
 
 install_pytorch_compatible() {
-  log "Forceer compatibele PyTorch/torchaudio versies voor pyannote..."
-  # Zorg dat we niet blijven hangen op die 2.9.x builds
-  pip uninstall -y torch torchaudio torchvision >/dev/null 2>&1 || true
+  local want_torch="2.4.1+cu121"
+  local want_audio="2.4.1+cu121"
+  local want_vision="0.19.1+cu121"
+  local cur_torch cur_audio cur_vision
 
-  # Installeer stabiele combo (cu121 is doorgaans ok op CUDA 12.x machines)
-  pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
-    torch==2.4.1+cu121 torchaudio==2.4.1+cu121
+
+  cur_torch=$(python - <<'PY' 2>/dev/null || true
+import torch; print(torch.__version__)
+PY
+)
+
+  cur_audio=$(python - <<'PY' 2>/dev/null || true
+import torchaudio; print(torchaudio.__version__)
+PY
+)
+
+  cur_vision=$(python - <<'PY' 2>/dev/null || true
+import torchvision; print(torchvision.__version__)
+PY
+)
+
+
+if [[ "$cur_torch" == "$want_torch" && "$cur_audio" == "$want_audio" && "$cur_vision" == "$want_vision" ]]; then
+  log "Torch stack OK (${cur_torch}/${cur_audio}/${cur_vision}) — skip install"
+  return 0
+fi
+
+
+  log "Torch stack mismatch → enforcing ${want_torch}/${want_audio}/${want_vision}"
+  pip uninstall -y torch torchaudio torchvision >/dev/null 2>&1 || true
+  pip install  --index-url https://download.pytorch.org/whl/cu121 \
+    "torch==${want_torch}" "torchaudio==${want_audio}" "torchvision==${want_vision}"
 }
+
 
 install_nemo_sortformer() {
   # Installeer NeMo alleen als diarization=1 en backend=sortformer
@@ -128,7 +162,7 @@ from nemo.collections.asr.models import SortformerEncLabelModel
 PY
 
   log "Install NeMo toolkit (ASR) voor SortFormer..."
-  pip install --no-cache-dir "nemo_toolkit[asr]@git+https://github.com/NVIDIA/NeMo.git@main"
+  pip install "nemo_toolkit[asr]@git+https://github.com/NVIDIA/NeMo.git@main"
 
   # Verify
   python - <<'PY' || die "NeMo install faalde (SortFormer import lukt niet)"
@@ -177,7 +211,8 @@ PY
   python -c "import faster_whisper; print('faster_whisper OK')" || die "faster-whisper import faalde"
   python -c "import onnxruntime; print('onnxruntime OK')" || die "onnxruntime import faalde"
 
-  python - <<'PY' || die "pyannote.audio import faalde (zie traceback hierboven)"
+  if [[ "${DIARIZATION}" == "1" ]]; then
+    python - <<'PY' || die "pyannote.audio import faalde (zie traceback hierboven)"
 import traceback
 try:
     import pyannote.audio
@@ -187,7 +222,11 @@ except Exception as e:
     traceback.print_exc()
     raise
 PY
+  else
+    log "DIARIZATION=0 → pyannote check skip"
+  fi
 }
+
 
 
 # --- run ---
