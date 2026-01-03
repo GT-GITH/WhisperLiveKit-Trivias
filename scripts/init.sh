@@ -47,6 +47,7 @@ AUDIO_MIN_LEN="${AUDIO_MIN_LEN:-0.0}"
 AUDIO_MAX_LEN="${AUDIO_MAX_LEN:-30.0}"
 BEAMS="${BEAMS:-1}"
 DIARIZATION="${DIARIZATION:-0}"
+DIARIZATION_BACKEND="${DIARIZATION_BACKEND:-sortformer}"
 
 
 # --- ensure bash ---
@@ -108,6 +109,34 @@ install_pytorch_compatible() {
     torch==2.4.1+cu121 torchaudio==2.4.1+cu121
 }
 
+install_nemo_sortformer() {
+  # Installeer NeMo alleen als diarization=1 en backend=sortformer
+  if [[ "${DIARIZATION:-0}" != "1" ]]; then
+    log "DIARIZATION=0 → NeMo skip"
+    return 0
+  fi
+
+  # Als jij later een env var wilt toevoegen voor backend: DIARIZATION_BACKEND
+  if [[ "${DIARIZATION_BACKEND:-sortformer}" != "sortformer" ]]; then
+    log "DIARIZATION_BACKEND!=sortformer → NeMo skip"
+    return 0
+  fi
+
+  # Idempotent: als import werkt, niets doen
+  python - <<'PY' >/dev/null 2>&1 && { log "NeMo (SortFormer) al aanwezig"; return 0; }
+from nemo.collections.asr.models import SortformerEncLabelModel
+PY
+
+  log "Install NeMo toolkit (ASR) voor SortFormer..."
+  pip install --no-cache-dir "nemo_toolkit[asr]@git+https://github.com/NVIDIA/NeMo.git@main"
+
+  # Verify
+  python - <<'PY' || die "NeMo install faalde (SortFormer import lukt niet)"
+from nemo.collections.asr.models import SortformerEncLabelModel
+print("NeMo SortFormer OK")
+PY
+}
+
 # --- venv + pip ---
 setup_venv_pip() {
   cd "$APP_DIR"
@@ -139,7 +168,9 @@ PY
   
   log "Install project + deps (editable) via pyproject.toml..."
   pip install -e .
-
+  
+  install_nemo_sortformer
+  
   log "Sanity import checks..."
   python -c "import torch; print('torch', torch.__version__)" || die "torch import faalde"
   python -c "import torchaudio; print('torchaudio', torchaudio.__version__)" || die "torchaudio import faalde"
@@ -166,7 +197,8 @@ startlive() {
   [[ -d "$VENV_DIR" ]] || die "Venv niet gevonden in $VENV_DIR. Run eerst: bash scripts/init.sh --setup"
   DIAR_ARGS=()
   if [[ "$DIARIZATION" == "1" ]]; then
-    DIAR_ARGS+=(--diarization --diarization-backend sortformer)
+    DIAR_ARGS+=(--diarization --diarization-backend "$DIARIZATION_BACKEND")
+
   fi
 
 
