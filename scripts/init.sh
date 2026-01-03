@@ -105,24 +105,36 @@ setup_venv_pip() {
   if [[ ! -d "$VENV_DIR" ]]; then
     log "Maak venv: $VENV_DIR"
     python3.11 -m venv "$VENV_DIR"
-    
-    PYV=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    [[ "$PYV" == "3.11" ]] || die "Verkeerde Python in venv: $PYV (verwacht 3.11)"
-
   fi
 
   # activate venv
   # shellcheck disable=SC1091
-log "Sanity import checks..."
-log "Python: $(python -V)"
-log "Python path: $(which python)"
+  source "$VENV_DIR/bin/activate"
+  log "Venv actief: $VIRTUAL_ENV"
 
-python -c "import torch; print('torch', torch.__version__)" || die "torch import faalde"
-python -c "import torchaudio; print('torchaudio', torchaudio.__version__)" || die "torchaudio import faalde (lib mismatch?)"
-python -c "import faster_whisper; print('faster_whisper OK')" || die "faster-whisper import faalde"
-python -c "import onnxruntime; print('onnxruntime OK')" || die "onnxruntime import faalde"
+  log "Python: $(python -V)"
+  log "Python path: $(which python)"
 
-python - <<'PY' || die "pyannote.audio import faalde (zie traceback hierboven)"
+  PYV=$(python - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+)
+  [[ "$PYV" == "3.11" ]] || die "Verkeerde Python in venv: $PYV (verwacht 3.11)"
+
+  log "Upgrade pip tooling..."
+  pip install -U pip setuptools wheel
+
+  log "Install project + deps (editable) via pyproject.toml..."
+  pip install -e .
+
+  log "Sanity import checks..."
+  python -c "import torch; print('torch', torch.__version__)" || die "torch import faalde"
+  python -c "import torchaudio; print('torchaudio', torchaudio.__version__)" || die "torchaudio import faalde"
+  python -c "import faster_whisper; print('faster_whisper OK')" || die "faster-whisper import faalde"
+  python -c "import onnxruntime; print('onnxruntime OK')" || die "onnxruntime import faalde"
+
+  python - <<'PY' || die "pyannote.audio import faalde (zie traceback hierboven)"
 import traceback
 try:
     import pyannote.audio
@@ -132,8 +144,8 @@ except Exception as e:
     traceback.print_exc()
     raise
 PY
-
 }
+
 
 # --- run ---
 startlive() {
