@@ -64,6 +64,7 @@ install_deps() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y >/dev/null
   apt-get install -y git curl ffmpeg python3-venv >/dev/null
+  apt-get install -y python3.11 python3.11-venv
 }
 
 # --- repo ---
@@ -103,7 +104,8 @@ setup_venv_pip() {
 
   if [[ ! -d "$VENV_DIR" ]]; then
     log "Maak venv: $VENV_DIR"
-    python3 -m venv "$VENV_DIR"
+    python3.11 -m venv "$VENV_DIR"
+
   fi
 
   # activate venv
