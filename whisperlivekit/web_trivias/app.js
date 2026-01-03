@@ -1,4 +1,4 @@
-// Trivias STT ÔÇô Simple 1-channel UI with microphone selection
+// Trivias STT Simple 1-channel UI with microphone selection
 
 let websocket = null;
 let websocketUrl = null;
@@ -74,10 +74,10 @@ function setAsrStatus(text) {
 function updateRecordButtonUI() {
   if (!recordButton) return;
   if (isRecording) {
-    recordButton.textContent = "ÔÅ╣ Stop";
+    recordButton.textContent = "Stop";
     recordButton.classList.add("recording");
   } else {
-    recordButton.textContent = "­ƒÄÖ Start";
+    recordButton.textContent = "­Start";
     recordButton.classList.remove("recording");
   }
 }
@@ -135,7 +135,7 @@ function ensureWebSocket() {
 
     websocket.onopen = () => {
       setConnectionStatus(true);
-      setAsrStatus("Verbonden met STT-server, wacht op audioÔÇª");
+      setAsrStatus("Verbonden met STT-server, wacht op audio");
     };
 
     websocket.onerror = (err) => {
@@ -224,13 +224,13 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     liveText = (liveText ? liveText + " " : "") + bufferTranscription.trim();
   }
 
-  liveTranscriptDiv.textContent = liveText || "Nog geen tekst ontvangenÔÇª";
+  liveTranscriptDiv.textContent = liveText || "Nog geen tekst ontvangen";
   lastFullTranscript = liveText || lastFullTranscript;
 
   if (bufferTranslation && bufferTranslation.trim().length > 0 && finalTranscriptDiv) {
     finalTranscriptDiv.textContent = bufferTranslation.trim();
   }
-  setAsrStatus("Live transcriptie actiefÔÇª");
+  setAsrStatus("Live transcriptie actief");
 }
 
 // NEW: microfoonlijst ophalen en dropdown vullen (met dedupe)
@@ -373,9 +373,9 @@ async function startRecording() {
     }
 
     if (liveTranscriptDiv) {
-      liveTranscriptDiv.textContent = "LuisterenÔÇª spreek nu.";
+      liveTranscriptDiv.textContent = "Luisteren spreek nu.";
     }
-    setAsrStatus("Opname bezigÔÇª");
+    setAsrStatus("Opname bezig");
     isRecording = true;
     userClosing = false;
     waitingForStop = false;
@@ -436,7 +436,7 @@ function stopRecording() {
   if (websocket && websocket.readyState === WebSocket.OPEN) {
     const emptyBlob = new Blob([], { type: "audio/webm" });
     websocket.send(emptyBlob);
-    setAsrStatus("Opname gestopt. Server is audio aan het afrondenÔÇª");
+    setAsrStatus("Opname gestopt. Server is audio aan het afronden");
   } else {
     setAsrStatus("Opname gestopt.");
   }
@@ -453,7 +453,7 @@ function toggleRecording() {
 // Permissions & device handling
 async function checkMicPermission() {
   if (!navigator.permissions || !navigator.permissions.query) {
-    // Geen fancy permissions-API ÔåÆ toch devices proberen te halen
+    // Geen fancy permissions-API  toch devices proberen te halen
     refreshMicrophoneList();
     return;
   }
@@ -500,4 +500,4 @@ checkMicPermission();
 updateRecordButtonUI();
 updateHint();
 setConnectionStatus(false);
-setAsrStatus("Wachten op opnameÔÇª");
+setAsrStatus("Wachten op opname");
