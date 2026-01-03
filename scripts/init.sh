@@ -98,6 +98,16 @@ setup_repo() {
   git reset --hard "origin/$REMOTE_BRANCH" >/dev/null
 }
 
+install_pytorch_compatible() {
+  log "Forceer compatibele PyTorch/torchaudio versies voor pyannote..."
+  # Zorg dat we niet blijven hangen op die 2.9.x builds
+  pip uninstall -y torch torchaudio torchvision >/dev/null 2>&1 || true
+
+  # Installeer stabiele combo (cu121 is doorgaans ok op CUDA 12.x machines)
+  pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.4.1+cu121 torchaudio==2.4.1+cu121
+}
+
 # --- venv + pip ---
 setup_venv_pip() {
   cd "$APP_DIR"
@@ -124,7 +134,9 @@ PY
 
   log "Upgrade pip tooling..."
   pip install -U pip setuptools wheel
-
+  
+  install_pytorch_compatible
+  
   log "Install project + deps (editable) via pyproject.toml..."
   pip install -e .
 
