@@ -423,10 +423,12 @@ class AudioProcessor:
         Assigns speaker labels to ASR tokens based on maximum time overlap.
         Mutates tokens in-place.
         """
+        MIN_OVERLAP = 0.08  # 80ms, tweakbaar
+
         for tok in tokens:
             best_speaker = None
             best_overlap = 0.0
-
+            
             for seg in speaker_segments:
                 overlap_start = max(tok.start, seg.start)
                 overlap_end = min(tok.end, seg.end)
@@ -436,7 +438,7 @@ class AudioProcessor:
                     best_overlap = overlap
                     best_speaker = seg.speaker
 
-            if best_speaker is not None:
+            if best_speaker is not None and best_overlap >= MIN_OVERLAP:
                 tok.speaker = best_speaker
 
     async def diarization_processor(self) -> None:
