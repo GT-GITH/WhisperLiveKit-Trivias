@@ -22,8 +22,6 @@ from whisperlivekit.ffmpeg_manager import FFmpegManager, FFmpegState
 from whisperlivekit.silero_vad_iterator import FixedVADIterator, OnnxWrapper, load_jit_vad
 from whisperlivekit.timed_objects import (ASRToken, ChangeSpeaker, FrontData,
                                           Segment, Silence, State, Transcript)
-from whisperlivekit.diarization.diart_backend import add_speaker_to_tokens
-
 from whisperlivekit.tokens_alignment import TokensAlignment
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -156,7 +154,6 @@ class AudioProcessor:
 
         self._wav_writer: Optional[wave.Wave_write] = None
         self._wav_path: Optional[Path] = None
-
 
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
@@ -421,6 +418,26 @@ class AudioProcessor:
 
         logger.info("Transcription processor task finished.")
 
+    def assign_speaker_to_tokens(self, speaker_segments, tokens):
+        """
+        Assigns speaker labels to ASR tokens based on maximum time overlap.
+        Mutates tokens in-place.
+        """
+        for tok in tokens:
+            best_speaker = None
+            best_overlap = 0.0
+
+            for seg in speaker_segments:
+                overlap_start = max(tok.start, seg.start)
+                overlap_end = min(tok.end, seg.end)
+                overlap = overlap_end - overlap_start
+
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_speaker = seg.speaker
+
+            if best_speaker is not None:
+                tok.speaker = best_speaker
 
     async def diarization_processor(self) -> None:
         while True:
@@ -439,18 +456,17 @@ class AudioProcessor:
                 async with self.lock:
                     self.state.new_diarization = diarization_segments
 
-                    # koppel diarization -> tokens (in-place)
                     if diarization_segments:
-                        asr_tokens = [t for t in self.state.tokens if isinstance(t, ASRToken)]
+                        asr_tokens = [t for t in self.state.tokens if hasattr(t, "start")]
                         if asr_tokens:
-                            add_speaker_to_tokens(diarization_segments, asr_tokens)
+                            self.assign_speaker_to_tokens(diarization_segments, asr_tokens)
 
-                        # houd progress bij voor remaining diarization (optioneel maar netjes)
                         self.state.end_attributed_speaker = max(
                             self.state.end_attributed_speaker,
                             max(seg.end for seg in diarization_segments)
                         )
-                              
+
+                
             except Exception as e:
                 logger.warning(f"Exception in diarization_processor: {e}")
                 logger.warning(f"Traceback: {traceback.format_exc()}")
