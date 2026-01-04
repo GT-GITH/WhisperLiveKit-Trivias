@@ -423,11 +423,12 @@ class AudioProcessor:
         Assigns speaker labels to ASR tokens based on maximum time overlap.
         Mutates tokens in-place.
         """
+        MIN_OVERLAP = 0.08  # 80ms, tweakbaar
+
         for tok in tokens:
             best_speaker = None
             best_overlap = 0.0
-            MIN_OVERLAP = 0.08  # 80ms, tweakbaar
-
+            
             for seg in speaker_segments:
                 overlap_start = max(tok.start, seg.start)
                 overlap_end = min(tok.end, seg.end)

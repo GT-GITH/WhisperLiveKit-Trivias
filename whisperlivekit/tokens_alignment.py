@@ -150,18 +150,30 @@ class TokensAlignment:
                 if diarization_segments and punctuation_segment.start >= diarization_segments[-1].end:
                     diarization_buffer += punctuation_segment.text
                 else:
-                    # NEW: determine speaker by majority of token speakers
+                    # NEW: determine speaker by majority of token speakers (defensive)
+                    toks = getattr(punctuation_segment, "tokens", None) or []
                     speaker_counts = {}
-                    for tok in punctuation_segment.tokens:
-                        if tok.speaker is not None and tok.speaker >= 0:
-                            speaker_counts[tok.speaker] = speaker_counts.get(tok.speaker, 0) + 1
+
+                    for tok in toks:
+                        sp = getattr(tok, "speaker", None)
+                        if sp is not None and sp >= 0:
+                            speaker_counts[sp] = speaker_counts.get(sp, 0) + 1
 
                     if speaker_counts:
                         # choose speaker with most tokens
                         punctuation_segment.speaker = max(
                             speaker_counts.items(), key=lambda x: x[1]
                         )[0] + 1
-
+                    else:
+                        # fallback: overlap-based speaker assignment (original logic)
+                        max_overlap = 0.0
+                        max_overlap_speaker = 1
+                        for diarization_segment in diarization_segments:
+                            intersec = self.intersection_duration(punctuation_segment, diarization_segment)
+                            if intersec > max_overlap:
+                                max_overlap = intersec
+                                max_overlap_speaker = diarization_segment.speaker + 1
+                        punctuation_segment.speaker = max_overlap_speaker
         
         segments = []
         if punctuation_segments:
