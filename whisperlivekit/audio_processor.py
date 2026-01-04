@@ -22,6 +22,8 @@ from whisperlivekit.ffmpeg_manager import FFmpegManager, FFmpegState
 from whisperlivekit.silero_vad_iterator import FixedVADIterator, OnnxWrapper, load_jit_vad
 from whisperlivekit.timed_objects import (ASRToken, ChangeSpeaker, FrontData,
                                           Segment, Silence, State, Transcript)
+from whisperlivekit.diarization.diart_backend import add_speaker_to_tokens
+
 from whisperlivekit.tokens_alignment import TokensAlignment
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -433,8 +435,22 @@ class AudioProcessor:
 
                 self.diarization.insert_audio_chunk(item)
                 diarization_segments = await self.diarization.diarize()
-                self.state.new_diarization = diarization_segments
-                
+
+                async with self.lock:
+                    self.state.new_diarization = diarization_segments
+
+                    # koppel diarization -> tokens (in-place)
+                    if diarization_segments:
+                        asr_tokens = [t for t in self.state.tokens if isinstance(t, ASRToken)]
+                        if asr_tokens:
+                            add_speaker_to_tokens(diarization_segments, asr_tokens)
+
+                        # houd progress bij voor remaining diarization (optioneel maar netjes)
+                        self.state.end_attributed_speaker = max(
+                            self.state.end_attributed_speaker,
+                            max(seg.end for seg in diarization_segments)
+                        )
+                              
             except Exception as e:
                 logger.warning(f"Exception in diarization_processor: {e}")
                 logger.warning(f"Traceback: {traceback.format_exc()}")

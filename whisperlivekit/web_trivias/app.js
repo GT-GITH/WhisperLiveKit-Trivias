@@ -28,6 +28,8 @@ let selectedDeviceId = null;
 // DOM elements
 const recordButton = document.getElementById("recordButton");
 const liveTranscriptDiv = document.getElementById("liveTranscript");
+if (liveTranscriptDiv) liveTranscriptDiv.style.whiteSpace = "pre-wrap";
+
 const finalTranscriptDiv = document.getElementById("finalTranscript");
 const connectionStatusSpan = document.getElementById("connectionStatus");
 const micStatusSpan = document.getElementById("micStatus");
@@ -213,11 +215,17 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     return;
   }
 
-  const base = (lines || [])
-    .map((item) => item.text || "")
-    .filter((t) => t && t.trim().length > 0)
-    .join("\n")
-    .trim();
+const base = (lines || [])
+  .map((item) => {
+    const txt = (item.text || "").trim();
+    if (!txt) return "";
+    const sp = item.speaker ?? item.speaker_id ?? item.spk;
+    if (sp === undefined || sp === null || sp === "" || sp === -1) return txt;
+    return `[${sp}] ${txt}`;
+  })
+  .filter((t) => t && t.trim().length > 0)
+  .join("\n")
+  .trim();
 
   let liveText = base;
   if (bufferTranscription && bufferTranscription.trim().length > 0) {
