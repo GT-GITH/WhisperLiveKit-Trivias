@@ -283,6 +283,11 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   }
 
 const base = (lines || [])
+  .filter((item) => {
+    const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
+    // -2 = silence segment → niet tonen
+    return sp !== -2;
+  })
   .map((item) => {
     const txt = (item.text || "").trim();
     if (!txt) return "";
@@ -293,6 +298,7 @@ const base = (lines || [])
   .filter((t) => t && t.trim().length > 0)
   .join("\n")
   .trim();
+
 
   let liveText = base;
   if (bufferTranscription && bufferTranscription.trim().length > 0) {
