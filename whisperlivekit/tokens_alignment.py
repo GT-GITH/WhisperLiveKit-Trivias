@@ -225,17 +225,17 @@ class TokensAlignment:
 
             # validated segments are FINAL
             for s in segments:
+                # FORCE deterministic ID for ALL segments
+                if s.id is None:
+                    s.id = f"seg_{int(round((s.start or 0) * 1000))}_{s.speaker}"
+
                 if not s.is_silence():
                     s.state = "FINAL"
-                    # make sure text_live is set for UI/traceability
                     if s.text_live is None:
                         s.text_live = s.text
-                    if s.id is None:
-                        # deterministic id
-                        s.id = f"seg_{int(round((s.start or 0)*1000))}_{s.speaker}"
-            
+
                 logger.debug(f"SEG {s.id} {s.state} {s.start}->{s.end}")
-                
+
             if self.current_line_tokens:
                 live_seg = Segment().from_tokens(self.current_line_tokens)
                 if live_seg and not live_seg.is_silence():
