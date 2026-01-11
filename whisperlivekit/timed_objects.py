@@ -123,7 +123,7 @@ class Segment(TimedText):
     end: Optional[float] = None
     text: Optional[str] = ''
     speaker: Optional[int] = -1  # <-- int, niet str
-    
+
     # NEW: stable ID + state + extra text layers
     id: Optional[str] = None
     state: str = "FINAL"  # LIVE | FINAL
@@ -133,6 +133,7 @@ class Segment(TimedText):
     tokens: Optional[ASRToken] = None
     translation: Optional[Translation] = None
 
+    
     @classmethod
     def from_tokens(
         cls,
@@ -169,7 +170,10 @@ class Segment(TimedText):
             seg.text_live = seg.text
 
         return seg
-
+    
+    def is_silence(self) -> bool:
+        return self.speaker == -2
+    
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the segment for frontend consumption."""
         _dict: Dict[str, Any] = {
