@@ -4,7 +4,10 @@ from typing import Any, List, Optional, Tuple, Union
 from whisperlivekit.timed_objects import (ASRToken, Segment, PuncSegment, Silence,
                                           SilentSegment, SpeakerSegment,
                                           TimedText)
-
+import logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 class TokensAlignment:
 
@@ -216,10 +219,32 @@ class TokensAlignment:
                         ))
                 else:
                     self.current_line_tokens.append(token)
-            
+
+            # tokens_alignment.py (in get_lines, non-diarization pad)
             segments = list(self.validated_segments)
+
+            # validated segments are FINAL
+            for s in segments:
+                if not s.is_silence():
+                    s.state = "FINAL"
+                    # make sure text_live is set for UI/traceability
+                    if s.text_live is None:
+                        s.text_live = s.text
+                    if s.id is None:
+                        # deterministic id
+                        s.id = f"seg_{int(round((s.start or 0)*1000))}_{s.speaker}"
+            
+                logger.debug(f"SEG {s.id} {s.state} {s.start}->{s.end}")
+                
             if self.current_line_tokens:
-                segments.append(Segment().from_tokens(self.current_line_tokens))
+                live_seg = Segment().from_tokens(self.current_line_tokens)
+                if live_seg and not live_seg.is_silence():
+                    live_seg.state = "LIVE"
+                    # live_seg.text is the provisional display, text_live mirrors it
+                    live_seg.text_live = live_seg.text
+                    logger.debug(f"LIVE {live_seg.id} {live_seg.start}->{live_seg.end}")
+                segments.append(live_seg)
+
 
         if current_silence:
             end_silence = current_silence.end if current_silence.has_ended else time() - self.beg_loop

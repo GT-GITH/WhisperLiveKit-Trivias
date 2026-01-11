@@ -8,6 +8,15 @@ def format_time(seconds: float) -> str:
     """Format seconds as HH:MM:SS."""
     return str(timedelta(seconds=int(seconds)))
 
+def _to_ms(seconds: Optional[float]) -> int:
+    if seconds is None:
+        return 0
+    return int(round(seconds * 1000.0))
+
+def _make_segment_id(start_s: Optional[float], speaker: Any) -> str:
+    # Deterministisch, stabiel zolang start gelijk blijft (en dat blijft die)
+    return f"seg_{_to_ms(start_s)}_{speaker}"
+
 @dataclass
 class Timed:
     start: Optional[float] = 0
@@ -110,10 +119,17 @@ class Silence():
 @dataclass
 class Segment(TimedText):
     """Generic contiguous span built from tokens or silence markers."""
-    start: Optional[float]
-    end: Optional[float]
-    text: Optional[str]
-    speaker: Optional[str]
+    start: Optional[float] = None
+    end: Optional[float] = None
+    text: Optional[str] = ''
+    speaker: Optional[int] = -1  # <-- int, niet str
+    
+    # NEW: stable ID + state + extra text layers
+    id: Optional[str] = None
+    state: str = "FINAL"  # LIVE | FINAL
+    text_live: Optional[str] = None
+    text_batch: Optional[str] = None
+
     tokens: Optional[ASRToken] = None
     translation: Optional[Translation] = None
 
@@ -126,18 +142,19 @@ class Segment(TimedText):
         """Return a normalized segment representing the provided tokens."""
         if not tokens:
             return None
-        
+
         start_token = tokens[0]
-        end_token = tokens[-1]        
+        end_token = tokens[-1]
+
         if is_silence:
-            return cls(
+            seg = cls(
                 start=start_token.start,
                 end=end_token.end,
                 text=None,
                 speaker=-2
             )
         else:
-            return cls(
+            seg = cls(
                 start=start_token.start,
                 end=end_token.end,
                 text=''.join(token.text for token in tokens),
@@ -145,17 +162,32 @@ class Segment(TimedText):
                 detected_language=start_token.detected_language
             )
 
-    def is_silence(self) -> bool:
-        """True when this segment represents a silence gap."""
-        return self.speaker == -2
+        # Ensure deterministic ID + live text mirror
+        if seg.id is None:
+            seg.id = _make_segment_id(seg.start, seg.speaker)
+        if seg.text_live is None:
+            seg.text_live = seg.text
+
+        return seg
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the segment for frontend consumption."""
         _dict: Dict[str, Any] = {
+            # BACKWARD compatible fields:
             'speaker': int(self.speaker) if self.speaker != -1 else 1,
-            'text': self.text,
+            'text': self.text,  # keep old UI working (this is 'final display text')
+
+            # Existing formatted times:
             'start': format_time(self.start),
             'end': format_time(self.end),
+
+            # NEW fields:
+            'id': self.id,
+            'state': self.state,
+            'start_ms': _to_ms(self.start),
+            'end_ms': _to_ms(self.end),
+            'text_live': self.text_live,
+            'text_batch': self.text_batch,
         }
         if self.translation:
             _dict['translation'] = self.translation
@@ -163,6 +195,26 @@ class Segment(TimedText):
             _dict['detected_language'] = self.detected_language
         return _dict
 
+@dataclass
+class SegmentUpdate:
+    """Small WS payload to update a single segment in-place."""
+    id: str
+    text_batch: Optional[str] = None
+    text_final: Optional[str] = None
+    state: Optional[str] = None
+    start_ms: Optional[int] = None
+    end_ms: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "segment_update",
+            "id": self.id,
+            "text_batch": self.text_batch,
+            "text_final": self.text_final,
+            "state": self.state,
+            "start_ms": self.start_ms,
+            "end_ms": self.end_ms,
+        }
 
 @dataclass
 class PuncSegment(Segment):
@@ -189,6 +241,7 @@ class FrontData():
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the front-end data payload."""
         _dict: Dict[str, Any] = {
+            'type': 'front_data',
             'status': self.status,
             'lines': [line.to_dict() for line in self.lines if (line.text or line.speaker == -2)],
             'buffer_transcription': self.buffer_transcription,

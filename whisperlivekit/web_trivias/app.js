@@ -1,5 +1,11 @@
 // Trivias STT Simple 1-channel UI with microphone selection
 
+let currentLines = [];
+let lineById = new Map();
+let lastBufferTranscription = "";
+let lastBufferTranslation = "";
+let lastStatus = "active_transcription";
+
 let websocket = null;
 let websocketUrl = null;
 
@@ -59,6 +65,13 @@ function setConnectionStatus(connected) {
     connectionStatusSpan.classList.remove("status-connected");
     connectionStatusSpan.classList.add("status-disconnected");
   }
+}
+
+function rebuildLineIndex(lines) {
+  lineById = new Map();
+  (lines || []).forEach((l) => {
+    if (l && l.id) lineById.set(l.id, l);
+  });
 }
 
 function setMicStatus(text) {
@@ -170,6 +183,9 @@ function ensureWebSocket() {
         return;
       }
 
+      /* =========================
+      * CONFIG (ongewijzigd)
+      * ========================= */
       if (data.type === "config") {
         serverUseAudioWorklet = !!data.useAudioWorklet;
         const modeText = serverUseAudioWorklet
@@ -185,24 +201,75 @@ function ensureWebSocket() {
         return;
       }
 
-      if (data.type === "ready_to_stop") {
-        waitingForStop = false;
-        setAsrStatus("Verwerking voltooid. Gereed voor nieuwe opname.");
-        if (lastFullTranscript && finalTranscriptDiv) {
-          finalTranscriptDiv.textContent = lastFullTranscript;
+      /* =========================
+      * SEGMENT UPDATE (NIEUW)
+      * ========================= */
+      if (data.type === "segment_update") {
+        const id = data.id;
+        if (!id) return;
+
+        const line = lineById.get(id);
+        if (!line) {
+          // Segment bestaat (nog) niet in UI.
+          // Bewust negeren om geen UI-instabiliteit te veroorzaken.
+          return;
         }
+
+        if (data.text_batch !== undefined) {
+          line.text_batch = data.text_batch;
+        }
+
+        if (data.text_final !== undefined) {
+          // Dit is de tekst die we daadwerkelijk tonen
+          line.text = data.text_final;
+        }
+
+        if (data.state !== undefined) {
+          line.state = data.state;
+        }
+
+        renderTranscript(
+          currentLines,
+          lastBufferTranscription,
+          lastBufferTranslation,
+          lastStatus
+        );
         return;
       }
 
-      const {
-        lines = [],
-        buffer_transcription = "",
-        buffer_translation = "",
-        status = "active_transcription",
-      } = data;
+      /* =========================
+      * FRONT DATA (volledige refresh)
+      * ========================= */
+      if (data.type === "front_data" || data.lines) {
+        const {
+          lines = [],
+          buffer_transcription = "",
+          buffer_translation = "",
+          status = "active_transcription",
+        } = data;
 
-      renderTranscript(lines, buffer_transcription, buffer_translation, status);
+        currentLines = lines;
+        rebuildLineIndex(currentLines);
+
+        lastBufferTranscription = buffer_transcription;
+        lastBufferTranslation = buffer_translation;
+        lastStatus = status;
+
+        renderTranscript(
+          currentLines,
+          buffer_transcription,
+          buffer_translation,
+          status
+        );
+        return;
+      }
+
+      /* =========================
+      * FALLBACK / UNKNOWN
+      * ========================= */
+      console.debug("Unhandled WS message:", data);
     };
+
   });
 }
 

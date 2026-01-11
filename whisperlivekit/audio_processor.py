@@ -11,6 +11,7 @@ from datetime import datetime
 
 from time import time
 from typing import Any, AsyncGenerator, List, Optional, Union
+from whisperlivekit.timed_objects import SegmentUpdate
 
 import numpy as np
 from types import SimpleNamespace   
@@ -77,6 +78,9 @@ class AudioProcessor:
         # Batch refinement (Stap 3)
         self._batch_queue: asyncio.Queue = asyncio.Queue()
         self._batch_worker_task: Optional[asyncio.Task] = None
+       
+        # nieuwe asyncio.Queue voor tweede poging batch transscripttie
+        self._ws_update_queue: asyncio.Queue = asyncio.Queue()
 
         # Audio processing settings
         self.args = models.args
@@ -154,6 +158,10 @@ class AudioProcessor:
 
         self._wav_writer: Optional[wave.Wave_write] = None
         self._wav_path: Optional[Path] = None
+
+    async def emit_segment_update(self, upd: SegmentUpdate) -> None:
+        """Queue a WS update that will be yielded by results_formatter."""
+        await self._ws_update_queue.put(upd)
 
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
@@ -504,10 +512,15 @@ class AudioProcessor:
                 logger.warning(f"Traceback: {traceback.format_exc()}")
         logger.info("Translation processor task finished.")
 
-    async def results_formatter(self) -> AsyncGenerator[FrontData, None]:
+    async def results_formatter(self) -> AsyncGenerator[Union[FrontData, SegmentUpdate], None]:
         """Format processing results for output."""
         while True:
             try:
+                # results_formatter loop - first flush pending segment updates
+                while not self._ws_update_queue.empty():
+                    upd = await self._ws_update_queue.get()
+                    yield upd
+
                 if self._ffmpeg_error:
                     yield FrontData(status="error", error=f"FFmpeg error: {self._ffmpeg_error}")
                     self._ffmpeg_error = None
