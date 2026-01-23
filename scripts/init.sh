@@ -108,9 +108,10 @@ setup_repo() {
 }
 
 install_pytorch_compatible() {
-  local want_torch="2.4.1+cu121"
-  local want_audio="2.4.1+cu121"
-  local want_vision="0.19.1+cu121"
+  local want_torch="2.5.1+cu121"
+  local want_audio="2.5.1+cu121"
+  local want_vision="0.20.1+cu121"
+
   local cur_torch cur_audio cur_vision
 
 
