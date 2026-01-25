@@ -913,7 +913,7 @@ class AudioProcessor:
                     seg_end_ms = int(getattr(seg, "end_ms", 0) or 0)
                     if seg_end_ms <= 0:
                         continue
-                    if (seg_end_ms <= end_ms) and (seg_start_ms >= start_ms) and (getattr(seg, "state", "") in ("LIVE", "FINAL")):
+                    if (seg_end_ms > start_ms) and (seg_start_ms < end_ms) and (getattr(seg, "state", "") in ("LIVE", "FINAL")):
                         chosen = seg
                         break
 

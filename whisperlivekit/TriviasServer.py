@@ -4,6 +4,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, Any, Optional
+from logging.handlers import RotatingFileHandler
  
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query 
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,26 @@ root_logger.setLevel(logging.WARNING)
 
 logger = logging.getLogger("trivias.server")
 logger.setLevel(logging.DEBUG)
+
+# ====== File logging ======
+LOG_FILE = "trivias_stt.log"
+
+file_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=10 * 1024 * 1024,  # 10 MB
+    backupCount=5,
+    encoding="utf-8",
+)
+
+file_handler.setLevel(logging.DEBUG)
+
+file_formatter = logging.Formatter(
+    "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+)
+file_handler.setFormatter(file_formatter)
+
+# Hang file handler aan de root logger
+root_logger.addHandler(file_handler)
 
 # ====== CLI args (zelfde als basic_server) ======
 args = parse_args()
