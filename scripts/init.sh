@@ -200,6 +200,10 @@ PY
   
   install_pytorch_compatible
   
+  # HuggingFace fast transfer hardening
+  export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
+  pip install -U huggingface_hub
+
   log "Install project + deps (editable) via pyproject.toml..."
   pip install -e .
   
@@ -244,6 +248,9 @@ startlive() {
   cd "$APP_DIR"
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
+  
+  # HuggingFace: voorkom impliciete hf_transfer dependency op RunPod images
+  export HF_HUB_ENABLE_HF_TRANSFER=0
 
   log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE"
   exec python -m whisperlivekit.TriviasServer \

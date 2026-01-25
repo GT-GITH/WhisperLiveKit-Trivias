@@ -35,6 +35,11 @@ MIN_DURATION_REAL_SILENCE = 5
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
 SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
 
+# Batch windowing (Stap 1)
+BATCH_TARGET_WINDOW_MS = 30_000   # 30s
+BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
+BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
+
 async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.ndarray, List[Any]]:
     items: List[Any] = []
 
@@ -75,10 +80,13 @@ class AudioProcessor:
         else:
             models = TranscriptionEngine(**kwargs)
         
+        # Batch window state (Stap 1)
+        self._batch_window_start_ms: Optional[int] = None
+
         # Batch refinement (Stap 3)
         self._batch_queue: asyncio.Queue = asyncio.Queue()
         self._batch_worker_task: Optional[asyncio.Task] = None
-       
+        
         # nieuwe asyncio.Queue voor tweede poging batch transscripttie
         self._ws_update_queue: asyncio.Queue = asyncio.Queue()
 
@@ -290,6 +298,22 @@ class AudioProcessor:
         if self.translation:
             await self.translation_queue.put(SENTINEL)
 
+    async def _enqueue_batch_window(self, window_start_ms: int, window_end_ms: int, reason: str) -> None:
+        """Stap 1: enqueue alleen metadata (nog geen decode)."""
+        job = {
+            "job_id": str(uuid.uuid4()),
+            "start_ms": int(window_start_ms),
+            "end_ms": int(window_end_ms),
+            "reason": reason,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        }
+        await self._batch_queue.put(job)
+        logger.info(
+            f"[BATCH][ENQUEUE] job_id={job['job_id']} "
+            f"window={job['start_ms']}..{job['end_ms']}ms "
+            f"len={(job['end_ms']-job['start_ms'])/1000.0:.2f}s reason={reason}"
+        )
+
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
         cumulative_pcm_duration_stream_time = 0.0
@@ -355,6 +379,42 @@ class AudioProcessor:
                                 # - pending_incomplete_tokens = []
                                 # - segments leegmaken
                                 base_asr.refresh_segment(complete=True)
+                                # ===== Stap 1: batch window close + enqueue (alleen bij echte close/reset) =====
+                                try:
+                                    if self._batch_window_start_ms is None:
+                                        self._batch_window_start_ms = 0
+
+                                    # Window end moet het einde van spraak zijn (niet het einde van stilte)
+                                    if self.state.tokens:
+                                        window_end_s = float(self.state.tokens[-1].end)
+                                    else:
+                                        # fallback: einde van spraak ≈ stream_time minus stilte
+                                        window_end_s = max(0.0, cumulative_pcm_duration_stream_time - float(item.duration))
+
+                                    window_end_ms = int(round(window_end_s * 1000.0))
+                                    window_start_ms = int(self._batch_window_start_ms)
+
+                                    window_len_ms = window_end_ms - window_start_ms
+                                    logger.info(
+                                        f"[BATCH][WINDOW] candidate close at {window_end_ms}ms "
+                                        f"(start={window_start_ms}ms len={window_len_ms/1000.0:.2f}s)"
+                                    )
+
+                                    if window_len_ms >= BATCH_TARGET_WINDOW_MS:
+                                        await self._enqueue_batch_window(
+                                            window_start_ms=window_start_ms,
+                                            window_end_ms=window_end_ms,
+                                            reason="silence_reset_close"
+                                        )
+                                        # Next window starts where this one ended
+                                        self._batch_window_start_ms = window_end_ms
+                                    else:
+                                        logger.info(
+                                            f"[BATCH][WINDOW] not enqueued (len {window_len_ms/1000.0:.2f}s < target {BATCH_TARGET_WINDOW_MS/1000.0:.0f}s)"
+                                        )
+                                except Exception as e:
+                                    logger.warning(f"[BATCH][WINDOW] enqueue failed: {e}")
+
                             else:
                                 logger.warning(
                                     "[Decoder reset] geen decoder met refresh_segment gevonden "
@@ -762,6 +822,8 @@ class AudioProcessor:
             self.beg_loop = time()
             self.current_silence = Silence(start=0.0, is_starting=True)
             self.tokens_alignment.beg_loop = self.beg_loop
+            # Batch window starts at t=0 for this session
+            self._batch_window_start_ms = 0
 
         if not message:
             logger.info("Empty audio message received, initiating stop sequence.")
