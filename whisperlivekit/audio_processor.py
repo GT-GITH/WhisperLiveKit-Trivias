@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 SENTINEL = object() # unique sentinel object for end of stream marker
+# Per-queue pushback slot used by get_all_from_queue() to preserve ordering without peeking.
+_QUEUE_PUSHBACK: dict[int, Any] = {}
+
 MIN_DURATION_REAL_SILENCE = 5
 
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
@@ -41,30 +44,59 @@ BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
 BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
 
 async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.ndarray, List[Any]]:
-    items: List[Any] = []
+    """
+    Get one logical item from an asyncio.Queue.
 
-    first_item = await queue.get()
-    queue.task_done()
+    - For audio queues: coalesce consecutive np.ndarray chunks into a single np.concatenate() result.
+    - For non-audio queues (e.g. translation): return a list of consecutive non-sentinel/non-silence items.
+
+    We DO NOT peek into private queue internals (queue._queue). To preserve FIFO ordering when we
+    encounter SENTINEL or Silence while draining, we use a per-queue pushback slot.
+    """
+    items: List[Any] = []
+    qid = id(queue)
+
+    # 0) If we have a pushed-back item, consume it first (preserves original order).
+    if qid in _QUEUE_PUSHBACK:
+        first_item = _QUEUE_PUSHBACK.pop(qid)
+    else:
+        first_item = await queue.get()
+        queue.task_done()
+
+    # 1) Sentinels / silence pass through directly
     if first_item is SENTINEL:
         return first_item
     if isinstance(first_item, Silence):
         return first_item
+
     items.append(first_item)
-    
+
+    # 2) Drain immediately-available items without blocking
     while True:
-        if not queue._queue:
+        try:
+            nxt = queue.get_nowait()
+            queue.task_done()
+        except asyncio.QueueEmpty:
             break
-        next_item = queue._queue[0]
-        if next_item is SENTINEL:
+
+        # Stop at boundary items; push back so it will be returned next call (order preserved)
+        if nxt is SENTINEL or isinstance(nxt, Silence):
+            _QUEUE_PUSHBACK[qid] = nxt
             break
-        if isinstance(next_item, Silence):
+
+        # Coalesce only homogeneous audio chunks
+        if isinstance(first_item, np.ndarray) and not isinstance(nxt, np.ndarray):
+            # This should not happen in a well-formed audio queue; don't mix types.
+            _QUEUE_PUSHBACK[qid] = nxt
             break
-        items.append(await queue.get())
-        queue.task_done()
-    if isinstance(items[0], np.ndarray):
+
+        items.append(nxt)
+
+    # 3) Return coalesced audio or list of items (translation etc.)
+    if isinstance(first_item, np.ndarray):
         return np.concatenate(items)
-    else: #translation
-        return items
+    return items
+
 
 class AudioProcessor:
     """
@@ -84,6 +116,9 @@ class AudioProcessor:
         self._batch_window_start_ms: Optional[int] = None
         # Guard: voorkomt dubbele enqueue voor dezelfde window-close
         self._batch_last_close_end_ms: Optional[int] = None
+        # Batch window control (Stap 1 refined)
+        self._batch_ready_to_close: bool = False   # "30s gehaald" -> wacht nu op eerstvolgende silence-end
+        self._batch_ready_at_ms: Optional[int] = None
 
         # Batch refinement (Stap 3)
         self._batch_queue: asyncio.Queue = asyncio.Queue()
@@ -317,6 +352,71 @@ class AudioProcessor:
         )
         logger.info(f"[BATCH][QUEUE] size={self._batch_queue.qsize()}")
 
+    def _get_last_speech_end_ms(self, fallback_ms: int) -> int:
+        """Window-end moet einde van spraak zijn (niet einde van stilte)."""
+        if self.state.tokens:
+            try:
+                return int(round(float(self.state.tokens[-1].end) * 1000.0))
+            except Exception:
+                pass
+        return int(fallback_ms)
+
+    async def _batch_on_silence_end(self, silence_duration_s: float, stream_time_ms: int) -> None:
+        """
+        Stap 1: 30s hard-grens, stilte is afrondingshint.
+        - Zodra window_len >= 30s -> ready_to_close=True
+        - Bij eerstvolgende silence-end -> enqueue window (als len >= 30s)
+        """
+        if self._batch_window_start_ms is None:
+            self._batch_window_start_ms = 0
+            self._batch_last_close_end_ms = None
+            self._batch_ready_to_close = False
+            self._batch_ready_at_ms = None
+
+        window_start_ms = int(self._batch_window_start_ms)
+        window_end_ms = self._get_last_speech_end_ms(fallback_ms=stream_time_ms)
+        window_len_ms = window_end_ms - window_start_ms
+
+        # 1) Markeer ready zodra target gehaald is
+        if (not self._batch_ready_to_close) and (window_len_ms >= BATCH_TARGET_WINDOW_MS):
+            self._batch_ready_to_close = True
+            self._batch_ready_at_ms = window_end_ms
+            logger.info(
+                f"[BATCH][WINDOW] ready_to_close=True at {window_end_ms}ms "
+                f"(start={window_start_ms}ms len={window_len_ms/1000.0:.2f}s)"
+            )
+
+        # 2) Sluit alleen bij silence-end als ready_to_close
+        if not self._batch_ready_to_close:
+            return
+
+        # Guard: voorkom dubbele close op zelfde end
+        if self._batch_last_close_end_ms is not None and window_end_ms <= self._batch_last_close_end_ms:
+            logger.info(
+                f"[BATCH][WINDOW] skip duplicate close at {window_end_ms}ms "
+                f"(last_close_end_ms={self._batch_last_close_end_ms})"
+            )
+            return
+
+        # Enqueue alleen als window ook echt lang genoeg is
+        if window_len_ms < BATCH_TARGET_WINDOW_MS:
+            logger.info(
+                f"[BATCH][WINDOW] ready_to_close but len too short: {window_len_ms/1000.0:.2f}s"
+            )
+            return
+
+        self._batch_last_close_end_ms = window_end_ms
+
+        await self._enqueue_batch_window(
+            window_start_ms=window_start_ms,
+            window_end_ms=window_end_ms,
+            reason="silence_close"
+        )
+
+        # Advance window
+        self._batch_window_start_ms = window_end_ms
+        self._batch_ready_to_close = False
+        self._batch_ready_at_ms = None
 
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
@@ -357,6 +457,16 @@ class AudioProcessor:
                             self.state.tokens[-1].end if self.state.tokens else 0
                         )
 
+                        # ===== Stap 1: batch windowing sluiten op silence-end (los van decoder reset) =====
+                        try:
+                            stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
+                            await self._batch_on_silence_end(
+                                silence_duration_s=float(item.duration or 0.0),
+                                stream_time_ms=stream_time_ms
+                            )
+                        except Exception as e:
+                            logger.warning(f"[BATCH][WINDOW] silence-end handler failed: {e}")
+
                         # 🔸 En nu de *enige* echte decoder-reset na lange stilte
                         if item.duration >= SILENCE_RESET_THRESHOLD:
                             logger.info(
@@ -383,56 +493,7 @@ class AudioProcessor:
                                 # - pending_incomplete_tokens = []
                                 # - segments leegmaken
                                 base_asr.refresh_segment(complete=True)
-                                # ===== Stap 1: batch window close + enqueue (alleen bij echte close/reset) =====
-                                try:
-                                    if self._batch_window_start_ms is None:
-                                        self._batch_window_start_ms = 0
-                                        self._batch_last_close_end_ms = None
-
-                                    # Window end moet het einde van spraak zijn (niet het einde van stilte)
-                                    if self.state.tokens:
-                                        window_end_s = float(self.state.tokens[-1].end)
-                                    else:
-                                        # fallback: einde van spraak ≈ stream_time minus stilte
-                                        window_end_s = max(0.0, cumulative_pcm_duration_stream_time - float(item.duration))
-
-                                    window_end_ms = int(round(window_end_s * 1000.0))
-                                    window_start_ms = int(self._batch_window_start_ms)
-
-                                    window_len_ms = window_end_ms - window_start_ms
-
-                                    # Guard: als we exact dezelfde close al verwerkt hebben, skippen
-                                    if self._batch_last_close_end_ms is not None and window_end_ms <= self._batch_last_close_end_ms:
-                                        logger.info(
-                                            f"[BATCH][WINDOW] skip duplicate close at {window_end_ms}ms "
-                                            f"(last_close_end_ms={self._batch_last_close_end_ms})"
-                                        )
-                                        # Belangrijk: niet window_start aanpassen, niets enqueue'en
-                                        continue
-
-                                    logger.info(
-                                        f"[BATCH][WINDOW] candidate close at {window_end_ms}ms "
-                                        f"(start={window_start_ms}ms len={window_len_ms/1000.0:.2f}s)"
-                                    )
-
-                                    if window_len_ms >= BATCH_TARGET_WINDOW_MS:
-                                        # Markeer dat we deze close verwerkt hebben
-                                        self._batch_last_close_end_ms = window_end_ms
-
-                                        await self._enqueue_batch_window(
-                                            window_start_ms=window_start_ms,
-                                            window_end_ms=window_end_ms,
-                                            reason="silence_reset_close"
-                                        )
-                                        # Next window starts where this one ended
-                                        self._batch_window_start_ms = window_end_ms
-                                    else:
-                                        logger.info(
-                                            f"[BATCH][WINDOW] not enqueued (len {window_len_ms/1000.0:.2f}s < target {BATCH_TARGET_WINDOW_MS/1000.0:.0f}s)"
-                                        )
-                                except Exception as e:
-                                    logger.warning(f"[BATCH][WINDOW] enqueue failed: {e}")
-
+                               
                             else:
                                 logger.warning(
                                     "[Decoder reset] geen decoder met refresh_segment gevonden "
@@ -457,6 +518,28 @@ class AudioProcessor:
                     logger.info(asr_processing_logs)
                     cumulative_pcm_duration_stream_time += len(pcm_array) / self.sample_rate
                     stream_time_end_of_current_pcm = cumulative_pcm_duration_stream_time
+                    # ===== Stap 1: HARD CAP (force-close) =====
+                    try:
+                        if self._batch_window_start_ms is not None:
+                            now_ms = int(round(stream_time_end_of_current_pcm * 1000.0))
+                            if (now_ms - int(self._batch_window_start_ms)) >= BATCH_HARD_CAP_MS:
+                                # Force enqueue op laatste speech-end
+                                window_start_ms = int(self._batch_window_start_ms)
+                                window_end_ms = self._get_last_speech_end_ms(fallback_ms=now_ms)
+
+                                if self._batch_last_close_end_ms is None or window_end_ms > self._batch_last_close_end_ms:
+                                    self._batch_last_close_end_ms = window_end_ms
+                                    await self._enqueue_batch_window(
+                                        window_start_ms=window_start_ms,
+                                        window_end_ms=window_end_ms,
+                                        reason="hard_cap_close"
+                                    )
+                                    self._batch_window_start_ms = window_end_ms
+                                    self._batch_ready_to_close = False
+                                    self._batch_ready_at_ms = None
+                    except Exception as e:
+                        logger.warning(f"[BATCH][WINDOW] hard-cap handler failed: {e}")
+
                     self.transcription.insert_audio_chunk(pcm_array, stream_time_end_of_current_pcm)
                     new_tokens, current_audio_processed_upto = await asyncio.to_thread(self.transcription.process_iter)
                     new_tokens = new_tokens or []
@@ -597,6 +680,7 @@ class AudioProcessor:
                 # results_formatter loop - first flush pending segment updates
                 while not self._ws_update_queue.empty():
                     upd = await self._ws_update_queue.get()
+                    self._ws_update_queue.task_done()
                     yield upd
 
                 if self._ffmpeg_error:
@@ -679,6 +763,11 @@ class AudioProcessor:
             self.all_tasks_for_cleanup.append(self.translation_task)
             processing_tasks_for_watchdog.append(self.translation_task)
         
+        # ===== Batch dummy worker (Stap 2) =====
+        if self._batch_worker_task is None or self._batch_worker_task.done():
+            self._batch_worker_task = asyncio.create_task(self._batch_worker_dummy())
+            self.all_tasks_for_cleanup.append(self._batch_worker_task)
+
         # Monitor overall system health
         self.watchdog_task = asyncio.create_task(self.watchdog(processing_tasks_for_watchdog))
         self.all_tasks_for_cleanup.append(self.watchdog_task)
@@ -789,11 +878,86 @@ class AudioProcessor:
         except Exception as e:
             logger.warning(f"[BATCH] transcribe failed: {e}")
             return None
-    
+        
+    async def _batch_worker_dummy(self) -> None:
+        """Stap 2: dummy worker die 1 FINAL segment in window markeert met 'BATCH OK'."""
+        logger.info("[BATCH][WORKER] dummy worker started")
+        while True:
+            job = await self._batch_queue.get()
+            try:
+                if job is SENTINEL:
+                    logger.info("[BATCH][WORKER] received sentinel, stopping")
+                    return
+
+                start_ms = int(job["start_ms"])
+                end_ms = int(job["end_ms"])
+                reason = job.get("reason", "?")
+
+                # Pak één FINAL segment dat binnen dit window valt
+                chosen = None
+
+                async with self.lock:
+                    # Zorg dat alignment up-to-date is (minimaal drain van state)
+                    self.tokens_alignment.update()
+                    lines, _, _ = self.tokens_alignment.get_lines(
+                        diarization=self.args.diarization,
+                        translation=bool(self.translation),
+                        current_silence=self.current_silence
+                    )
+
+                # Kies: laatste FINAL segment dat (grotendeels) binnen window valt en geen silence is
+                for seg in reversed(lines):
+                    if getattr(seg, "speaker", None) == -2:
+                        continue
+                    seg_start_ms = int(getattr(seg, "start_ms", 0) or 0)
+                    seg_end_ms = int(getattr(seg, "end_ms", 0) or 0)
+                    if seg_end_ms <= 0:
+                        continue
+                    if (seg_end_ms <= end_ms) and (seg_start_ms >= start_ms) and (getattr(seg, "state", "") == "FINAL"):
+                        chosen = seg
+                        break
+
+                if not chosen:
+                    logger.info(f"[BATCH][WORKER] no FINAL segment found for job {job['job_id']} ({reason})")
+                    continue
+
+                upd = SegmentUpdate(
+                    id=str(chosen.id),
+                    text_batch="BATCH OK",
+                    # optioneel: laat FINAL state staan
+                    state="FINAL",
+                    start_ms=int(getattr(chosen, "start_ms", 0) or 0),
+                    end_ms=int(getattr(chosen, "end_ms", 0) or 0),
+                )
+                await self.emit_segment_update(upd)
+                logger.info(
+                    f"[BATCH][WORKER] updated segment id={chosen.id} for job={job['job_id']} reason={reason}"
+                )
+            except Exception as e:
+                logger.warning(f"[BATCH][WORKER] error: {e}")
+            finally:
+                self._batch_queue.task_done()
+
     async def cleanup(self) -> None:
         """Clean up resources when processing is complete."""
         logger.info("Starting cleanup of AudioProcessor resources.")
         self.is_stopping = True
+        # 1) Geef batch worker kans om clean te stoppen
+        try:
+            await self._batch_queue.put(SENTINEL)
+        except Exception:
+            pass
+
+        # 2) Geef event loop 1 tick om sentinel te verwerken
+        await asyncio.sleep(0)
+
+        # 3) Cancel alleen als fallback (geef worker kans om SENTINEL te consumeren)
+        if self._batch_worker_task and not self._batch_worker_task.done():
+            try:
+                await asyncio.wait_for(self._batch_worker_task, timeout=0.25)
+            except Exception:
+                self._batch_worker_task.cancel()
+
         for task in self.all_tasks_for_cleanup:
             if task and not task.done():
                 task.cancel()
@@ -811,13 +975,6 @@ class AudioProcessor:
                 logger.warning(f"Error stopping FFmpeg manager: {e}")
         if self.diarization:
             self.diarization.close()
-            
-        # Stop batch worker netjes
-        try:
-            if self._batch_worker_task and not self._batch_worker_task.done():
-                self._batch_worker_task.cancel()
-        except Exception:
-            pass
 
         self._close_wav()    
         logger.info("AudioProcessor cleanup complete.")
