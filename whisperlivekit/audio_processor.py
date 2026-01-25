@@ -918,17 +918,17 @@ class AudioProcessor:
                         break
 
                 if not chosen:
-                    logger.info(f"[BATCH][WORKER] no FINAL segment found for job {job['job_id']} ({reason})")
+                    logger.info(f"[BATCH][WORKER] no segment found for job {job['job_id']} ({reason})")
                     continue
 
                 upd = SegmentUpdate(
                     id=str(chosen.id),
                     text_batch="BATCH OK",
-                    # optioneel: laat FINAL state staan
-                    state="FINAL",
+                    # geen state forceren in dummy
                     start_ms=int(getattr(chosen, "start_ms", 0) or 0),
                     end_ms=int(getattr(chosen, "end_ms", 0) or 0),
                 )
+
                 await self.emit_segment_update(upd)
                 logger.info(
                     f"[BATCH][WORKER] updated segment id={chosen.id} for job={job['job_id']} reason={reason}"
