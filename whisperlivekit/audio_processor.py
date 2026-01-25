@@ -82,6 +82,8 @@ class AudioProcessor:
         
         # Batch window state (Stap 1)
         self._batch_window_start_ms: Optional[int] = None
+        # Guard: voorkomt dubbele enqueue voor dezelfde window-close
+        self._batch_last_close_end_ms: Optional[int] = None
 
         # Batch refinement (Stap 3)
         self._batch_queue: asyncio.Queue = asyncio.Queue()
@@ -313,6 +315,8 @@ class AudioProcessor:
             f"window={job['start_ms']}..{job['end_ms']}ms "
             f"len={(job['end_ms']-job['start_ms'])/1000.0:.2f}s reason={reason}"
         )
+        logger.info(f"[BATCH][QUEUE] size={self._batch_queue.qsize()}")
+
 
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
@@ -383,6 +387,7 @@ class AudioProcessor:
                                 try:
                                     if self._batch_window_start_ms is None:
                                         self._batch_window_start_ms = 0
+                                        self._batch_last_close_end_ms = None
 
                                     # Window end moet het einde van spraak zijn (niet het einde van stilte)
                                     if self.state.tokens:
@@ -395,12 +400,25 @@ class AudioProcessor:
                                     window_start_ms = int(self._batch_window_start_ms)
 
                                     window_len_ms = window_end_ms - window_start_ms
+
+                                    # Guard: als we exact dezelfde close al verwerkt hebben, skippen
+                                    if self._batch_last_close_end_ms is not None and window_end_ms <= self._batch_last_close_end_ms:
+                                        logger.info(
+                                            f"[BATCH][WINDOW] skip duplicate close at {window_end_ms}ms "
+                                            f"(last_close_end_ms={self._batch_last_close_end_ms})"
+                                        )
+                                        # Belangrijk: niet window_start aanpassen, niets enqueue'en
+                                        continue
+
                                     logger.info(
                                         f"[BATCH][WINDOW] candidate close at {window_end_ms}ms "
                                         f"(start={window_start_ms}ms len={window_len_ms/1000.0:.2f}s)"
                                     )
 
                                     if window_len_ms >= BATCH_TARGET_WINDOW_MS:
+                                        # Markeer dat we deze close verwerkt hebben
+                                        self._batch_last_close_end_ms = window_end_ms
+
                                         await self._enqueue_batch_window(
                                             window_start_ms=window_start_ms,
                                             window_end_ms=window_end_ms,
