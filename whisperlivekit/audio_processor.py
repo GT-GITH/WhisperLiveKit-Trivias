@@ -906,14 +906,21 @@ class AudioProcessor:
                     )
 
                 # Kies: laatste FINAL segment dat (grotendeels) binnen window valt en geen silence is
+                chosen = None
+
                 for seg in reversed(lines):
-                    if getattr(seg, "speaker", None) == -2:
-                        continue
                     seg_start_ms = int(getattr(seg, "start_ms", 0) or 0)
-                    seg_end_ms = int(getattr(seg, "end_ms", 0) or 0)
+                    seg_end_ms   = int(getattr(seg, "end_ms", 0) or 0)
+
                     if seg_end_ms <= 0:
                         continue
-                    if getattr(seg, "state", "") == "LIVE":
+
+                    # kies FINAL segment dat overlapt met window
+                    if (
+                        seg_end_ms > start_ms
+                        and seg_start_ms < end_ms
+                        and getattr(seg, "state", "") == "FINAL"
+                    ):
                         chosen = seg
                         break
 
