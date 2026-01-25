@@ -892,6 +892,8 @@ class AudioProcessor:
                 start_ms = int(job["start_ms"])
                 end_ms = int(job["end_ms"])
                 reason = job.get("reason", "?")
+                
+                attempt = int(job.get("_attempt", 0))
 
                 # Pak één FINAL segment dat binnen dit window valt
                 chosen = None
@@ -925,7 +927,20 @@ class AudioProcessor:
                         break
 
                 if not chosen:
-                    logger.info(f"[BATCH][WORKER] no segment found for job {job['job_id']} ({reason})")
+                    # Nog geen FINAL segment beschikbaar -> retry kort, bounded (geen moeras)
+                    if attempt < 20:
+                        job["_attempt"] = attempt + 1
+                        await asyncio.sleep(0.2)
+                        await self._batch_queue.put(job)
+                        logger.info(
+                            f"[BATCH][WORKER] no FINAL segment yet for job {job['job_id']} ({reason}) "
+                            f"retry {job['_attempt']}/20"
+                        )
+                        continue
+
+                    logger.warning(
+                        f"[BATCH][WORKER] giving up: no FINAL segment for job {job['job_id']} ({reason}) after {attempt} retries"
+                    )
                     continue
 
                 upd = SegmentUpdate(
