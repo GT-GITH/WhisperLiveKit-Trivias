@@ -5,9 +5,10 @@ from whisperlivekit.timed_objects import (ASRToken, Segment, PuncSegment, Silenc
                                           SilentSegment, SpeakerSegment,
                                           TimedText)
 import logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+
+logger = logging.getLogger("whisperlivekit.tokens_alignment")
+# Geen basicConfig en geen forced setLevel hier.
+# De applicatie (server) bepaalt het loglevel.
 
 class TokensAlignment:
 
@@ -37,6 +38,13 @@ class TokensAlignment:
         self.last_punctuation = None
         self.last_uncompleted_punc_segment: PuncSegment = None
         self.unvalidated_tokens: PuncSegment = []
+
+        # Debug throttling (voorkomt log-spam)
+        self._dbg_last_sig: Optional[str] = None
+        self._dbg_last_live: Optional[str] = None
+        self._dbg_last_log_t: float = 0.0
+        self._dbg_min_interval_s: float = 0.75  # max ~1x per 0.75s
+
 
     def update(self) -> None:
         """Drain state buffers into the running alignment context."""
@@ -234,7 +242,15 @@ class TokensAlignment:
                     if s.text_live is None:
                         s.text_live = s.text
 
-                logger.debug(f"SEG {s.id} {s.state} {s.start}->{s.end}")
+                if logger.isEnabledFor(logging.DEBUG):
+                    # Log alleen als de "signature" wijzigt én niet te vaak
+                    sig = f"{s.id}:{s.state}:{s.start:.2f}->{(s.end or 0):.2f}"
+                    now = time()
+                    if sig != self._dbg_last_sig and (now - self._dbg_last_log_t) >= self._dbg_min_interval_s:
+                        logger.debug(f"SEG {s.id} {s.state} {s.start}->{s.end}")
+                        self._dbg_last_sig = sig
+                        self._dbg_last_log_t = now
+
 
             if self.current_line_tokens:
                 live_seg = Segment().from_tokens(self.current_line_tokens)
@@ -242,7 +258,14 @@ class TokensAlignment:
                     live_seg.state = "LIVE"
                     # live_seg.text is the provisional display, text_live mirrors it
                     live_seg.text_live = live_seg.text
-                    logger.debug(f"LIVE {live_seg.id} {live_seg.start}->{live_seg.end}")
+                    if logger.isEnabledFor(logging.DEBUG):
+                        live_sig = f"{live_seg.id}:{live_seg.start:.2f}->{(live_seg.end or 0):.2f}"
+                        now = time()
+                        if live_sig != self._dbg_last_live and (now - self._dbg_last_log_t) >= self._dbg_min_interval_s:
+                            logger.debug(f"LIVE {live_seg.id} {live_seg.start}->{live_seg.end}")
+                            self._dbg_last_live = live_sig
+                            self._dbg_last_log_t = now
+
                 segments.append(live_seg)
 
 

@@ -147,6 +147,10 @@ class AudioProcessor:
         self.lock: asyncio.Lock = asyncio.Lock()
         self.sep: str = " "  # Default separator
         self.last_response_content: FrontData = FrontData()
+        # Status-log throttling (voorkomt spam per chunk)
+        self._status_last_log_t: float = 0.0
+        self._status_last_msg: Optional[str] = None
+        self._status_min_interval_s: float = 1.0  # max 1x per seconde
 
         self.tokens_alignment: TokensAlignment = TokensAlignment(self.state, self.args, self.sep)
         self.beg_loop: Optional[float] = None
@@ -205,6 +209,15 @@ class AudioProcessor:
 
         self._wav_writer: Optional[wave.Wave_write] = None
         self._wav_path: Optional[Path] = None
+
+    def _log_status_throttled(self, msg: str) -> None:
+        # Alleen loggen als DEBUG aan staat of msg verandert, en max 1x per interval.
+        now = time()
+        if msg == self._status_last_msg and (now - self._status_last_log_t) < self._status_min_interval_s:
+            return
+        logger.debug(msg)
+        self._status_last_msg = msg
+        self._status_last_log_t = now
 
     async def emit_segment_update(self, upd: SegmentUpdate) -> None:
         """Queue a WS update that will be yielded by results_formatter."""
@@ -521,7 +534,7 @@ class AudioProcessor:
                     if self.state.tokens:
                         asr_processing_logs += f" | last_end = {self.state.tokens[-1].end} |"
 
-                    logger.info(asr_processing_logs)
+                    self._log_status_throttled(asr_processing_logs)
                     new_tokens = new_tokens or []
                     current_audio_processed_upto = max(
                         current_audio_processed_upto,
