@@ -1002,19 +1002,6 @@ class AudioProcessor:
                         f"[BATCH][WORKER] giving up: no FINAL segment for job {job['job_id']} ({reason}) after {attempt} retries"
                     )
                     continue
-                
-                # --- HARD OVERRIDE IN STATE (dit is de kern) ---
-                async with self.lock:
-                    # chosen is al een Segment uit tokens_alignment output
-                    # We forceren hem FINAL in de state
-                    chosen.state = "FINAL"
-                    chosen.text = "BATCH OK"
-                    chosen.text_live = None
-                    chosen.text_batch = "BATCH OK"
-
-                    # Zorg dat tijden kloppen
-                    chosen.start = start_ms / 1000.0
-                    chosen.end   = end_ms   / 1000.0
 
                 upd = SegmentUpdate(
                     id=str(chosen.id),
