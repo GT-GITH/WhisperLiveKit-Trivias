@@ -296,6 +296,12 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
+function getStartMs(item) {
+  if (Number.isFinite(item?.start_ms)) return item.start_ms;
+  if (Number.isFinite(item?.start)) return Math.round(item.start * 1000);
+  return Number.MAX_SAFE_INTEGER; // live/buffer always last
+}
+
 function renderTranscript(lines, bufferTranscription, bufferTranslation, status) {
   if (!liveTranscriptDiv) return;
 
@@ -312,6 +318,8 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   });
 
   const htmlParts = [];
+
+  safeLines.sort((a, b) => getStartMs(a) - getStartMs(b));
 
   for (const item of safeLines) {
     const rawTxt = (item?.text || "").trim();
