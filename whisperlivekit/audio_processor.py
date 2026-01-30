@@ -555,7 +555,9 @@ class AudioProcessor:
                             if (now_ms - int(self._batch_window_start_ms)) >= BATCH_HARD_CAP_MS:
                                 # Force enqueue op laatste speech-end
                                 window_start_ms = int(self._batch_window_start_ms)
-                                window_end_ms = self._get_last_speech_end_ms(fallback_ms=now_ms)
+                                # HARD CAP moet ALTIJD vooruitgang forceren in tijd.
+                                # Gebruik daarom now_ms als window_end (niet tokens[-1].end), anders krijg je micro-windows als tokens achterlopen.
+                                window_end_ms = now_ms
 
                                 if self._batch_last_close_end_ms is None or window_end_ms > self._batch_last_close_end_ms:
                                     self._batch_last_close_end_ms = window_end_ms
@@ -564,6 +566,8 @@ class AudioProcessor:
                                         window_end_ms=window_end_ms,
                                         reason="hard_cap_close"
                                     )
+
+                                    # Advance window naar echte tijd, zodat hard-cap niet direct opnieuw triggert
                                     self._batch_window_start_ms = window_end_ms
                                     self._batch_ready_to_close = False
                                     self._batch_ready_at_ms = None
