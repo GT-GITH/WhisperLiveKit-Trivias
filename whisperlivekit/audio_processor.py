@@ -361,19 +361,24 @@ class AudioProcessor:
                 pass
         return int(fallback_ms)
 
-    async def _batch_on_silence_end(self, silence_duration_s: float, stream_time_ms: int) -> None:
+    async def _batch_on_silence_boundary(self, stream_time_ms: int, boundary: str) -> None:
         """
         Stap 1: 30s hard-grens, stilte is afrondingshint.
-        - Zodra window_len >= 30s -> ready_to_close=True
-        - Bij eerstvolgende silence-end -> enqueue window (als len >= 30s)
+        We proberen te sluiten op een stilte-boundary:
+        - boundary = "silence_start"  (preferred)
+        - boundary = "silence_end"    (fallback)
         """
+
         if self._batch_window_start_ms is None:
+            # Batch window starts at t=0 for this session (wordt ook gezet in process_audio)
             self._batch_window_start_ms = 0
             self._batch_last_close_end_ms = None
             self._batch_ready_to_close = False
             self._batch_ready_at_ms = None
 
         window_start_ms = int(self._batch_window_start_ms)
+
+        # Einde van spraak is leidend
         window_end_ms = self._get_last_speech_end_ms(fallback_ms=stream_time_ms)
         window_len_ms = window_end_ms - window_start_ms
 
@@ -386,7 +391,7 @@ class AudioProcessor:
                 f"(start={window_start_ms}ms len={window_len_ms/1000.0:.2f}s)"
             )
 
-        # 2) Sluit alleen bij silence-end als ready_to_close
+        # 2) Sluit alleen als ready_to_close
         if not self._batch_ready_to_close:
             return
 
@@ -410,13 +415,14 @@ class AudioProcessor:
         await self._enqueue_batch_window(
             window_start_ms=window_start_ms,
             window_end_ms=window_end_ms,
-            reason="silence_close"
+            reason=boundary
         )
 
         # Advance window
         self._batch_window_start_ms = window_end_ms
         self._batch_ready_to_close = False
         self._batch_ready_at_ms = None
+
 
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
@@ -921,7 +927,7 @@ class AudioProcessor:
                     if (
                         seg_end_ms > start_ms
                         and seg_start_ms < end_ms
-                        and getattr(seg, "state", "") == "FINAL"
+                        and getattr(seg, "state", "") in ("LIVE", "FINAL")
                     ):
                         chosen = seg
                         break
@@ -945,7 +951,7 @@ class AudioProcessor:
 
                 upd = SegmentUpdate(
                     id=str(chosen.id),
-                    text_batch="BATCH OK",
+                    text_final="BATCH OK",
                     # geen state forceren in dummy
                     start_ms=int(getattr(chosen, "start_ms", 0) or 0),
                     end_ms=int(getattr(chosen, "end_ms", 0) or 0),
