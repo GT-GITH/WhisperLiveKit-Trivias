@@ -578,9 +578,9 @@ class AudioProcessor:
                     except Exception as e:
                         logger.warning(f"[BATCH][WINDOW] hard-cap handler failed: {e}")
 
-                    self.transcription.insert_audio_chunk(pcm_array, stream_time_end_of_current_pcm)
-                    new_tokens, current_audio_processed_upto = await asyncio.to_thread(self.transcription.process_iter)
-                    new_tokens = new_tokens or []
+                self.transcription.insert_audio_chunk(pcm_array, stream_time_end_of_current_pcm)
+                new_tokens, current_audio_processed_upto = await asyncio.to_thread(self.transcription.process_iter)
+                new_tokens = new_tokens or []
 
                 _buffer_transcript = self.transcription.get_buffer()
                 buffer_text = _buffer_transcript.text
@@ -1002,16 +1002,29 @@ class AudioProcessor:
                         f"[BATCH][WORKER] giving up: no FINAL segment for job {job['job_id']} ({reason}) after {attempt} retries"
                     )
                     continue
+                
+                # --- HARD OVERRIDE IN STATE (dit is de kern) ---
+                async with self.lock:
+                    # chosen is al een Segment uit tokens_alignment output
+                    # We forceren hem FINAL in de state
+                    chosen.state = "FINAL"
+                    chosen.text = "BATCH OK"
+                    chosen.text_live = None
+                    chosen.text_batch = "BATCH OK"
+
+                    # Zorg dat tijden kloppen
+                    chosen.start = start_ms / 1000.0
+                    chosen.end   = end_ms   / 1000.0
 
                 upd = SegmentUpdate(
                     id=str(chosen.id),
-                    text_final="BATCH OK",
-                    # geen state forceren in dummy
-                    start_ms=int(getattr(chosen, "start_ms", 0) or 0),
-                    end_ms=int(getattr(chosen, "end_ms", 0) or 0),
+                    text_final=chosen.text,
+                    state="FINAL",
+                    start_ms=start_ms,
+                    end_ms=end_ms,
                 )
-
                 await self.emit_segment_update(upd)
+
                 logger.info(
                     f"[BATCH][WORKER] updated segment id={chosen.id} for job={job['job_id']} reason={reason}"
                 )
