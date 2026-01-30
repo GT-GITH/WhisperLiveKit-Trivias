@@ -450,6 +450,15 @@ class AudioProcessor:
                             self.transcription.start_silence
                         )
                         asr_processing_logs += f" + Silence starting"
+                        # ===== Stap 1: batch windowing proberen te sluiten op silence-start =====
+                        try:
+                            stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
+                            await self._batch_on_silence_boundary(
+                                stream_time_ms=stream_time_ms,
+                                boundary="silence_start"
+                            )
+                        except Exception as e:
+                            logger.warning(f"[BATCH][WINDOW] silence-start handler failed: {e}")
 
                     if item.has_ended:
                         # Einde van stilte
@@ -463,12 +472,12 @@ class AudioProcessor:
                             self.state.tokens[-1].end if self.state.tokens else 0
                         )
 
-                        # ===== Stap 1: batch windowing sluiten op silence-end (los van decoder reset) =====
+                        # ===== Stap 1: batch windowing sluiten op silence-end (los van decoder reset) ===== 
                         try:
                             stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
-                            await self._batch_on_silence_end(
-                                silence_duration_s=float(item.duration or 0.0),
-                                stream_time_ms=stream_time_ms
+                            await self._batch_on_silence_boundary(
+                                stream_time_ms=stream_time_ms,
+                                boundary="silence_end"
                             )
                         except Exception as e:
                             logger.warning(f"[BATCH][WINDOW] silence-end handler failed: {e}")
