@@ -941,6 +941,10 @@ class AudioProcessor:
                 chosen = None
 
                 for seg in reversed(lines):
+                    # Skip silence segments: we willen een speech segment kiezen
+                    if hasattr(seg, "is_silence") and seg.is_silence():
+                        continue
+
                     # Segmenten kunnen óf ms-velden hebben, óf start/end in seconden.
                     seg_start_ms = getattr(seg, "start_ms", None)
                     seg_end_ms   = getattr(seg, "end_ms", None)
@@ -961,11 +965,10 @@ class AudioProcessor:
                     else:
                         seg_end_ms = int(seg_end_ms)
 
-                    if seg_end_ms <= 0:
+                    if seg_end_ms <= seg_start_ms:
                         continue
 
-
-                    # kies FINAL segment dat overlapt met window
+                    # kies segment dat overlapt met window
                     if (
                         seg_end_ms > start_ms
                         and seg_start_ms < end_ms
@@ -973,6 +976,7 @@ class AudioProcessor:
                     ):
                         chosen = seg
                         break
+
 
                 if not chosen:
                     # Nog geen FINAL segment beschikbaar -> retry kort, bounded (geen moeras)
