@@ -933,9 +933,6 @@ class AudioProcessor:
                 
                 attempt = int(job.get("_attempt", 0))
 
-                # Pak één FINAL segment dat binnen dit window valt
-                chosen = None
-
                 async with self.lock:
                     # Zorg dat alignment up-to-date is (minimaal drain van state)
                     self.tokens_alignment.update()
@@ -945,67 +942,62 @@ class AudioProcessor:
                         current_silence=self.current_silence
                     )
 
-                # Kies: laatste FINAL segment dat (grotendeels) binnen window valt en geen silence is
-                chosen = None
-
-                for seg in reversed(lines):
-                    # Skip silence segments: we willen een speech segment kiezen
+                # We wachten alleen tot er in dit window überhaupt FINAL content is
+                has_any_final = False
+                for seg in lines:
                     if hasattr(seg, "is_silence") and seg.is_silence():
                         continue
-
-                    # Segmenten kunnen óf ms-velden hebben, óf start/end in seconden.
-                    seg_start_ms = getattr(seg, "start_ms", None)
-                    seg_end_ms   = getattr(seg, "end_ms", None)
-
-                    if seg_start_ms is None:
-                        seg_start_s = getattr(seg, "start", None)
-                        seg_start_ms = int(round(float(seg_start_s) * 1000.0)) if seg_start_s is not None else 0
-                    else:
-                        seg_start_ms = int(seg_start_ms)
-
-                    if seg_end_ms is None:
-                        seg_end_s = getattr(seg, "end", None)
-                        # LIVE kan end=None hebben; dan behandelen we end als window-einde
-                        if seg_end_s is None:
-                            seg_end_ms = end_ms
-                        else:
-                            seg_end_ms = int(round(float(seg_end_s) * 1000.0))
-                    else:
-                        seg_end_ms = int(seg_end_ms)
-
-                    if seg_end_ms <= seg_start_ms:
+                    if getattr(seg, "state", "") != "FINAL":
                         continue
 
-                    # kies segment dat overlapt met window
-                    if (
-                        seg_end_ms > start_ms
-                        and seg_start_ms < end_ms
-                        and getattr(seg, "state", "") == "FINAL"
-                    ):
-                        chosen = seg
+                    # Determine overlap with window
+                    seg_start_s = getattr(seg, "start", None)
+                    seg_end_s = getattr(seg, "end", None)
+                    seg_start_ms = int(round(float(seg_start_s) * 1000.0)) if seg_start_s is not None else 0
+                    seg_end_ms = int(round(float(seg_end_s) * 1000.0)) if seg_end_s is not None else seg_start_ms
+
+                    if seg_end_ms > start_ms and seg_start_ms < end_ms:
+                        has_any_final = True
                         break
 
-                if not chosen:
-                    # Nog geen FINAL segment beschikbaar -> retry kort, bounded (geen moeras)
+                if not has_any_final:
                     if attempt < 20:
                         job["_attempt"] = attempt + 1
                         await asyncio.sleep(0.2)
                         await self._batch_queue.put(job)
                         logger.info(
-                            f"[BATCH][WORKER] no FINAL segment yet for job {job['job_id']} ({reason}) "
+                            f"[BATCH][WORKER] no FINAL content yet for job {job['job_id']} ({reason}) "
                             f"retry {job['_attempt']}/20"
                         )
                         continue
 
                     logger.warning(
-                        f"[BATCH][WORKER] giving up: no FINAL segment for job {job['job_id']} ({reason}) after {attempt} retries"
+                        f"[BATCH][WORKER] giving up: no FINAL content for job {job['job_id']} ({reason}) after {attempt} retries"
                     )
                     continue
                 
                 # ====== Stap 2: ECHTE batch decode + SAFE overwrite (FO) ======
+                # Fallback live text: best effort window transcript from current lines (FINAL only)
+                live_parts: List[str] = []
+                for seg in lines:
+                    if hasattr(seg, "is_silence") and seg.is_silence():
+                        continue
+                    if getattr(seg, "state", "") != "FINAL":
+                        continue
 
-                # 1) Bepaal live tekst als fallback (nooit woorden missen)
-                live_text = (getattr(chosen, "text_live", None) or getattr(chosen, "text", None) or "").strip()
+                    seg_start_s = getattr(seg, "start", None)
+                    seg_end_s = getattr(seg, "end", None)
+                    seg_start_ms = int(round(float(seg_start_s) * 1000.0)) if seg_start_s is not None else 0
+                    seg_end_ms = int(round(float(seg_end_s) * 1000.0)) if seg_end_s is not None else seg_start_ms
+
+                    if not (seg_end_ms > start_ms and seg_start_ms < end_ms):
+                        continue
+
+                    t = (getattr(seg, "text", None) or "").strip()
+                    if t:
+                        live_parts.append(t)
+
+                live_text = " ".join(live_parts).strip()
 
                 # 2) Decode audio slice met padding (FO)
                 decode_start_ms = max(0, start_ms - BATCH_CONTEXT_PAD_MS)
@@ -1027,22 +1019,19 @@ class AudioProcessor:
                 use_batch_as_final = not _is_suspicious(batch_txt, live_text)
                 final_txt = batch_txt if use_batch_as_final else live_text
 
-                # 4) Mutate chosen segment (best effort). NB: gekozen segment kan live-view zijn,
-                #    maar de UI ziet in elk geval de SegmentUpdate.
+                # 4) Mutate  segment 
                 async with self.lock:
-                    chosen.state = "FINAL"
-
-                    # Bewaar live tekst als bewijslaag (handig voor audits / debug)
-                    chosen.text_live = live_text or None
-
-                    # Batch laag + final display
-                    chosen.text_batch = (batch_txt if batch_txt else None)
-                    chosen.text = final_txt
-                    # LET OP: start/end NIET aanpassen — segment timing blijft bewijs/tijdlijn
+                    group_id = self.tokens_alignment.apply_batch_group(
+                        window_start_ms=start_ms,
+                        window_end_ms=end_ms,
+                        text_final=final_txt,
+                        text_batch=(batch_txt if batch_txt else None),
+                        speaker=-1,
+                    )
 
                 # 5) Emit SegmentUpdate naar UI
                 upd = SegmentUpdate(
-                    id=str(chosen.id),
+                    id=str(group_id),
                     state="FINAL",
                     start_ms=start_ms,
                     end_ms=end_ms,
@@ -1053,7 +1042,7 @@ class AudioProcessor:
                 await self.emit_segment_update(upd)
 
                 logger.info(
-                    f"[BATCH][WORKER] FINAL overwrite id={chosen.id} job={job['job_id']} "
+                    f"[BATCH][WORKER] BATCHGROUP overwrite id={group_id} job={job['job_id']} "
                     f"window={start_ms}..{end_ms} pad={BATCH_CONTEXT_PAD_MS}ms "
                     f"use_batch={use_batch_as_final} reason={reason}"
                 )

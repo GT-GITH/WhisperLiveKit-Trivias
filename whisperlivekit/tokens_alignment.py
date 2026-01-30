@@ -46,6 +46,10 @@ class TokensAlignment:
         self._dbg_min_interval_s: float = 0.75  # max ~1x per 0.75s
         
         self.segment_overrides = {}  # id -> dict(state,text_batch,text_final,start_ms,end_ms)
+        # A1: canonical batch groups (server-side)
+        # We store these as segments and suppress any normal segments inside the refined window.
+        self.batch_groups: List[Segment] = []
+        self.suppressed_ranges_ms: List[Tuple[int, int]] = []  # list of (start_ms,end_ms)
 
     def set_segment_override(
         self,
@@ -64,6 +68,81 @@ class TokensAlignment:
             "start_ms": start_ms,
             "end_ms": end_ms,
         }
+
+    def apply_batch_group(
+        self,
+        *,
+        window_start_ms: int,
+        window_end_ms: int,
+        text_final: str,
+        text_batch: Optional[str] = None,
+        speaker: int = -1,
+    ) -> str:
+        """
+        A1: Maak één canonical BatchGroup-segment voor dit window, en suppress alle bestaande
+        (validated) segmenten die overlappen met dit window.
+        Returns: group_id
+        """
+        if window_end_ms <= window_start_ms:
+            return ""
+
+        group_id = f"bg_{int(window_start_ms)}_{int(window_end_ms)}_{int(speaker)}"
+
+        # 1) Suppress ranges (keep list non-overlapping-ish is optional; simple append is ok)
+        self.suppressed_ranges_ms.append((int(window_start_ms), int(window_end_ms)))
+
+        # 2) Drop validated segments that overlap with this refined window
+        kept: List[Segment] = []
+        for s in self.validated_segments:
+            try:
+                s_start_ms = int(round(float(getattr(s, "start", 0.0) or 0.0) * 1000.0))
+                s_end_s = getattr(s, "end", None)
+                s_end_ms = int(round(float(s_end_s) * 1000.0)) if s_end_s is not None else s_start_ms
+            except Exception:
+                kept.append(s)
+                continue
+
+            # overlap?
+            if s_end_ms > window_start_ms and s_start_ms < window_end_ms:
+                # drop it (including silence segments) → BatchGroup becomes canonical truth
+                continue
+
+            kept.append(s)
+
+        self.validated_segments = kept
+
+        # 3) Remove older batch groups that overlap the same window (defensive)
+        new_groups: List[Segment] = []
+        for g in self.batch_groups:
+            try:
+                g_start_ms = int(round(float(getattr(g, "start", 0.0) or 0.0) * 1000.0))
+                g_end_s = getattr(g, "end", None)
+                g_end_ms = int(round(float(g_end_s) * 1000.0)) if g_end_s is not None else g_start_ms
+            except Exception:
+                new_groups.append(g)
+                continue
+
+            if g_end_ms > window_start_ms and g_start_ms < window_end_ms:
+                # drop overlapping older group
+                continue
+            new_groups.append(g)
+
+        self.batch_groups = new_groups
+
+        # 4) Create canonical group segment
+        grp = Segment()
+        grp.id = group_id
+        grp.start = window_start_ms / 1000.0
+        grp.end = window_end_ms / 1000.0
+        grp.speaker = speaker
+        grp.state = "FINAL"
+        grp.text = (text_final or "").strip()
+        grp.text_batch = (text_batch or "").strip() if text_batch else None
+        grp.text_live = None
+
+        self.batch_groups.append(grp)
+
+        return group_id
 
     def update(self) -> None:
         """Drain state buffers into the running alignment context."""
@@ -248,7 +327,9 @@ class TokensAlignment:
                     self.current_line_tokens.append(token)
 
             # tokens_alignment.py (in get_lines, non-diarization pad)
-            segments = list(self.validated_segments)
+            # Start with validated FINAL segments + canonical batch groups
+            segments = list(self.validated_segments) + list(self.batch_groups)
+
 
             # validated segments are FINAL
             for s in segments:
@@ -315,30 +396,6 @@ class TokensAlignment:
             ov = self.segment_overrides.get(seg.id)
             if not ov:
                 continue
-            
-            # 🔥 HARD RULE: FINAL segment invalidates earlier LIVE segments
-            final_ids = {
-                seg.id
-                for seg in segments
-                if getattr(seg, "state", None) == "FINAL"
-            }
-
-            if final_ids:
-                pruned = []
-                for seg in segments:
-                    # drop LIVE segments that overlap FINAL timeline
-                    if getattr(seg, "state", None) == "LIVE":
-                        for fid in final_ids:
-                            fseg = next((s for s in segments if s.id == fid), None)
-                            if fseg and seg.start is not None and fseg.start is not None:
-                                if seg.start <= fseg.end:
-                                    break
-                        else:
-                            pruned.append(seg)
-                    else:
-                        pruned.append(seg)
-
-                segments[:] = pruned
 
             if ov.get("state"):
                 seg.state = ov["state"]
@@ -355,5 +412,35 @@ class TokensAlignment:
                 seg.start = ov["start_ms"] / 1000.0
             if ov.get("end_ms") is not None:
                 seg.end = ov["end_ms"] / 1000.0
-    
+       
+        # --- ALWAYS prune LIVE segments that overlap any FINAL segment (including batch groups) ---
+        final_segs = [
+            s for s in segments
+            if getattr(s, "state", None) == "FINAL"
+            and not (hasattr(s, "is_silence") and s.is_silence())
+        ]
+
+        if final_segs:
+            pruned = []
+            for s in segments:
+                if getattr(s, "state", None) == "LIVE":
+                    # Drop LIVE if it overlaps ANY FINAL timeline
+                    drop = False
+                    for f in final_segs:
+                        live_start = s.start
+                        live_end = s.end if s.end is not None else live_start
+
+                        final_start = f.start
+                        final_end = f.end if f.end is not None else final_start
+
+                        if (live_end > final_start) and (live_start < final_end):
+                            drop = True
+
+                            break
+                    if not drop:
+                        pruned.append(s)
+                else:
+                    pruned.append(s)
+            segments = pruned
+
         return segments, diarization_buffer, self.new_translation_buffer.text
