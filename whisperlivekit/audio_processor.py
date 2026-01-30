@@ -551,36 +551,35 @@ class AudioProcessor:
                     cumulative_pcm_duration_stream_time += len(pcm_array) / self.sample_rate
                     stream_time_end_of_current_pcm = cumulative_pcm_duration_stream_time
 
-                if ENABLE_HARD_CAP:
-                    # ===== Stap 1: HARD CAP (force-close) ALS ENABLE_HARD_CAP = True =====
-                    try:
-                        if self._batch_window_start_ms is not None:
-                            now_ms = int(round(stream_time_end_of_current_pcm * 1000.0))
-                            if (now_ms - int(self._batch_window_start_ms)) >= BATCH_HARD_CAP_MS:
-                                # Force enqueue op laatste speech-end
-                                window_start_ms = int(self._batch_window_start_ms)
-                                # HARD CAP moet ALTIJD vooruitgang forceren in tijd.
-                                # Gebruik daarom now_ms als window_end (niet tokens[-1].end), anders krijg je micro-windows als tokens achterlopen.
-                                window_end_ms = now_ms
+                    # 🔹 HARD CAP = alleen windowing, nooit ASR-gating
+                    if ENABLE_HARD_CAP:
+                        try:
+                            if self._batch_window_start_ms is not None:
+                                now_ms = int(round(stream_time_end_of_current_pcm * 1000.0))
+                                if (now_ms - int(self._batch_window_start_ms)) >= BATCH_HARD_CAP_MS:
+                                    window_start_ms = int(self._batch_window_start_ms)
+                                    window_end_ms = now_ms
 
-                                if self._batch_last_close_end_ms is None or window_end_ms > self._batch_last_close_end_ms:
-                                    self._batch_last_close_end_ms = window_end_ms
-                                    await self._enqueue_batch_window(
-                                        window_start_ms=window_start_ms,
-                                        window_end_ms=window_end_ms,
-                                        reason="hard_cap_close"
-                                    )
+                                    if self._batch_last_close_end_ms is None or window_end_ms > self._batch_last_close_end_ms:
+                                        self._batch_last_close_end_ms = window_end_ms
+                                        await self._enqueue_batch_window(
+                                            window_start_ms=window_start_ms,
+                                            window_end_ms=window_end_ms,
+                                            reason="hard_cap_close"
+                                        )
 
-                                    # Advance window naar echte tijd, zodat hard-cap niet direct opnieuw triggert
                                     self._batch_window_start_ms = window_end_ms
                                     self._batch_ready_to_close = False
                                     self._batch_ready_at_ms = None
-                    except Exception as e:
-                        logger.warning(f"[BATCH][WINDOW] hard-cap handler failed: {e}")
+                        except Exception as e:
+                            logger.warning(f"[BATCH][WINDOW] hard-cap handler failed: {e}")
 
-                self.transcription.insert_audio_chunk(pcm_array, stream_time_end_of_current_pcm)
-                new_tokens, current_audio_processed_upto = await asyncio.to_thread(self.transcription.process_iter)
-                new_tokens = new_tokens or []
+                    # ✅ ASR MAG ALLEEN HIER
+                    self.transcription.insert_audio_chunk(pcm_array, stream_time_end_of_current_pcm)
+                    new_tokens, current_audio_processed_upto = await asyncio.to_thread(
+                        self.transcription.process_iter
+                    )
+                    new_tokens = new_tokens or []
 
                 _buffer_transcript = self.transcription.get_buffer()
                 buffer_text = _buffer_transcript.text
