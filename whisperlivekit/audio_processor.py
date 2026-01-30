@@ -40,6 +40,8 @@ SILENCE_TOKEN_MIN_DURATION = 0.10  # 100ms (mag 0.0 als je alles wil)
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
 SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
 
+ENABLE_HARD_CAP = False
+
 # Batch windowing (Stap 1)
 BATCH_TARGET_WINDOW_MS = 30_000   # 30s
 BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
@@ -548,7 +550,9 @@ class AudioProcessor:
                     self._log_status_throttled(asr_processing_logs)
                     cumulative_pcm_duration_stream_time += len(pcm_array) / self.sample_rate
                     stream_time_end_of_current_pcm = cumulative_pcm_duration_stream_time
-                    # ===== Stap 1: HARD CAP (force-close) =====
+
+                if ENABLE_HARD_CAP:
+                    # ===== Stap 1: HARD CAP (force-close) ALS ENABLE_HARD_CAP = True =====
                     try:
                         if self._batch_window_start_ms is not None:
                             now_ms = int(round(stream_time_end_of_current_pcm * 1000.0))
@@ -998,6 +1002,19 @@ class AudioProcessor:
                         f"[BATCH][WORKER] giving up: no FINAL segment for job {job['job_id']} ({reason}) after {attempt} retries"
                     )
                     continue
+                
+                # --- HARD OVERRIDE IN STATE (dit is de kern) ---
+                async with self.lock:
+                    # chosen is al een Segment uit tokens_alignment output
+                    # We forceren hem FINAL in de state
+                    chosen.state = "FINAL"
+                    chosen.text = "BATCH OK"
+                    chosen.text_live = None
+                    chosen.text_batch = "BATCH OK"
+
+                    # Zorg dat tijden kloppen
+                    chosen.start = start_ms / 1000.0
+                    chosen.end   = end_ms   / 1000.0
 
                 upd = SegmentUpdate(
                     id=str(chosen.id),
