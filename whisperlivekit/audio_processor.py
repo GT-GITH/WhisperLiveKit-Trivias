@@ -545,7 +545,7 @@ class AudioProcessor:
                     continue
                 elif isinstance(item, np.ndarray):
                     pcm_array = item
-                    logger.info(asr_processing_logs)
+                    self._log_status_throttled(asr_processing_logs)
                     cumulative_pcm_duration_stream_time += len(pcm_array) / self.sample_rate
                     stream_time_end_of_current_pcm = cumulative_pcm_duration_stream_time
                     # ===== Stap 1: HARD CAP (force-close) =====
@@ -941,11 +941,29 @@ class AudioProcessor:
                 chosen = None
 
                 for seg in reversed(lines):
-                    seg_start_ms = int(getattr(seg, "start_ms", 0) or 0)
-                    seg_end_ms   = int(getattr(seg, "end_ms", 0) or 0)
+                    # Segmenten kunnen óf ms-velden hebben, óf start/end in seconden.
+                    seg_start_ms = getattr(seg, "start_ms", None)
+                    seg_end_ms   = getattr(seg, "end_ms", None)
+
+                    if seg_start_ms is None:
+                        seg_start_s = getattr(seg, "start", None)
+                        seg_start_ms = int(round(float(seg_start_s) * 1000.0)) if seg_start_s is not None else 0
+                    else:
+                        seg_start_ms = int(seg_start_ms)
+
+                    if seg_end_ms is None:
+                        seg_end_s = getattr(seg, "end", None)
+                        # LIVE kan end=None hebben; dan behandelen we end als window-einde
+                        if seg_end_s is None:
+                            seg_end_ms = end_ms
+                        else:
+                            seg_end_ms = int(round(float(seg_end_s) * 1000.0))
+                    else:
+                        seg_end_ms = int(seg_end_ms)
 
                     if seg_end_ms <= 0:
                         continue
+
 
                     # kies FINAL segment dat overlapt met window
                     if (
