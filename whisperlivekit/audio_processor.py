@@ -33,7 +33,9 @@ SENTINEL = object() # unique sentinel object for end of stream marker
 # Per-queue pushback slot used by get_all_from_queue() to preserve ordering without peeking.
 _QUEUE_PUSHBACK: dict[int, Any] = {}
 
-MIN_DURATION_REAL_SILENCE = 5
+# Stilte die we als "segment boundary" gebruiken (dus FINAL/segment-close).
+# Dit heeft niets met decoder reset te maken.
+SILENCE_TOKEN_MIN_DURATION = 0.10  # 100ms (mag 0.0 als je alles wil)
 
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
 SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
@@ -233,7 +235,7 @@ class AudioProcessor:
         self.current_silence.is_starting=False
         self.current_silence.has_ended=True
         self.current_silence.compute_duration()
-        if self.current_silence.duration > MIN_DURATION_REAL_SILENCE:
+        if self.current_silence.duration >  SILENCE_TOKEN_MIN_DURATION:
             self.state.new_tokens.append(self.current_silence)
         await self._push_silence_event()
         self.current_silence = None
