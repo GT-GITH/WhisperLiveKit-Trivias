@@ -273,6 +273,15 @@ function ensureWebSocket() {
   });
 }
 
+function escapeHtml(s) {
+  return String(s || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function renderTranscript(lines, bufferTranscription, bufferTranslation, status) {
   if (!liveTranscriptDiv) return;
 
@@ -282,37 +291,63 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     return;
   }
 
-const base = (lines || [])
-  .filter((item) => {
+  const safeLines = (lines || []).filter((item) => {
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
     // -2 = silence segment → niet tonen
     return sp !== -2;
-  })
-  .map((item) => {
-    const txt = (item.text || "").trim();
-    if (!txt) return "";
-    const sp = item.speaker ?? item.speaker_id ?? item.spk;
-    if (sp === undefined || sp === null || sp === "" || sp === -1) return txt;
-    return `[${sp}] ${txt}`;
-  })
-  .filter((t) => t && t.trim().length > 0)
-  .join("\n")
-  .trim();
+  });
 
+  const htmlParts = [];
 
-  let liveText = base;
-  if (bufferTranscription && bufferTranscription.trim().length > 0) {
-    liveText = (liveText ? liveText + " " : "") + bufferTranscription.trim();
+  for (const item of safeLines) {
+    const rawTxt = (item?.text || "").trim();
+    if (!rawTxt) continue;
+
+    const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
+
+    // Kleur op state: LIVE = grijs, FINAL = wit
+    const st = (item?.state || "FINAL").toUpperCase();
+    const cls = st === "LIVE" ? "seg seg-live" : "seg seg-final";
+
+    const prefix =
+      sp === undefined || sp === null || sp === "" || sp === -1
+        ? ""
+        : `[${escapeHtml(sp)}] `;
+
+    // data-id is handig voor debug/inspectie
+    const idAttr = item?.id ? ` data-id="${escapeHtml(item.id)}"` : "";
+
+    htmlParts.push(
+      `<div class="${cls}"${idAttr}>${prefix}${escapeHtml(rawTxt)}</div>`
+    );
   }
 
-  liveTranscriptDiv.textContent = liveText || "Nog geen tekst ontvangen";
-  lastFullTranscript = liveText || lastFullTranscript;
+  // Buffer transcription = lopend (provisional) → altijd LIVE styling
+  if (bufferTranscription && bufferTranscription.trim().length > 0) {
+    htmlParts.push(
+      `<div class="seg seg-buffer seg-live">${escapeHtml(
+        bufferTranscription.trim()
+      )}</div>`
+    );
+  }
 
-  if (bufferTranslation && bufferTranslation.trim().length > 0 && finalTranscriptDiv) {
+  liveTranscriptDiv.innerHTML =
+    htmlParts.join("") || "Nog geen tekst ontvangen";
+
+  // Bewaar laatste tekst voor jouw bestaande “lastFullTranscript”
+  lastFullTranscript = liveTranscriptDiv.textContent || lastFullTranscript;
+
+  if (
+    bufferTranslation &&
+    bufferTranslation.trim().length > 0 &&
+    finalTranscriptDiv
+  ) {
     finalTranscriptDiv.textContent = bufferTranslation.trim();
   }
+
   setAsrStatus("Live transcriptie actief");
 }
+
 
 // NEW: microfoonlijst ophalen en dropdown vullen (met dedupe)
 async function refreshMicrophoneList() {

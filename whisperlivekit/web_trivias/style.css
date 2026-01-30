@@ -397,3 +397,22 @@ body {
   }
   
 }
+/* --- Segment styling (LIVE grey → FINAL white) --- */
+.seg {
+  display: block;
+  white-space: pre-wrap;
+}
+
+.seg-live {
+  color: var(--text-muted);
+}
+
+.seg-final {
+  color: var(--text);
+}
+
+.seg-buffer {
+  color: var(--text-muted);
+  opacity: 0.9;
+  margin-top: 6px;
+}
