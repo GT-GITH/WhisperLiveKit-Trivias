@@ -31,6 +31,8 @@ let userClosing = false;
 let availableMics = [];
 let selectedDeviceId = null;
 
+let pendingSegmentUpdates = new Map(); // id -> last update payload
+
 // DOM elements
 const recordButton = document.getElementById("recordButton");
 const liveTranscriptDiv = document.getElementById("liveTranscript");
@@ -208,10 +210,10 @@ function ensureWebSocket() {
         const id = data.id;
         if (!id) return;
 
-        const line = lineById.get(id);
+        let line = lineById.get(id);
         if (!line) {
-          // Segment bestaat (nog) niet in UI.
-          // Bewust negeren om geen UI-instabiliteit te veroorzaken.
+          // Segment bestaat nog niet in currentLines; onthoud update tot volgende front_data
+          pendingSegmentUpdates.set(id, data);
           return;
         }
 
@@ -250,6 +252,18 @@ function ensureWebSocket() {
 
         currentLines = lines;
         rebuildLineIndex(currentLines);
+        
+        // Apply any pending segment updates now that lines exist
+        for (const [pid, upd] of pendingSegmentUpdates.entries()) {
+          const l = lineById.get(pid);
+          if (!l) continue;
+
+          if (upd.text_batch !== undefined) l.text_batch = upd.text_batch;
+          if (upd.text_final !== undefined) l.text = upd.text_final;
+          if (upd.state !== undefined) l.state = upd.state;
+
+          pendingSegmentUpdates.delete(pid);
+        }
 
         lastBufferTranscription = buffer_transcription;
         lastBufferTranslation = buffer_translation;
@@ -305,9 +319,22 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
 
-    // Kleur op state: LIVE = grijs, FINAL = wit
     const st = (item?.state || "FINAL").toUpperCase();
-    const cls = st === "LIVE" ? "seg seg-live" : "seg seg-final";
+
+    // WIT PAS NA BATCH:
+    // - LIVE is altijd grijs
+    // - FINAL zonder batch is óók grijs (pending)
+    // - FINAL met batch is wit
+    const hasBatch =
+      item?.text_batch !== undefined &&
+      item?.text_batch !== null &&
+      String(item.text_batch).trim().length > 0;
+
+    let cls = "seg seg-live"; // default = grijs
+    if (st !== "LIVE") {
+      cls = hasBatch ? "seg seg-final" : "seg seg-live";
+    }
+
 
     const prefix =
       sp === undefined || sp === null || sp === "" || sp === -1
