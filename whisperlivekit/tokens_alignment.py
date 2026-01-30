@@ -44,7 +44,26 @@ class TokensAlignment:
         self._dbg_last_live: Optional[str] = None
         self._dbg_last_log_t: float = 0.0
         self._dbg_min_interval_s: float = 0.75  # max ~1x per 0.75s
+        
+        self.segment_overrides = {}  # id -> dict(state,text_batch,text_final,start_ms,end_ms)
 
+    def set_segment_override(
+        self,
+        seg_id: str,
+        *,
+        state: str = "FINAL",
+        text_batch: Optional[str] = None,
+        text_final: Optional[str] = None,
+        start_ms: Optional[int] = None,
+        end_ms: Optional[int] = None
+    ) -> None:
+        self.segment_overrides[seg_id] = {
+            "state": state,
+            "text_batch": text_batch,
+            "text_final": text_final,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+        }
 
     def update(self) -> None:
         """Drain state buffers into the running alignment context."""

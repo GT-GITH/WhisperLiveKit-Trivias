@@ -42,6 +42,7 @@ SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
 
 ENABLE_HARD_CAP = False
 
+BATCH_CONTEXT_PAD_MS = 600  # FO default pre/post padding
 # Batch windowing (Stap 1)
 BATCH_TARGET_WINDOW_MS = 30_000   # 30s
 BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
@@ -1002,31 +1003,59 @@ class AudioProcessor:
                     )
                     continue
                 
-                # --- HARD OVERRIDE IN STATE (dit is de kern) ---
-                async with self.lock:
-                    # chosen is al een Segment uit tokens_alignment output
-                    # We forceren hem FINAL in de state
-                    chosen.state = "FINAL"
-                    chosen.text = "BATCH OK"
-                    chosen.text_live = None
-                    chosen.text_batch = "BATCH OK"
+                # ====== Stap 2: ECHTE batch decode + SAFE overwrite (FO) ======
 
-                    # Zorg dat tijden kloppen
+                # 1) Bepaal live tekst als fallback (nooit woorden missen)
+                live_text = (getattr(chosen, "text_live", None) or getattr(chosen, "text", None) or "").strip()
+
+                # 2) Decode audio slice met padding (FO)
+                decode_start_ms = max(0, start_ms - BATCH_CONTEXT_PAD_MS)
+                decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_MS
+
+                audio_f32 = self._read_wav_slice_float32(decode_start_ms, decode_end_ms)
+                batch_txt = (self._batch_transcribe_text(audio_f32) if audio_f32 is not None else None)
+                batch_txt = (batch_txt or "").strip()
+
+                # 3) SAFE accept policy:
+                #    - als batch leeg/veel te kort is t.o.v. live => gebruik live als FINAL (nooit verlies)
+                def _is_suspicious(batch: str, live: str) -> bool:
+                    if not batch:
+                        return True
+                    if len(live) >= 40 and len(batch) < int(0.5 * len(live)):
+                        return True
+                    return False
+
+                use_batch_as_final = not _is_suspicious(batch_txt, live_text)
+                final_txt = batch_txt if use_batch_as_final else live_text
+
+                # 4) Mutate chosen segment (best effort). NB: gekozen segment kan live-view zijn,
+                #    maar de UI ziet in elk geval de SegmentUpdate.
+                async with self.lock:
+                    chosen.state = "FINAL"
+                    chosen.text_batch = batch_txt if batch_txt else None
+                    chosen.text_live = None
+                    chosen.text = final_txt
+
                     chosen.start = start_ms / 1000.0
                     chosen.end   = end_ms   / 1000.0
 
+                # 5) Emit SegmentUpdate naar UI
                 upd = SegmentUpdate(
                     id=str(chosen.id),
-                    text_final=chosen.text,
                     state="FINAL",
                     start_ms=start_ms,
                     end_ms=end_ms,
+                    text_batch=(batch_txt if batch_txt else None),
+                    text_final=final_txt
                 )
                 await self.emit_segment_update(upd)
 
                 logger.info(
-                    f"[BATCH][WORKER] updated segment id={chosen.id} for job={job['job_id']} reason={reason}"
+                    f"[BATCH][WORKER] FINAL overwrite id={chosen.id} job={job['job_id']} "
+                    f"window={start_ms}..{end_ms} pad={BATCH_CONTEXT_PAD_MS}ms "
+                    f"use_batch={use_batch_as_final} reason={reason}"
                 )
+
             except Exception as e:
                 logger.warning(f"[BATCH][WORKER] error: {e}")
             finally:
