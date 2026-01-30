@@ -980,11 +980,10 @@ class AudioProcessor:
                     if (
                         seg_end_ms > start_ms
                         and seg_start_ms < end_ms
-                        and getattr(seg, "state", "") in ("LIVE", "FINAL")
+                        and getattr(seg, "state", "") == "FINAL"
                     ):
                         chosen = seg
                         break
-
 
                 if not chosen:
                     # Nog geen FINAL segment beschikbaar -> retry kort, bounded (geen moeras)
@@ -1032,12 +1031,14 @@ class AudioProcessor:
                 #    maar de UI ziet in elk geval de SegmentUpdate.
                 async with self.lock:
                     chosen.state = "FINAL"
-                    chosen.text_batch = batch_txt if batch_txt else None
-                    chosen.text_live = None
-                    chosen.text = final_txt
 
-                    chosen.start = start_ms / 1000.0
-                    chosen.end   = end_ms   / 1000.0
+                    # Bewaar live tekst als bewijslaag (handig voor audits / debug)
+                    chosen.text_live = live_text or None
+
+                    # Batch laag + final display
+                    chosen.text_batch = (batch_txt if batch_txt else None)
+                    chosen.text = final_txt
+                    # LET OP: start/end NIET aanpassen — segment timing blijft bewijs/tijdlijn
 
                 # 5) Emit SegmentUpdate naar UI
                 upd = SegmentUpdate(
@@ -1048,6 +1049,7 @@ class AudioProcessor:
                     text_batch=(batch_txt if batch_txt else None),
                     text_final=final_txt
                 )
+
                 await self.emit_segment_update(upd)
 
                 logger.info(

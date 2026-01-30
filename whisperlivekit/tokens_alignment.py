@@ -285,7 +285,17 @@ class TokensAlignment:
                             self._dbg_last_live = live_sig
                             self._dbg_last_log_t = now
 
-                segments.append(live_seg)
+                # Guard: voorkom duplicate live segment met dezelfde ID als laatst gevalideerde segment
+                if live_seg:
+                    if segments:
+                        last = segments[-1]
+                        if hasattr(last, "id") and hasattr(live_seg, "id") and last.id == live_seg.id:
+                            # Skip duplicate
+                            pass
+                        else:
+                            segments.append(live_seg)
+                    else:
+                        segments.append(live_seg)
 
 
         if current_silence:
@@ -299,4 +309,27 @@ class TokensAlignment:
                 ))
         if translation:
             [self.add_translation(segment) for segment in segments if not segment.is_silence()]
+
+        # Apply batch overrides (persistently)
+        for seg in segments:
+            ov = self.segment_overrides.get(seg.id)
+            if not ov:
+                continue
+
+            if ov.get("state"):
+                seg.state = ov["state"]
+
+            if ov.get("text_batch") is not None:
+                seg.text_batch = ov["text_batch"]
+
+            if ov.get("text_final") is not None:
+                seg.text = ov["text_final"]      # 'text' is what UI shows as final
+                seg.text_live = None             # optional: hide live after final
+
+            # Optional: align boundaries to batch window
+            if ov.get("start_ms") is not None:
+                seg.start = ov["start_ms"] / 1000.0
+            if ov.get("end_ms") is not None:
+                seg.end = ov["end_ms"] / 1000.0
+    
         return segments, diarization_buffer, self.new_translation_buffer.text
