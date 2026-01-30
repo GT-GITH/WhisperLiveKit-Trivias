@@ -315,6 +315,30 @@ class TokensAlignment:
             ov = self.segment_overrides.get(seg.id)
             if not ov:
                 continue
+            
+            # 🔥 HARD RULE: FINAL segment invalidates earlier LIVE segments
+            final_ids = {
+                seg.id
+                for seg in segments
+                if getattr(seg, "state", None) == "FINAL"
+            }
+
+            if final_ids:
+                pruned = []
+                for seg in segments:
+                    # drop LIVE segments that overlap FINAL timeline
+                    if getattr(seg, "state", None) == "LIVE":
+                        for fid in final_ids:
+                            fseg = next((s for s in segments if s.id == fid), None)
+                            if fseg and seg.start is not None and fseg.start is not None:
+                                if seg.start <= fseg.end:
+                                    break
+                        else:
+                            pruned.append(seg)
+                    else:
+                        pruned.append(seg)
+
+                segments[:] = pruned
 
             if ov.get("state"):
                 seg.state = ov["state"]
