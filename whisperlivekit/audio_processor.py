@@ -44,7 +44,7 @@ ENABLE_HARD_CAP = False
 
 BATCH_CONTEXT_PAD_MS = 600  # FO default pre/post padding
 # Batch windowing (Stap 1)
-BATCH_TARGET_WINDOW_MS = 30_000   # 30s
+BATCH_TARGET_WINDOW_MS = 15_000   # 30s
 BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
 BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
 
