@@ -413,35 +413,45 @@ class TokensAlignment:
             if ov.get("end_ms") is not None:
                 seg.end = ov["end_ms"] / 1000.0
        
-        # --- ALWAYS prune LIVE segments that overlap any FINAL segment (including batch groups) ---
-        final_segs = [
-            s for s in segments
-            if getattr(s, "state", None) == "FINAL"
-            and not (hasattr(s, "is_silence") and s.is_silence())
-        ]
+        # --- Prune LIVE only if it overlaps canonical batch windows (A1) ---
+        # Canonical windows are either:
+        # 1) explicit batch groups (id starts with "bg_"), OR
+        # 2) suppressed_ranges_ms produced by apply_batch_group()
 
-        if final_segs:
-            pruned = []
+        def _seg_ms(seg: Segment) -> Tuple[int, int]:
+            start_ms = int(round(float(getattr(seg, "start", 0.0) or 0.0) * 1000.0))
+            end_s = getattr(seg, "end", None)
+            end_ms = int(round(float(end_s) * 1000.0)) if end_s is not None else start_ms
+            return start_ms, end_ms
+
+        canonical_ranges: List[Tuple[int, int]] = []
+
+        # Prefer suppressed_ranges_ms (most direct)
+        canonical_ranges.extend(list(self.suppressed_ranges_ms))
+
+        # Also include any batchgroup segments (defensive)
+        for g in self.batch_groups:
+            try:
+                canonical_ranges.append(_seg_ms(g))
+            except Exception:
+                pass
+
+        if canonical_ranges:
+            pruned: List[Segment] = []
             for s in segments:
                 if getattr(s, "state", None) == "LIVE":
-                    # Drop LIVE if it overlaps ANY FINAL timeline
+                    live_s, live_e = _seg_ms(s)
                     drop = False
-                    for f in final_segs:
-                        live_start = s.start
-                        live_end = s.end if s.end is not None else live_start
-
-                        final_start = f.start
-                        final_end = f.end if f.end is not None else final_start
-
-                        if (live_end > final_start) and (live_start < final_end):
+                    for c_s, c_e in canonical_ranges:
+                        if (live_e > c_s) and (live_s < c_e):
                             drop = True
-
                             break
                     if not drop:
                         pruned.append(s)
                 else:
                     pruned.append(s)
             segments = pruned
+
 
         return segments, diarization_buffer, self.new_translation_buffer.text
  

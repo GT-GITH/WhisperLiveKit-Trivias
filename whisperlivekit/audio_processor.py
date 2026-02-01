@@ -933,14 +933,18 @@ class AudioProcessor:
                 
                 attempt = int(job.get("_attempt", 0))
 
+                # 1) Neem een consistente snapshot van 'lines' onder lock (kort!)
                 async with self.lock:
-                    # Zorg dat alignment up-to-date is (minimaal drain van state)
                     self.tokens_alignment.update()
                     lines, _, _ = self.tokens_alignment.get_lines(
                         diarization=self.args.diarization,
                         translation=bool(self.translation),
                         current_silence=self.current_silence
                     )
+                    # kopieer alleen referenties (voldoende); we muteren 'lines' hieronder niet
+                    lines = list(lines)
+
+                # 2) Vanaf hier ALLES buiten lock (loops / checks / samenvoegen)
 
                 # We wachten alleen tot er in dit window überhaupt FINAL content is
                 has_any_final = False
