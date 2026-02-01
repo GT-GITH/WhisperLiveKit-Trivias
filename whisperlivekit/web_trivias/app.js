@@ -346,27 +346,29 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   }
 
   // Buffer transcription = lopend (provisional) → altijd LIVE styling
-  if (bufferTranscription && bufferTranscription.trim().length > 0) {
-    htmlParts.push(
-      `<div class="seg seg-buffer seg-live">${escapeHtml(
-        bufferTranscription.trim()
-      )}</div>`
-    );
-  }
+/*
+if (bufferTranscription && bufferTranscription.trim().length > 0) {
+  htmlParts.push(
+    `<div class="seg seg-buffer seg-live">${escapeHtml(
+      bufferTranscription.trim()
+    )}</div>`
+  );
+}
+*/
 
   liveTranscriptDiv.innerHTML =
     htmlParts.join("") || "Nog geen tekst ontvangen";
 
   // Bewaar laatste tekst voor jouw bestaande “lastFullTranscript”
-  lastFullTranscript = liveTranscriptDiv.textContent || lastFullTranscript;
+// (optioneel) bufferTranslation ook uitgeschakeld
+// if (
+//   bufferTranslation &&
+//   bufferTranslation.trim().length > 0 &&
+//   finalTranscriptDiv
+// ) {
+//   finalTranscriptDiv.textContent = bufferTranslation.trim();
+// }
 
-  if (
-    bufferTranslation &&
-    bufferTranslation.trim().length > 0 &&
-    finalTranscriptDiv
-  ) {
-    finalTranscriptDiv.textContent = bufferTranslation.trim();
-  }
 
   setAsrStatus("Live transcriptie actief");
 }
