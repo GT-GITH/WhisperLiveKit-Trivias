@@ -329,19 +329,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
     const st = (item?.state || "FINAL").toUpperCase();
 
-    // WIT PAS NA BATCH:
-    // - LIVE is altijd grijs
-    // - FINAL zonder batch is óók grijs (pending)
-    // - FINAL met batch is wit
-    const hasBatch =
-      item?.text_batch !== undefined &&
-      item?.text_batch !== null &&
-      String(item.text_batch).trim().length > 0;
-
-    let cls = "seg seg-live"; // default = grijs
-    if (st !== "LIVE") {
-      cls = hasBatch ? "seg seg-final" : "seg seg-live";
-    }
+    const cls = st === "LIVE" ? "seg seg-live" : "seg seg-final";
 
 
     const prefix =
