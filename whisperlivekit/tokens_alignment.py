@@ -444,3 +444,4 @@ class TokensAlignment:
             segments = pruned
 
         return segments, diarization_buffer, self.new_translation_buffer.text
+ 
