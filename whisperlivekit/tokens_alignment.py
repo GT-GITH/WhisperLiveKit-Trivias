@@ -451,6 +451,23 @@ class TokensAlignment:
                 else:
                     pruned.append(s)
             segments = pruned
+            
+        # --- Ensure deterministic chronological ordering (CRITICAL) ---
+        def _seg_sort_key(s: Segment):
+            start_ms = int(round(float(getattr(s, "start", 0.0) or 0.0) * 1000.0))
+            end_s = getattr(s, "end", None)
+            end_ms = int(round(float(end_s) * 1000.0)) if end_s is not None else start_ms
+
+            # Order: time asc, FINAL before LIVE, shorter first if same start
+            state = getattr(s, "state", "") or ""
+            state_rank = 0 if state == "FINAL" else 1  # FINAL first
+
+            # Silence last if same start (optional but keeps text nicer)
+            silence_rank = 1 if hasattr(s, "is_silence") and s.is_silence() else 0
+
+            return (start_ms, state_rank, silence_rank, end_ms)
+
+        segments.sort(key=_seg_sort_key)
 
 
         return segments, diarization_buffer, self.new_translation_buffer.text
