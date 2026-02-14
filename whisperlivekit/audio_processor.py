@@ -1040,8 +1040,8 @@ class AudioProcessor:
                     f"samples={(0 if audio_f32 is None else audio_f32.size)} reason={reason}"
                 )
 
-                #result = self.engine.batch_asr.transcribe(audio_f32) //onduidelijke waar die engine is gezet en waarom.iig voor nu uit en gebruik dit:
-                result = self.batch_asr.transcribe(audio_f32)
+                result = self.engine.batch_asr.transcribe(audio_f32)  
+                #result = self.batch_asr.transcribe(audio_f32)
                 batch_txt = result["text"]
                 batch_avg_logprob = result["avg_logprob"]
                 batch_compression = result["compression_ratio"]
