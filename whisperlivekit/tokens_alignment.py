@@ -4,7 +4,11 @@ from typing import Any, List, Optional, Tuple, Union
 from whisperlivekit.timed_objects import (ASRToken, Segment, PuncSegment, Silence,
                                           SilentSegment, SpeakerSegment,
                                           TimedText)
+import logging
 
+logger = logging.getLogger("whisperlivekit.tokens_alignment")
+# Geen basicConfig en geen forced setLevel hier.
+# De applicatie (server) bepaalt het loglevel.
 
 class TokensAlignment:
 
@@ -34,6 +38,111 @@ class TokensAlignment:
         self.last_punctuation = None
         self.last_uncompleted_punc_segment: PuncSegment = None
         self.unvalidated_tokens: PuncSegment = []
+
+        # Debug throttling (voorkomt log-spam)
+        self._dbg_last_sig: Optional[str] = None
+        self._dbg_last_live: Optional[str] = None
+        self._dbg_last_log_t: float = 0.0
+        self._dbg_min_interval_s: float = 0.75  # max ~1x per 0.75s
+        
+        self.segment_overrides = {}  # id -> dict(state,text_batch,text_final,start_ms,end_ms)
+        # A1: canonical batch groups (server-side)
+        # We store these as segments and suppress any normal segments inside the refined window.
+        self.batch_groups: List[Segment] = []
+        self.suppressed_ranges_ms: List[Tuple[int, int]] = []  # list of (start_ms,end_ms)
+
+    def set_segment_override(
+        self,
+        seg_id: str,
+        *,
+        state: str = "FINAL",
+        text_batch: Optional[str] = None,
+        text_final: Optional[str] = None,
+        start_ms: Optional[int] = None,
+        end_ms: Optional[int] = None
+    ) -> None:
+        self.segment_overrides[seg_id] = {
+            "state": state,
+            "text_batch": text_batch,
+            "text_final": text_final,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+        }
+
+    def apply_batch_group(
+        self,
+        *,
+        window_start_ms: int,
+        window_end_ms: int,
+        text_final: str,
+        text_batch: Optional[str] = None,
+        speaker: int = -1,
+    ) -> str:
+        """
+        A1: Maak één canonical BatchGroup-segment voor dit window, en suppress alle bestaande
+        (validated) segmenten die overlappen met dit window.
+        Returns: group_id
+        """
+        if window_end_ms <= window_start_ms:
+            return ""
+
+        group_id = f"bg_{int(window_start_ms)}_{int(window_end_ms)}_{int(speaker)}"
+
+        # 1) Suppress ranges (keep list non-overlapping-ish is optional; simple append is ok)
+        self.suppressed_ranges_ms.append((int(window_start_ms), int(window_end_ms)))
+
+        # 2) Drop validated segments that overlap with this refined window
+        kept: List[Segment] = []
+        for s in self.validated_segments:
+            try:
+                s_start_ms = int(round(float(getattr(s, "start", 0.0) or 0.0) * 1000.0))
+                s_end_s = getattr(s, "end", None)
+                s_end_ms = int(round(float(s_end_s) * 1000.0)) if s_end_s is not None else s_start_ms
+            except Exception:
+                kept.append(s)
+                continue
+
+            # overlap?
+            if s_end_ms > window_start_ms and s_start_ms < window_end_ms:
+                # drop it (including silence segments) → BatchGroup becomes canonical truth
+                continue
+
+            kept.append(s)
+
+        self.validated_segments = kept
+
+        # 3) Remove older batch groups that overlap the same window (defensive)
+        new_groups: List[Segment] = []
+        for g in self.batch_groups:
+            try:
+                g_start_ms = int(round(float(getattr(g, "start", 0.0) or 0.0) * 1000.0))
+                g_end_s = getattr(g, "end", None)
+                g_end_ms = int(round(float(g_end_s) * 1000.0)) if g_end_s is not None else g_start_ms
+            except Exception:
+                new_groups.append(g)
+                continue
+
+            if g_end_ms > window_start_ms and g_start_ms < window_end_ms:
+                # drop overlapping older group
+                continue
+            new_groups.append(g)
+
+        self.batch_groups = new_groups
+
+        # 4) Create canonical group segment
+        grp = Segment()
+        grp.id = group_id
+        grp.start = window_start_ms / 1000.0
+        grp.end = window_end_ms / 1000.0
+        grp.speaker = speaker
+        grp.state = "FINAL"
+        grp.text = (text_final or "").strip()
+        grp.text_batch = (text_batch or "").strip() if text_batch else None
+        grp.text_live = None
+
+        self.batch_groups.append(grp)
+
+        return group_id
 
     def update(self) -> None:
         """Drain state buffers into the running alignment context."""
@@ -150,14 +259,30 @@ class TokensAlignment:
                 if diarization_segments and punctuation_segment.start >= diarization_segments[-1].end:
                     diarization_buffer += punctuation_segment.text
                 else:
-                    max_overlap = 0.0
-                    max_overlap_speaker = 1
-                    for diarization_segment in diarization_segments:
-                        intersec = self.intersection_duration(punctuation_segment, diarization_segment)
-                        if intersec > max_overlap:
-                            max_overlap = intersec
-                            max_overlap_speaker = diarization_segment.speaker + 1
-                    punctuation_segment.speaker = max_overlap_speaker
+                    # NEW: determine speaker by majority of token speakers (defensive)
+                    toks = getattr(punctuation_segment, "tokens", None) or []
+                    speaker_counts = {}
+
+                    for tok in toks:
+                        sp = getattr(tok, "speaker", None)
+                        if sp is not None and sp >= 0:
+                            speaker_counts[sp] = speaker_counts.get(sp, 0) + 1
+
+                    if speaker_counts:
+                        # choose speaker with most tokens
+                        punctuation_segment.speaker = max(
+                            speaker_counts.items(), key=lambda x: x[1]
+                        )[0] + 1
+                    else:
+                        # fallback: overlap-based speaker assignment (original logic)
+                        max_overlap = 0.0
+                        max_overlap_speaker = 1
+                        for diarization_segment in diarization_segments:
+                            intersec = self.intersection_duration(punctuation_segment, diarization_segment)
+                            if intersec > max_overlap:
+                                max_overlap = intersec
+                                max_overlap_speaker = diarization_segment.speaker + 1
+                        punctuation_segment.speaker = max_overlap_speaker
         
         segments = []
         if punctuation_segments:
@@ -200,10 +325,59 @@ class TokensAlignment:
                         ))
                 else:
                     self.current_line_tokens.append(token)
-            
-            segments = list(self.validated_segments)
+
+            # tokens_alignment.py (in get_lines, non-diarization pad)
+            # Start with validated FINAL segments + canonical batch groups
+            segments = list(self.validated_segments) + list(self.batch_groups)
+
+
+            # validated segments are FINAL
+            for s in segments:
+                # FORCE deterministic ID for ALL segments
+                if s.id is None:
+                    s.id = f"seg_{int(round((s.start or 0) * 1000))}_{s.speaker}"
+
+                if not s.is_silence():
+                    s.state = "FINAL"
+                    if s.text_live is None:
+                        s.text_live = s.text
+
+                if logger.isEnabledFor(logging.DEBUG):
+                    # Log alleen als de "signature" wijzigt én niet te vaak
+                    sig = f"{s.id}:{s.state}:{s.start:.2f}->{(s.end or 0):.2f}"
+                    now = time()
+                    if sig != self._dbg_last_sig and (now - self._dbg_last_log_t) >= self._dbg_min_interval_s:
+                        logger.debug(f"SEG {s.id} {s.state} {s.start}->{s.end}")
+                        self._dbg_last_sig = sig
+                        self._dbg_last_log_t = now
+
+
             if self.current_line_tokens:
-                segments.append(Segment().from_tokens(self.current_line_tokens))
+                live_seg = Segment().from_tokens(self.current_line_tokens)
+                if live_seg and not live_seg.is_silence():
+                    live_seg.state = "LIVE"
+                    # live_seg.text is the provisional display, text_live mirrors it
+                    live_seg.text_live = live_seg.text
+                    if logger.isEnabledFor(logging.DEBUG):
+                        live_sig = f"{live_seg.id}:{live_seg.start:.2f}->{(live_seg.end or 0):.2f}"
+                        now = time()
+                        if live_sig != self._dbg_last_live and (now - self._dbg_last_log_t) >= self._dbg_min_interval_s:
+                            logger.debug(f"LIVE {live_seg.id} {live_seg.start}->{live_seg.end}")
+                            self._dbg_last_live = live_sig
+                            self._dbg_last_log_t = now
+
+                # Guard: voorkom duplicate live segment met dezelfde ID als laatst gevalideerde segment
+                if live_seg:
+                    if segments:
+                        last = segments[-1]
+                        if hasattr(last, "id") and hasattr(live_seg, "id") and last.id == live_seg.id:
+                            # Skip duplicate
+                            pass
+                        else:
+                            segments.append(live_seg)
+                    else:
+                        segments.append(live_seg)
+
 
         if current_silence:
             end_silence = current_silence.end if current_silence.has_ended else time() - self.beg_loop
@@ -216,4 +390,85 @@ class TokensAlignment:
                 ))
         if translation:
             [self.add_translation(segment) for segment in segments if not segment.is_silence()]
+
+        # Apply batch overrides (persistently)
+        for seg in segments:
+            ov = self.segment_overrides.get(seg.id)
+            if not ov:
+                continue
+
+            if ov.get("state"):
+                seg.state = ov["state"]
+
+            if ov.get("text_batch") is not None:
+                seg.text_batch = ov["text_batch"]
+
+            if ov.get("text_final") is not None:
+                seg.text = ov["text_final"]      # 'text' is what UI shows as final
+                seg.text_live = None             # optional: hide live after final
+
+            # Optional: align boundaries to batch window
+            if ov.get("start_ms") is not None:
+                seg.start = ov["start_ms"] / 1000.0
+            if ov.get("end_ms") is not None:
+                seg.end = ov["end_ms"] / 1000.0
+       
+        # --- Prune LIVE only if it overlaps canonical batch windows (A1) ---
+        # Canonical windows are either:
+        # 1) explicit batch groups (id starts with "bg_"), OR
+        # 2) suppressed_ranges_ms produced by apply_batch_group()
+
+        def _seg_ms(seg: Segment) -> Tuple[int, int]:
+            start_ms = int(round(float(getattr(seg, "start", 0.0) or 0.0) * 1000.0))
+            end_s = getattr(seg, "end", None)
+            end_ms = int(round(float(end_s) * 1000.0)) if end_s is not None else start_ms
+            return start_ms, end_ms
+
+        canonical_ranges: List[Tuple[int, int]] = []
+
+        # Prefer suppressed_ranges_ms (most direct)
+        canonical_ranges.extend(list(self.suppressed_ranges_ms))
+
+        # Also include any batchgroup segments (defensive)
+        for g in self.batch_groups:
+            try:
+                canonical_ranges.append(_seg_ms(g))
+            except Exception:
+                pass
+
+        if canonical_ranges:
+            pruned: List[Segment] = []
+            for s in segments:
+                if getattr(s, "state", None) == "LIVE":
+                    live_s, live_e = _seg_ms(s)
+                    drop = False
+                    for c_s, c_e in canonical_ranges:
+                        if (live_e > c_s) and (live_s < c_e):
+                            drop = True
+                            break
+                    if not drop:
+                        pruned.append(s)
+                else:
+                    pruned.append(s)
+            segments = pruned
+            
+        # --- Ensure deterministic chronological ordering (CRITICAL) ---
+        def _seg_sort_key(s: Segment):
+            start_ms = int(round(float(getattr(s, "start", 0.0) or 0.0) * 1000.0))
+            end_s = getattr(s, "end", None)
+            end_ms = int(round(float(end_s) * 1000.0)) if end_s is not None else start_ms
+
+            # Order: time asc, FINAL before LIVE, shorter first if same start
+            state = getattr(s, "state", "") or ""
+            state_rank = 0 if state == "FINAL" else 1  # FINAL first
+
+            # Silence last if same start (optional but keeps text nicer)
+            silence_rank = 1 if hasattr(s, "is_silence") and s.is_silence() else 0
+
+            return (start_ms, state_rank, silence_rank, end_ms)
+
+        segments.sort(key=_seg_sort_key)
+
+
         return segments, diarization_buffer, self.new_translation_buffer.text
+ 

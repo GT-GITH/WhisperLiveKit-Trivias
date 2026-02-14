@@ -73,8 +73,7 @@ class BatchFasterWhisperASR:
             compute_type=compute_type,
         )
 
-    def transcribe_text(self, audio_f32: np.ndarray) -> str:
-        # faster-whisper verwacht float32 numpy array in [-1,1] (dat heb jij al)
+    def transcribe(self, audio_f32: np.ndarray) -> dict:
         segments, info = self.model.transcribe(
             audio_f32,
             language=self.language if self.language and self.language != "auto" else None,
@@ -82,10 +81,34 @@ class BatchFasterWhisperASR:
             condition_on_previous_text=self.condition_on_previous_text,
             temperature=self.temperature,
             initial_prompt=self.initial_prompt,
-            vad_filter=False,  # jij knipt zelf al op segment
+            vad_filter=False,
         )
-        parts = [s.text.strip() for s in segments if getattr(s, "text", None)]
-        return " ".join([p for p in parts if p]).strip()
+
+        texts = []
+        avg_logprobs = []
+        compression_ratios = []
+        no_speech_probs = []
+
+        for s in segments:
+            if not getattr(s, "text", None):
+                continue
+            texts.append(s.text.strip())
+            if hasattr(s, "avg_logprob"):
+                avg_logprobs.append(s.avg_logprob)
+            if hasattr(s, "compression_ratio"):
+                compression_ratios.append(s.compression_ratio)
+            if hasattr(s, "no_speech_prob"):
+                no_speech_probs.append(s.no_speech_prob)
+
+        full_text = " ".join([t for t in texts if t]).strip()
+
+        return {
+            "text": full_text,
+            "avg_logprob": float(np.mean(avg_logprobs)) if avg_logprobs else None,
+            "compression_ratio": float(np.mean(compression_ratios)) if compression_ratios else None,
+            "no_speech_prob": float(np.mean(no_speech_probs)) if no_speech_probs else None,
+            "num_segments": len(texts),
+        }
 
 class SimulStreamingOnlineProcessor:
     """Online processor for SimulStreaming ASR."""

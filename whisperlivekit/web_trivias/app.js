@@ -1,5 +1,11 @@
 // Trivias STT Simple 1-channel UI with microphone selection
 
+let currentLines = [];
+let lineById = new Map();
+let lastBufferTranscription = "";
+let lastBufferTranslation = "";
+let lastStatus = "active_transcription";
+
 let websocket = null;
 let websocketUrl = null;
 
@@ -25,9 +31,13 @@ let userClosing = false;
 let availableMics = [];
 let selectedDeviceId = null;
 
+let pendingSegmentUpdates = new Map(); // id -> last update payload
+
 // DOM elements
 const recordButton = document.getElementById("recordButton");
 const liveTranscriptDiv = document.getElementById("liveTranscript");
+if (liveTranscriptDiv) liveTranscriptDiv.style.whiteSpace = "pre-wrap";
+
 const finalTranscriptDiv = document.getElementById("finalTranscript");
 const connectionStatusSpan = document.getElementById("connectionStatus");
 const micStatusSpan = document.getElementById("micStatus");
@@ -57,6 +67,13 @@ function setConnectionStatus(connected) {
     connectionStatusSpan.classList.remove("status-connected");
     connectionStatusSpan.classList.add("status-disconnected");
   }
+}
+
+function rebuildLineIndex(lines) {
+  lineById = new Map();
+  (lines || []).forEach((l) => {
+    if (l && l.id) lineById.set(l.id, l);
+  });
 }
 
 function setMicStatus(text) {
@@ -168,6 +185,9 @@ function ensureWebSocket() {
         return;
       }
 
+      /* =========================
+      * CONFIG (ongewijzigd)
+      * ========================= */
       if (data.type === "config") {
         serverUseAudioWorklet = !!data.useAudioWorklet;
         const modeText = serverUseAudioWorklet
@@ -183,25 +203,103 @@ function ensureWebSocket() {
         return;
       }
 
-      if (data.type === "ready_to_stop") {
-        waitingForStop = false;
-        setAsrStatus("Verwerking voltooid. Gereed voor nieuwe opname.");
-        if (lastFullTranscript && finalTranscriptDiv) {
-          finalTranscriptDiv.textContent = lastFullTranscript;
+      /* =========================
+      * SEGMENT UPDATE (NIEUW)
+      * ========================= */
+      if (data.type === "segment_update") {
+        const id = data.id;
+        if (!id) return;
+
+        let line = lineById.get(id);
+        if (!line) {
+          // Segment bestaat nog niet in currentLines; onthoud update tot volgende front_data
+          pendingSegmentUpdates.set(id, data);
+          return;
         }
+
+        if (data.text_batch !== undefined) {
+          line.text_batch = data.text_batch;
+        }
+
+        if (data.text_final !== undefined) {
+          // Dit is de tekst die we daadwerkelijk tonen
+          line.text = data.text_final;
+        }
+
+        if (data.state !== undefined) {
+          line.state = data.state;
+        }
+
+        renderTranscript(
+          currentLines,
+          lastBufferTranscription,
+          lastBufferTranslation,
+          lastStatus
+        );
         return;
       }
 
-      const {
-        lines = [],
-        buffer_transcription = "",
-        buffer_translation = "",
-        status = "active_transcription",
-      } = data;
+      /* =========================
+      * FRONT DATA (volledige refresh)
+      * ========================= */
+      if (data.type === "front_data" || data.lines) {
+        const {
+          lines = [],
+          buffer_transcription = "",
+          buffer_translation = "",
+          status = "active_transcription",
+        } = data;
 
-      renderTranscript(lines, buffer_transcription, buffer_translation, status);
+        currentLines = lines;
+        rebuildLineIndex(currentLines);
+        
+        // Apply any pending segment updates now that lines exist
+        for (const [pid, upd] of pendingSegmentUpdates.entries()) {
+          const l = lineById.get(pid);
+          if (!l) continue;
+
+          if (upd.text_batch !== undefined) l.text_batch = upd.text_batch;
+          if (upd.text_final !== undefined) l.text = upd.text_final;
+          if (upd.state !== undefined) l.state = upd.state;
+
+          pendingSegmentUpdates.delete(pid);
+        }
+
+        lastBufferTranscription = buffer_transcription;
+        lastBufferTranslation = buffer_translation;
+        lastStatus = status;
+
+        renderTranscript(
+          currentLines,
+          buffer_transcription,
+          buffer_translation,
+          status
+        );
+        return;
+      }
+
+      /* =========================
+      * FALLBACK / UNKNOWN
+      * ========================= */
+      console.debug("Unhandled WS message:", data);
     };
+
   });
+}
+
+function escapeHtml(s) {
+  return String(s || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function getStartMs(item) {
+  if (Number.isFinite(item?.start_ms)) return item.start_ms;
+  if (Number.isFinite(item?.start)) return Math.round(item.start * 1000);
+  return Number.MAX_SAFE_INTEGER; // live/buffer always last
 }
 
 function renderTranscript(lines, bufferTranscription, bufferTranslation, status) {
@@ -213,25 +311,68 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     return;
   }
 
-  const base = (lines || [])
-    .map((item) => item.text || "")
-    .filter((t) => t && t.trim().length > 0)
-    .join("\n")
-    .trim();
+  const safeLines = (lines || []).filter((item) => {
+    const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
+    // -2 = silence segment → niet tonen
+    return sp !== -2;
+  });
 
-  let liveText = base;
-  if (bufferTranscription && bufferTranscription.trim().length > 0) {
-    liveText = (liveText ? liveText + " " : "") + bufferTranscription.trim();
+  const htmlParts = [];
+
+  safeLines.sort((a, b) => getStartMs(a) - getStartMs(b));
+
+  for (const item of safeLines) {
+    const rawTxt = (item?.text || "").trim();
+    if (!rawTxt) continue;
+
+    const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
+
+    const st = (item?.state || "FINAL").toUpperCase();
+
+    const cls = st === "LIVE" ? "seg seg-live" : "seg seg-final";
+
+
+    const prefix =
+      sp === undefined || sp === null || sp === "" || sp === -1
+        ? ""
+        : `[${escapeHtml(sp)}] `;
+
+    // data-id is handig voor debug/inspectie
+    const idAttr = item?.id ? ` data-id="${escapeHtml(item.id)}"` : "";
+
+    htmlParts.push(
+      `<div class="${cls}"${idAttr}>${prefix}${escapeHtml(rawTxt)}</div>`
+    );
   }
 
-  liveTranscriptDiv.textContent = liveText || "Nog geen tekst ontvangen";
-  lastFullTranscript = liveText || lastFullTranscript;
+  // Buffer transcription = lopend (provisional) → altijd LIVE styling
+/*
+if (bufferTranscription && bufferTranscription.trim().length > 0) {
+  htmlParts.push(
+    `<div class="seg seg-buffer seg-live">${escapeHtml(
+      bufferTranscription.trim()
+    )}</div>`
+  );
+}
+*/
 
-  if (bufferTranslation && bufferTranslation.trim().length > 0 && finalTranscriptDiv) {
-    finalTranscriptDiv.textContent = bufferTranslation.trim();
-  }
+  liveTranscriptDiv.innerHTML =
+    htmlParts.join("") || "Nog geen tekst ontvangen";
+
+  // Bewaar laatste tekst voor jouw bestaande “lastFullTranscript”
+// (optioneel) bufferTranslation ook uitgeschakeld
+// if (
+//   bufferTranslation &&
+//   bufferTranslation.trim().length > 0 &&
+//   finalTranscriptDiv
+// ) {
+//   finalTranscriptDiv.textContent = bufferTranslation.trim();
+// }
+
+
   setAsrStatus("Live transcriptie actief");
 }
+
 
 // NEW: microfoonlijst ophalen en dropdown vullen (met dedupe)
 async function refreshMicrophoneList() {
