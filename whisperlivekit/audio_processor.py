@@ -1040,7 +1040,12 @@ class AudioProcessor:
                     f"samples={(0 if audio_f32 is None else audio_f32.size)} reason={reason}"
                 )
 
-                batch_txt = (self._batch_transcribe_text(audio_f32) if audio_f32 is not None else None)
+                #result = self.engine.batch_asr.transcribe(audio_f32) //onduidelijke waar die engine is gezet en waarom.iig voor nu uit en gebruik dit:
+                result = self.batch_asr.transcribe(audio_f32)
+                batch_txt = result["text"]
+                batch_avg_logprob = result["avg_logprob"]
+                batch_compression = result["compression_ratio"]
+
                 batch_txt = (batch_txt or "").strip()
 
                 logger.info(
@@ -1048,19 +1053,34 @@ class AudioProcessor:
                     f"len_live={len(live_text)} len_batch={len(batch_txt)}"
                 )
 
-                # 3) SAFE accept policy:
-                #    - als batch leeg/veel te kort is t.o.v. live => gebruik live als FINAL (nooit verlies)
-                def _is_suspicious(batch: str, live: str) -> bool:
-                    if not batch:
-                        return True
-                    if len(live) >= 40 and len(batch) < int(0.5 * len(live)):
-                        return True
-                    return False
+                # 3) CONFIDENCE-based accept policy (geen content hacks)
+                # Promoot batch alleen als:
+                # - batch tekst niet leeg is
+                # - avg_logprob niet te laag is (te laag = onzeker/hallucinatie)
+                # - compression_ratio niet te hoog is (te hoog = repetitie/hallucinatie)
+                use_batch_as_final = False
 
-                use_batch_as_final = not _is_suspicious(batch_txt, live_text)
-                final_txt = batch_txt if use_batch_as_final else live_text
+                if batch_txt:
+                    # avg_logprob: hoe hoger (minder negatief), hoe beter. Typisch "ok" > -1.3
+                    # compression_ratio: typisch ok < 2.4
+                    ok_logprob = (batch_avg_logprob is None) or (batch_avg_logprob > -1.3)
+                    ok_compr = (batch_compression is None) or (batch_compression < 2.4)
+
+                    if ok_logprob and ok_compr:
+                        use_batch_as_final = True
+
+                # Fail-safe: als batch niet mag, gebruik live (als die er is), anders batch
+                if use_batch_as_final:
+                    final_txt = batch_txt
+                else:
+                    final_txt = live_text if live_text else batch_txt
+
                 logger.info(
-                    f"[BATCH][GATE][DBG] job={job['job_id']} use_batch={use_batch_as_final} "
+                    f"[BATCH][GATE][DBG] job={job['job_id']} "
+                    f"use_batch={use_batch_as_final} "
+                    f"avg_logprob={batch_avg_logprob} "
+                    f"compression_ratio={batch_compression} "
+                    f"len_live={len(live_text)} len_batch={len(batch_txt)} "
                     f"final_len={len(final_txt)}"
                 )
 
