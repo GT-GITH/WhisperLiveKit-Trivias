@@ -42,7 +42,10 @@ SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
 
 ENABLE_HARD_CAP = False
 
-BATCH_CONTEXT_PAD_MS = 600  # FO default pre/post padding
+#BATCH_CONTEXT_PAD_MS = 600  # FO default pre/post padding
+BATCH_CONTEXT_PAD_LEFT_MS = 600
+BATCH_CONTEXT_PAD_RIGHT_MS = 0
+
 # Batch windowing (Stap 1)
 BATCH_TARGET_WINDOW_MS = 15_000   # 15s
 BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
@@ -995,20 +998,13 @@ class AudioProcessor:
                         break
 
                 if not has_any_final:
-                    if attempt < 20:
-                        job["_attempt"] = attempt + 1
-                        await asyncio.sleep(0.2)
-                        await self._batch_queue.put(job)
-                        logger.info(
-                            f"[BATCH][WORKER] no FINAL content yet for job {job['job_id']} ({reason}) "
-                            f"retry {job['_attempt']}/20"
-                        )
-                        continue
-
+                    # We wachten NIET meer op FINAL; we gaan batch gewoon doen op het window.
+                    # Live fallback blijft dan leeg / best-effort.
                     logger.warning(
-                        f"[BATCH][WORKER] giving up: no FINAL content for job {job['job_id']} ({reason}) after {attempt} retries"
+                        f"[BATCH][WORKER] no FINAL content yet for job {job['job_id']} ({reason}) "
+                        f"-> proceeding with batch-only (live fallback empty)"
                     )
-                    continue
+
                 
                 # ====== Stap 2: ECHTE batch decode + SAFE overwrite (FO) ======
                 # Fallback live text: best effort window transcript from current lines (FINAL only)
@@ -1034,16 +1030,16 @@ class AudioProcessor:
                 live_text = " ".join(live_parts).strip()
 
                 # 2) Decode audio slice met padding (FO)
-                decode_start_ms = max(0, start_ms - BATCH_CONTEXT_PAD_MS)
-                decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_MS
+                decode_start_ms = max(0, start_ms - BATCH_CONTEXT_PAD_LEFT_MS)
+                decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_RIGHT_MS
 
                 audio_f32 = self._read_wav_slice_float32(decode_start_ms, decode_end_ms)
-                slice_sha1 = _sha1_pcm16(audio_f32) if audio_f32 is not None else ""
                 logger.info(
                     f"[BATCH][DECODE][DBG] job={job['job_id']} "
                     f"window={start_ms}..{end_ms} decode={decode_start_ms}..{decode_end_ms} "
-                    f"sha1={slice_sha1} samples={(0 if audio_f32 is None else audio_f32.size)} reason={reason}"
+                    f"samples={(0 if audio_f32 is None else audio_f32.size)} reason={reason}"
                 )
+
                 batch_txt = (self._batch_transcribe_text(audio_f32) if audio_f32 is not None else None)
                 batch_txt = (batch_txt or "").strip()
 
@@ -1097,7 +1093,9 @@ class AudioProcessor:
 
                 logger.info(
                     f"[BATCH][WORKER] BATCHGROUP overwrite id={group_id} job={job['job_id']} "
-                    f"window={start_ms}..{end_ms} pad={BATCH_CONTEXT_PAD_MS}ms "
+                    f"window={start_ms}..{end_ms} "
+                    f"pad_left={BATCH_CONTEXT_PAD_LEFT_MS}ms "
+                    f"pad_right={BATCH_CONTEXT_PAD_RIGHT_MS}ms "
                     f"use_batch={use_batch_as_final} reason={reason}"
                 )
 
