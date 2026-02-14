@@ -225,12 +225,11 @@ class AudioProcessor:
         self._wav_path: Optional[Path] = None
 
     def _log_status_throttled(self, msg: str) -> None:
-        # Alleen loggen als DEBUG aan staat of msg verandert, en max 1x per interval.
+        # Max 1x per interval loggen (msg verandert steeds door lag, dus niet op msg vergelijken)
         now = time()
-        if msg == self._status_last_msg and (now - self._status_last_log_t) < self._status_min_interval_s:
+        if (now - self._status_last_log_t) < self._status_min_interval_s:
             return
         logger.debug(msg)
-        self._status_last_msg = msg
         self._status_last_log_t = now
 
     async def emit_segment_update(self, upd: SegmentUpdate) -> None:
@@ -1040,8 +1039,8 @@ class AudioProcessor:
                     f"samples={(0 if audio_f32 is None else audio_f32.size)} reason={reason}"
                 )
 
-                result = self.engine.batch_asr.transcribe(audio_f32)  
-                #result = self.batch_asr.transcribe(audio_f32)
+                #result = self.engine.batch_asr.transcribe(audio_f32)  
+                result = self.batch_asr.transcribe(audio_f32)
                 batch_txt = result["text"]
                 batch_avg_logprob = result["avg_logprob"]
                 batch_compression = result["compression_ratio"]
