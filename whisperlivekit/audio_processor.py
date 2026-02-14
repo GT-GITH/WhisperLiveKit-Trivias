@@ -7,14 +7,14 @@ import uuid
 import os
 import wave
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 from time import time
 from typing import Any, AsyncGenerator, List, Optional, Union
 from whisperlivekit.timed_objects import SegmentUpdate
 
 import numpy as np
-from types import SimpleNamespace   
+import hashlib  
 
 from whisperlivekit.core import (TranscriptionEngine,
                                  online_diarization_factory, online_factory,
@@ -44,9 +44,17 @@ ENABLE_HARD_CAP = False
 
 BATCH_CONTEXT_PAD_MS = 600  # FO default pre/post padding
 # Batch windowing (Stap 1)
-BATCH_TARGET_WINDOW_MS = 15_000   # 30s
+BATCH_TARGET_WINDOW_MS = 15_000   # 15s
 BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
 BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
+
+def _sha1_pcm16(audio_f32: Optional[np.ndarray]) -> str:
+    if audio_f32 is None or audio_f32.size == 0:
+        return ""
+    pcm16 = np.clip(audio_f32, -1.0, 1.0)
+    pcm16 = (pcm16 * 32767.0).astype(np.int16)
+    return hashlib.sha1(pcm16.tobytes()).hexdigest()
+
 
 async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.ndarray, List[Any]]:
     """
@@ -360,15 +368,27 @@ class AudioProcessor:
             "start_ms": int(window_start_ms),
             "end_ms": int(window_end_ms),
             "reason": reason,
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
+        
+        state_end_buffer_ms = int(round(float(self.state.end_buffer) * 1000.0)) if getattr(self, "state", None) else None
+        last_tok_end_ms = None
+        try:
+            if self.state and self.state.tokens:
+                last_tok_end_ms = int(round(float(self.state.tokens[-1].end) * 1000.0))
+        except Exception:
+            pass
+
         await self._batch_queue.put(job)
+
         logger.info(
-            f"[BATCH][ENQUEUE] job_id={job['job_id']} "
+            f"[BATCH][ENQUEUE][DBG] job_id={job['job_id']} "
             f"window={job['start_ms']}..{job['end_ms']}ms "
-            f"len={(job['end_ms']-job['start_ms'])/1000.0:.2f}s reason={reason}"
+            f"len={(job['end_ms']-job['start_ms'])/1000.0:.2f}s reason={reason} "
+            f"state_end_buffer_ms={state_end_buffer_ms} last_tok_end_ms={last_tok_end_ms}"
         )
         logger.info(f"[BATCH][QUEUE] size={self._batch_queue.qsize()}")
+
 
     def _get_last_speech_end_ms(self, fallback_ms: int) -> int:
         """Window-end moet einde van spraak zijn (niet einde van stilte)."""
@@ -901,8 +921,18 @@ class AudioProcessor:
                 raw = rf.readframes(n_frames)
             if not raw:
                 return None
-            # raw is s16le mono
-            return self.convert_pcm_to_float(raw)
+
+            audio_f32 = self.convert_pcm_to_float(raw)
+            sha1 = _sha1_pcm16(audio_f32)
+
+            logger.info(
+                f"[BATCH][SLICE][DBG] wav={Path(self._wav_path).name} "
+                f"ms={start_ms}..{end_ms} "
+                f"frames={start_frame}..{end_frame} n={n_frames} "
+                f"sr={self.sample_rate} sha1={sha1}"
+            )
+
+            return audio_f32
         except Exception as e:
             logger.warning(f"[BATCH] WAV slice read failed: {e}")
             return None
@@ -1008,8 +1038,19 @@ class AudioProcessor:
                 decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_MS
 
                 audio_f32 = self._read_wav_slice_float32(decode_start_ms, decode_end_ms)
+                slice_sha1 = _sha1_pcm16(audio_f32) if audio_f32 is not None else ""
+                logger.info(
+                    f"[BATCH][DECODE][DBG] job={job['job_id']} "
+                    f"window={start_ms}..{end_ms} decode={decode_start_ms}..{decode_end_ms} "
+                    f"sha1={slice_sha1} samples={(0 if audio_f32 is None else audio_f32.size)} reason={reason}"
+                )
                 batch_txt = (self._batch_transcribe_text(audio_f32) if audio_f32 is not None else None)
                 batch_txt = (batch_txt or "").strip()
+
+                logger.info(
+                    f"[BATCH][TEXT][DBG] job={job['job_id']} "
+                    f"len_live={len(live_text)} len_batch={len(batch_txt)}"
+                )
 
                 # 3) SAFE accept policy:
                 #    - als batch leeg/veel te kort is t.o.v. live => gebruik live als FINAL (nooit verlies)
@@ -1022,6 +1063,10 @@ class AudioProcessor:
 
                 use_batch_as_final = not _is_suspicious(batch_txt, live_text)
                 final_txt = batch_txt if use_batch_as_final else live_text
+                logger.info(
+                    f"[BATCH][GATE][DBG] job={job['job_id']} use_batch={use_batch_as_final} "
+                    f"final_len={len(final_txt)}"
+                )
 
                 # 4) Mutate  segment 
                 async with self.lock:
@@ -1032,6 +1077,11 @@ class AudioProcessor:
                         text_batch=(batch_txt if batch_txt else None),
                         speaker=-1,
                     )
+
+                logger.info(
+                    f"[BATCH][APPLY][DBG] job={job['job_id']} group_id={group_id} "
+                    f"applied_text_batch={'yes' if batch_txt else 'no'} use_batch={use_batch_as_final}"
+                )
 
                 # 5) Emit SegmentUpdate naar UI
                 upd = SegmentUpdate(
