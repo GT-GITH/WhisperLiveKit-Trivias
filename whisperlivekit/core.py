@@ -6,7 +6,7 @@ from whisperlivekit.local_agreement.online_asr import OnlineASRProcessor
 from whisperlivekit.local_agreement.whisper_online import backend_factory
 from whisperlivekit.simul_whisper import SimulStreamingASR
 from whisperlivekit.simul_whisper.backend import BatchFasterWhisperASR
-
+from whisperlivekit.simul_whisper.config import get_channel_config
 
 
 def update_with_kwargs(_dict, kwargs):
@@ -19,17 +19,8 @@ def update_with_kwargs(_dict, kwargs):
 logger = logging.getLogger(__name__)
 
 class TranscriptionEngine:
-    _instance = None
-    _initialized = False
-    
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
     
     def __init__(self, **kwargs):
-        if TranscriptionEngine._initialized:
-            return
 
         global_params = {
             "host": "localhost",
@@ -50,6 +41,7 @@ class TranscriptionEngine:
             "diarization_backend": "sortformer",
             "backend_policy": "simulstreaming",
             "backend": "auto",
+            "channel_id": "default",
         }
         global_params = update_with_kwargs(global_params, kwargs)
 
@@ -69,14 +61,17 @@ class TranscriptionEngine:
         if transcription_common_params['model_size'].endswith(".en"):
             transcription_common_params["lan"] = "en"
         if 'no_transcription' in kwargs:
-            global_params['transcription'] = not global_params['no_transcription']
+            global_params['transcription'] = not kwargs['no_transcription']
         if 'no_vad' in kwargs:
             global_params['vad'] = not kwargs['no_vad']
         if 'no_vac' in kwargs:
             global_params['vac'] = not kwargs['no_vac']
 
         self.args = Namespace(**{**global_params, **transcription_common_params})
-        
+        self.channel_cfg = get_channel_config(getattr(self.args, "channel_id", "default"))
+        if getattr(self.args, "lan", None) in (None, "", "auto"):
+            self.args.lan = self.channel_cfg.language
+        self.args.task = self.channel_cfg.task
         self.asr = None
         self.tokenizer = None
         self.diarization = None
@@ -101,20 +96,21 @@ class TranscriptionEngine:
                 simulstreaming_params = {
                     "disable_fast_encoder": False,
                     "custom_alignment_heads": None,
-                    "frame_threshold": 25,
-                    "beams": 1,
-                    "decoder_type": None,
-                    "audio_max_len": 20.0,
-                    "audio_min_len": 0.0,
-                    "cif_ckpt_path": None,
-                    "never_fire": False,
-                    "init_prompt": None,
-                    "static_init_prompt": None,
-                    "max_context_tokens": None,
+                    "frame_threshold": self.channel_cfg.live_frame_threshold,
+                    "beams": self.channel_cfg.live_beams,
+                    "decoder_type": self.channel_cfg.live_decoder_type,
+                    "audio_max_len": self.channel_cfg.live_audio_max_len,
+                    "audio_min_len": self.channel_cfg.live_audio_min_len,
+                    "cif_ckpt_path": self.channel_cfg.live_cif_ckpt_path,
+                    "never_fire": self.channel_cfg.live_never_fire,
+                    "init_prompt": self.channel_cfg.live_init_prompt,
+                    "static_init_prompt": self.channel_cfg.live_static_init_prompt,
+                    "max_context_tokens": self.channel_cfg.live_max_context_tokens,
                 }
                 simulstreaming_params = update_with_kwargs(simulstreaming_params, kwargs)
                 
-                self.tokenizer = None        
+                self.tokenizer = None    
+                transcription_common_params["task"] = self.args.task    
                 self.asr = SimulStreamingASR(
                     **transcription_common_params,
                     **simulstreaming_params,
@@ -129,18 +125,17 @@ class TranscriptionEngine:
                 model_for_batch = self.args.model_path or self.args.model_size
                 self.batch_asr = BatchFasterWhisperASR(
                     model=model_for_batch,
-                    language=self.args.lan,
-                    beam_size=7,  # hoger dan streaming 
-                    condition_on_previous_text=False,
-                    temperature=[0.0, 0.2],
-                    initial_prompt="Dit is een Nederlands interview. Namen: Eus, Özcan Akyol, Rhodia Maas. Organisatie: IND.",
+                    language=self.channel_cfg.language,
+                    beam_size=self.channel_cfg.batch_beam_size,
+                    condition_on_previous_text=self.channel_cfg.batch_condition_on_previous_text,
+                    temperature=self.channel_cfg.batch_temperature,
+                    initial_prompt=self.channel_cfg.batch_initial_prompt or None,
                     #best_of=5,
                     #patience=1.2,
                     #length_penalty=0.6,
                     #no_speech_threshold=0.6,
                     #log_prob_threshold=-1.0,
                     #compression_ratio_threshold=2.4,
-
                 )
             else:
                 
@@ -194,7 +189,7 @@ class TranscriptionEngine:
                 }
                 translation_params = update_with_kwargs(translation_params, kwargs)
                 self.translation_model = load_model([self.args.lan], **translation_params) #in the future we want to handle different languages for different speakers
-        TranscriptionEngine._initialized = True
+
 
 
 def online_factory(args, asr):

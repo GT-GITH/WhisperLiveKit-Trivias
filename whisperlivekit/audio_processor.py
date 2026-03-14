@@ -122,7 +122,9 @@ class AudioProcessor:
     
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the audio processor with configuration, models, and state."""
-        
+
+        self.channel_id = kwargs.get("channel_id", "default")
+
         if 'transcription_engine' in kwargs and isinstance(kwargs['transcription_engine'], TranscriptionEngine):
             models = kwargs['transcription_engine']
         else:
@@ -146,6 +148,12 @@ class AudioProcessor:
         # Audio processing settings
         self.args = models.args
         self.batch_asr = getattr(models, "batch_asr", None)
+        logger.info(
+            "AudioProcessor engine bound: channel_id=%s live_decoder=%s batch_lang=%s",
+            self.channel_id,
+            getattr(self.args, "decoder_type", None),
+            getattr(self.batch_asr, "language", None) if self.batch_asr else None,
+        )
         self.sample_rate = 16000
         self.channels = 1
         self.samples_per_sec = int(self.sample_rate * self.args.min_chunk_size)
@@ -1039,9 +1047,17 @@ class AudioProcessor:
                     f"samples={(0 if audio_f32 is None else audio_f32.size)} reason={reason}"
                 )
 
-                #result = self.engine.batch_asr.transcribe(audio_f32)  
+                if audio_f32 is None or getattr(audio_f32, "size", 0) == 0:
+                    logger.warning(
+                        f"[BATCH][SKIP] job={job['job_id']} empty/invalid wav slice "
+                        f"decode={decode_start_ms}..{decode_end_ms}"
+                    )
+                    continue
+
+                #result = self.engine.batch_asr.transcribe(audio_f32)
                 result = self.batch_asr.transcribe(audio_f32)
                 batch_txt = result["text"]
+                
                 batch_avg_logprob = result["avg_logprob"]
                 batch_compression = result["compression_ratio"]
 
