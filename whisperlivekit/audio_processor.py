@@ -1203,11 +1203,28 @@ class AudioProcessor:
 
         if not message:
             logger.info("Empty audio message received, initiating stop sequence.")
+
+            # Zorg dat eventueel resterende PCM eerst nog naar de pipeline én WAV gaat
+            if self.pcm_buffer:
+                await self.handle_pcm_data()
+
+            # Markeer stop pas hierna
             self.is_stopping = True
-           
-            # NEW: close session WAV immediately on stop
+
+            # Sluit een open stilte netjes af zodat state.end_buffer / tokens bijgewerkt zijn
+            if self.current_silence:
+                try:
+                    await self._end_silence()
+                except Exception as e:
+                    logger.warning(f"[BATCH][FINALFLUSH] ending current silence failed: {e}")
+
+            # Forceer nog één laatste batch-window voor de resterende tail
+            await self._flush_final_batch_tail(reason="end_of_stream")
+
+            # Nu pas WAV sluiten, zodat de batch worker de slice nog uit bestand kan lezen
             self._close_wav()
-            
+
+            # Laat transcription processor stoppen
             if self.transcription_queue:
                 await self.transcription_queue.put(SENTINEL)
 
@@ -1215,7 +1232,7 @@ class AudioProcessor:
                 await self.ffmpeg_manager.stop()
 
             return
-
+        
         if self.is_stopping:
             logger.warning("AudioProcessor is stopping. Ignoring incoming audio.")
             return
