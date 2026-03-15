@@ -508,7 +508,7 @@ class AudioProcessor:
             window_len_ms = window_end_ms - window_start_ms
 
             # Voor EOF niet te streng zijn: liever een korte tail meenemen dan verliezen
-            if window_len_ms < 500:
+            if window_len_ms < 300:
                 logger.info(
                     f"[BATCH][FINALFLUSH] skip very short tail: "
                     f"start={window_start_ms} end={window_end_ms} len={window_len_ms}ms"
