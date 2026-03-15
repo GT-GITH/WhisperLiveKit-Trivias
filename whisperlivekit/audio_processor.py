@@ -471,7 +471,71 @@ class AudioProcessor:
         self._batch_ready_to_close = False
         self._batch_ready_at_ms = None
 
+    async def _flush_final_batch_tail(self, reason: str = "end_of_stream") -> None:
+        """
+        Forceer bij EOF/stop nog één laatste batch-window voor resterende audio
+        die nog niet via silence_start is afgesloten.
+        """
+        try:
+            if self._batch_window_start_ms is None:
+                return
 
+            window_start_ms = int(self._batch_window_start_ms)
+
+            # Neem het meest betrouwbare einde van de al verwerkte audio
+            state_end_buffer_ms = int(round(float(self.state.end_buffer) * 1000.0)) if getattr(self, "state", None) else 0
+            last_speech_end_ms = self._get_last_speech_end_ms(fallback_ms=state_end_buffer_ms)
+
+            # Kies speech-end als die er is, anders de buffer-end
+            window_end_ms = max(last_speech_end_ms, state_end_buffer_ms)
+
+            if window_end_ms <= window_start_ms:
+                logger.info(
+                    f"[BATCH][FINALFLUSH] skip empty tail: "
+                    f"start={window_start_ms} end={window_end_ms}"
+                )
+                return
+
+            # Guard tegen dubbel enqueue van exact hetzelfde einde
+            if self._batch_last_close_end_ms is not None and window_end_ms <= self._batch_last_close_end_ms:
+                logger.info(
+                    f"[BATCH][FINALFLUSH] skip duplicate tail: "
+                    f"start={window_start_ms} end={window_end_ms} "
+                    f"last_close_end_ms={self._batch_last_close_end_ms}"
+                )
+                return
+
+            window_len_ms = window_end_ms - window_start_ms
+
+            # Voor EOF niet te streng zijn: liever een korte tail meenemen dan verliezen
+            if window_len_ms < 2000:
+                logger.info(
+                    f"[BATCH][FINALFLUSH] skip very short tail: "
+                    f"start={window_start_ms} end={window_end_ms} len={window_len_ms}ms"
+                )
+                return
+
+            self._batch_last_close_end_ms = window_end_ms
+
+            await self._enqueue_batch_window(
+                window_start_ms=window_start_ms,
+                window_end_ms=window_end_ms,
+                reason=reason,
+            )
+
+            logger.info(
+                f"[BATCH][FINALFLUSH] enqueued tail window "
+                f"{window_start_ms}..{window_end_ms}ms len={window_len_ms/1000.0:.2f}s"
+            )
+
+            # Advance zodat cleanup/latere stop niet opnieuw hetzelfde stukje pakt
+            self._batch_window_start_ms = window_end_ms
+            self._batch_ready_to_close = False
+            self._batch_ready_at_ms = None
+
+        except Exception as e:
+            logger.warning(f"[BATCH][FINALFLUSH] failed: {e}")
+            
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
         cumulative_pcm_duration_stream_time = 0.0
