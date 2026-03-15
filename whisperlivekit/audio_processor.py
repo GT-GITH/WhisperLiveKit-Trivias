@@ -508,7 +508,7 @@ class AudioProcessor:
             window_len_ms = window_end_ms - window_start_ms
 
             # Voor EOF niet te streng zijn: liever een korte tail meenemen dan verliezen
-            if window_len_ms < 2000:
+            if window_len_ms < 500:
                 logger.info(
                     f"[BATCH][FINALFLUSH] skip very short tail: "
                     f"start={window_start_ms} end={window_end_ms} len={window_len_ms}ms"
@@ -535,7 +535,7 @@ class AudioProcessor:
 
         except Exception as e:
             logger.warning(f"[BATCH][FINALFLUSH] failed: {e}")
-            
+
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
         cumulative_pcm_duration_stream_time = 0.0
