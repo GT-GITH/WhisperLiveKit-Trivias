@@ -15,35 +15,41 @@ from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
 
 # ====== Logging setup ======
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-)
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.DEBUG)
 
 logger = logging.getLogger("trivias.server")
 logger.setLevel(logging.DEBUG)
 
-# ====== File logging ======
+logging.getLogger("whisperlivekit.tokens_alignment").setLevel(logging.DEBUG)
+logging.getLogger("whisperlivekit.audio_processor").setLevel(logging.DEBUG)
+logging.getLogger("whisperlivekit.backend").setLevel(logging.DEBUG)
+logging.getLogger("whisperlivekit.simul_whisper").setLevel(logging.DEBUG)
+
 LOG_FILE = "trivias_stt.log"
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 
-file_handler = RotatingFileHandler(
-    LOG_FILE,
-    maxBytes=10 * 1024 * 1024,  # 10 MB
-    backupCount=5,
-    encoding="utf-8",
-)
+# voorkom dubbele file handlers op herimport / herstart in dezelfde process
+_existing_file_handler = None
+for h in root_logger.handlers:
+    if isinstance(h, RotatingFileHandler):
+        try:
+            if getattr(h, "baseFilename", "").endswith(LOG_FILE):
+                _existing_file_handler = h
+                break
+        except Exception:
+            pass
 
-file_handler.setLevel(logging.DEBUG)
-
-file_formatter = logging.Formatter(
-    "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-)
-file_handler.setFormatter(file_formatter)
-
-# Hang file handler aan de root logger
-root_logger.addHandler(file_handler)
+if _existing_file_handler is None:
+    file_handler = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    root_logger.addHandler(file_handler)
 
 # ====== CLI args (zelfde als basic_server) ======
 args = parse_args()
@@ -214,23 +220,46 @@ def _extract_batch_snapshot(engine: Any) -> Dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("=== TRIVIAS SERVER STARTUP PARAMETERS (RAW ARGS) ===")
-    for k, v in vars(args).items():
-        logger.info(f"{k}: {v}")
-    logger.info("=== END RAW ARGS ===")
+    _log_kv_block("TRIVIAS SERVER STARTUP PARAMETERS (RAW ARGS)", vars(args))
+
     global transcription_engine
     logger.info("Initialising TranscriptionEngine for TriviasServer...")
     transcription_engine = TranscriptionEngine(**vars(args))
     logger.info("TranscriptionEngine ready.")
+
+    # 1) Snapshot van bedoelde input / channel-context
+    try:
+        _log_kv_block(
+            "RESOLVED CHANNEL / ENGINE INPUT SNAPSHOT",
+            _extract_channel_cfg_snapshot(transcription_engine),
+        )
+    except Exception as e:
+        logger.warning(f"Could not log channel/engine input snapshot: {e}")
+
+    # 2) Snapshot van de daadwerkelijke live ASR runtime config
+    try:
+        _log_kv_block(
+            "RESOLVED LIVE ASR RUNTIME CONFIG",
+            _extract_resolved_asr_snapshot(transcription_engine),
+        )
+    except Exception as e:
+        logger.warning(f"Could not log resolved live ASR runtime config: {e}")
+
+    # 3) Snapshot van batch settings/object
+    try:
+        _log_kv_block(
+            "RESOLVED BATCH CONFIG",
+            _extract_batch_snapshot(transcription_engine),
+        )
+    except Exception as e:
+        logger.warning(f"Could not log resolved batch config: {e}")
+
     try:
         yield
     finally:
         logger.info("Shutting down TriviasServer lifespan...")
-        # Als er ooit een nette shutdown op TranscriptionEngine komt, kun je die hier aanroepen.
-        # bijv: await transcription_engine.aclose()  (afhankelijk van library)
         logger.info("Lifespan cleanup done.")
-
-
+        
 app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
