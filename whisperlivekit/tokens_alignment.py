@@ -412,11 +412,9 @@ class TokensAlignment:
                 seg.start = ov["start_ms"] / 1000.0
             if ov.get("end_ms") is not None:
                 seg.end = ov["end_ms"] / 1000.0
-       
-        # --- Prune LIVE only if it overlaps canonical batch windows (A1) ---
-        # Canonical windows are either:
-        # 1) explicit batch groups (id starts with "bg_"), OR
-        # 2) suppressed_ranges_ms produced by apply_batch_group()
+
+        # --- Prune segments that overlap canonical batch windows ---
+        # Canonical windows = batch_groups or suppressed_ranges_ms
 
         def _seg_ms(seg: Segment) -> Tuple[int, int]:
             start_ms = int(round(float(getattr(seg, "start", 0.0) or 0.0) * 1000.0))
@@ -425,31 +423,43 @@ class TokensAlignment:
             return start_ms, end_ms
 
         canonical_ranges: List[Tuple[int, int]] = []
+        canonical_ids = set()
 
-        # Prefer suppressed_ranges_ms (most direct)
         canonical_ranges.extend(list(self.suppressed_ranges_ms))
 
-        # Also include any batchgroup segments (defensive)
         for g in self.batch_groups:
             try:
                 canonical_ranges.append(_seg_ms(g))
+                if getattr(g, "id", None):
+                    canonical_ids.add(g.id)
             except Exception:
                 pass
 
         if canonical_ranges:
             pruned: List[Segment] = []
+
             for s in segments:
-                if getattr(s, "state", None) == "LIVE":
-                    live_s, live_e = _seg_ms(s)
-                    drop = False
-                    for c_s, c_e in canonical_ranges:
-                        if (live_e > c_s) and (live_s < c_e):
-                            drop = True
-                            break
-                    if not drop:
-                        pruned.append(s)
-                else:
+
+                seg_id = getattr(s, "id", None)
+
+                # Batchgroup zelf altijd behouden
+                if seg_id in canonical_ids or (isinstance(seg_id, str) and seg_id.startswith("bg_")):
                     pruned.append(s)
+                    continue
+
+                s_start, s_end = _seg_ms(s)
+
+                overlaps = False
+                for c_s, c_e in canonical_ranges:
+                    if (s_end > c_s) and (s_start < c_e):
+                        overlaps = True
+                        break
+
+                if overlaps:
+                    continue
+
+                pruned.append(s)
+
             segments = pruned
             
         # --- Ensure deterministic chronological ordering (CRITICAL) ---
