@@ -69,6 +69,13 @@ class TranscriptionEngine:
 
         self.args = Namespace(**{**global_params, **transcription_common_params})
         self.channel_cfg = get_channel_config(getattr(self.args, "channel_id", "default"))
+        logger.info("=== CHANNEL CONFIG ===")
+        logger.info(f"live_frame_threshold={self.channel_cfg.live_frame_threshold}")
+        logger.info(f"live_audio_min_len={self.channel_cfg.live_audio_min_len}")
+        logger.info(f"live_audio_max_len={self.channel_cfg.live_audio_max_len}")
+        logger.info(f"live_beams={self.channel_cfg.live_beams}")
+        logger.info(f"live_decoder_type={self.channel_cfg.live_decoder_type}")
+        logger.info("=== END CHANNEL CONFIG ===")
         if getattr(self.args, "lan", None) in (None, "", "auto"):
             self.args.lan = self.channel_cfg.language
         self.args.task = self.channel_cfg.task
@@ -107,7 +114,12 @@ class TranscriptionEngine:
                     "static_init_prompt": self.channel_cfg.live_static_init_prompt,
                     "max_context_tokens": self.channel_cfg.live_max_context_tokens,
                 }
-                simulstreaming_params = update_with_kwargs(simulstreaming_params, kwargs)
+                # Alleen expliciete overrides toestaan, niet defaults
+                allowed_live_overrides = {"custom_alignment_heads", "disable_fast_encoder"}
+
+                for k, v in kwargs.items():
+                    if k in allowed_live_overrides and v is not None:
+                        simulstreaming_params[k] = v                          
                 
                 self.tokenizer = None    
                 transcription_common_params["task"] = self.args.task    
