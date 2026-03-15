@@ -3,7 +3,7 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Iterable
 from logging.handlers import RotatingFileHandler
  
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query 
@@ -20,7 +20,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
 )
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.WARNING)
+root_logger.setLevel(logging.DEBUG)
 
 logger = logging.getLogger("trivias.server")
 logger.setLevel(logging.DEBUG)
@@ -100,6 +100,117 @@ session_manager = SessionManager()
 # ====== Shared transcription engine ======
 transcription_engine: Optional[TranscriptionEngine] = None
 
+def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
+    try:
+        return getattr(obj, attr, default)
+    except Exception:
+        return default
+
+
+def _safe_call(obj: Any, method_name: str, default: Any = None) -> Any:
+    try:
+        method = getattr(obj, method_name, None)
+        if callable(method):
+            return method()
+    except Exception:
+        pass
+    return default
+
+
+def _log_kv_block(title: str, values: Dict[str, Any]) -> None:
+    logger.info(f"=== {title} ===")
+    for k, v in values.items():
+        logger.info(f"{k}: {v}")
+    logger.info(f"=== END {title} ===")
+
+
+def _extract_channel_cfg_snapshot(engine: Any) -> Dict[str, Any]:
+    """
+    Best effort snapshot van de bedoelde channel-aware config.
+    Ook als deze niet direct aan de engine hangt, loggen we expliciet wat we kunnen vinden.
+    """
+    snapshot: Dict[str, Any] = {}
+
+    # Mogelijke plekken waar channel config of args hangen
+    args_obj = _safe_get(engine, "args", None)
+    asr_obj = _safe_get(engine, "asr", None)
+    batch_asr_obj = _safe_get(engine, "batch_asr", None)
+
+    snapshot["channel_id"] = _safe_get(args_obj, "channel_id", "default")
+    snapshot["args.frame_threshold"] = _safe_get(args_obj, "frame_threshold", None)
+    snapshot["args.audio_min_len"] = _safe_get(args_obj, "audio_min_len", None)
+    snapshot["args.audio_max_len"] = _safe_get(args_obj, "audio_max_len", None)
+    snapshot["args.beams"] = _safe_get(args_obj, "beams", None)
+    snapshot["args.decoder_type"] = _safe_get(args_obj, "decoder_type", None)
+    snapshot["args.lan"] = _safe_get(args_obj, "lan", None)
+    snapshot["args.task"] = _safe_get(args_obj, "task", None)
+
+    # Wat batch/live objecten al concreet dragen
+    snapshot["engine.batch_asr.language"] = _safe_get(batch_asr_obj, "language", None)
+    snapshot["engine.batch_asr.task"] = _safe_get(batch_asr_obj, "task", None)
+    snapshot["engine.batch_asr.beam_size"] = _safe_get(batch_asr_obj, "beam_size", None)
+
+    snapshot["engine.asr.language"] = _safe_get(asr_obj, "language", None)
+    snapshot["engine.asr.task"] = _safe_get(asr_obj, "task", None)
+
+    return snapshot
+
+
+def _extract_resolved_asr_snapshot(engine: Any) -> Dict[str, Any]:
+    """
+    Snapshot van de daadwerkelijke live-ASR runtime config zoals de engine hem gebruikt.
+    Dit is de belangrijkste bron van waarheid voor je tests.
+    """
+    result: Dict[str, Any] = {}
+    asr_obj = _safe_get(engine, "asr", None)
+    cfg = _safe_get(asr_obj, "cfg", None)
+
+    result["asr.class"] = type(asr_obj).__name__ if asr_obj is not None else None
+    result["cfg.class"] = type(cfg).__name__ if cfg is not None else None
+
+    if cfg is not None:
+        for name in (
+            "decoder_type",
+            "beam_size",
+            "frame_threshold",
+            "rewind_threshold",
+            "audio_min_len",
+            "audio_max_len",
+            "segment_length",
+            "language",
+            "task",
+            "never_fire",
+            "init_prompt",
+            "static_init_prompt",
+            "max_context_tokens",
+            "cif_ckpt_path",
+        ):
+            result[f"cfg.{name}"] = _safe_get(cfg, name, None)
+
+    return result
+
+
+def _extract_batch_snapshot(engine: Any) -> Dict[str, Any]:
+    """
+    Snapshot van batch instellingen / batch decoder object.
+    """
+    result: Dict[str, Any] = {}
+    batch_asr_obj = _safe_get(engine, "batch_asr", None)
+
+    result["batch_asr.class"] = type(batch_asr_obj).__name__ if batch_asr_obj is not None else None
+
+    if batch_asr_obj is not None:
+        for name in (
+            "language",
+            "task",
+            "beam_size",
+            "temperature",
+            "condition_on_previous_text",
+            "initial_prompt",
+        ):
+            result[f"batch_asr.{name}"] = _safe_get(batch_asr_obj, name, None)
+
+    return result
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
