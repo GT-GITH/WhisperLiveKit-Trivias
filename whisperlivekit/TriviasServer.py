@@ -26,6 +26,10 @@ logging.getLogger("whisperlivekit.audio_processor").setLevel(logging.DEBUG)
 logging.getLogger("whisperlivekit.backend").setLevel(logging.DEBUG)
 logging.getLogger("whisperlivekit.simul_whisper").setLevel(logging.DEBUG)
 
+# voorkom enorme numba debug spam
+logging.getLogger("numba").setLevel(logging.WARNING)
+logging.getLogger("numba.core.byteflow").setLevel(logging.WARNING)
+
 LOG_FILE = "trivias_stt.log"
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 
