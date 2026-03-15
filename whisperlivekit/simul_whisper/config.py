@@ -57,9 +57,9 @@ CHANNEL_CONFIGS: dict[str, ChannelTranscriptionConfig] = {
     "default": ChannelTranscriptionConfig(
         language="nl",
         task="transcribe",
-        live_frame_threshold=6,
-        live_audio_min_len=0.6,
-        live_audio_max_len=20.0,
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
+        live_audio_max_len=30.0,
         live_beams=1,
         live_decoder_type=None,
         batch_beam_size=7,
