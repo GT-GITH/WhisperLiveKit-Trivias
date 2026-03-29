@@ -330,7 +330,7 @@ class SimulStreamingASR:
                 cif_ckpt_path=self.cif_ckpt_path,
                 decoder_type="beam",
                 beam_size=self.beams,
-                task=self.direct_english_translation,
+                task=self.task,
                 never_fire=self.never_fire,
                 init_prompt=self.init_prompt,
                 max_context_tokens=self.max_context_tokens,

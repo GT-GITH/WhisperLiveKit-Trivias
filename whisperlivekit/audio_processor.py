@@ -585,14 +585,14 @@ class AudioProcessor:
                         )
 
                         # ===== Stap 1: batch windowing sluiten op silence-end (los van decoder reset) ===== 
-                        #try:
-                        #    stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
-                        #    await self._batch_on_silence_boundary(
-                        #        stream_time_ms=stream_time_ms,
-                        #        boundary="silence_end"
-                        #   )
-                        #except Exception as e:
-                         #   logger.warning(f"[BATCH][WINDOW] silence-end handler failed: {e}")
+                        try:
+                            stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
+                            await self._batch_on_silence_boundary(
+                                stream_time_ms=stream_time_ms,
+                                boundary="silence_end"
+                           )
+                        except Exception as e:
+                           logger.warning(f"[BATCH][WINDOW] silence-end handler failed: {e}")
 
                         # 🔸 En nu de *enige* echte decoder-reset na lange stilte
                         if item.duration >= SILENCE_RESET_THRESHOLD:
