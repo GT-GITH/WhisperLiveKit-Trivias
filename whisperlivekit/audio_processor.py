@@ -934,9 +934,9 @@ class AudioProcessor:
             self.all_tasks_for_cleanup.append(self.translation_task)
             processing_tasks_for_watchdog.append(self.translation_task)
         
-        # ===== Batch dummy worker (Stap 2) =====
+        # ===== Batch worker (Stap 2) =====
         if self._batch_worker_task is None or self._batch_worker_task.done():
-            self._batch_worker_task = asyncio.create_task(self._batch_worker_dummy())
+            self._batch_worker_task = asyncio.create_task(self._batch_worker())
             self.all_tasks_for_cleanup.append(self._batch_worker_task)
 
         # Monitor overall system health
@@ -1060,9 +1060,9 @@ class AudioProcessor:
             logger.warning(f"[BATCH] transcribe failed: {e}")
             return None
         
-    async def _batch_worker_dummy(self) -> None:
-        """Stap 2: dummy worker die 1 FINAL segment in window markeert met 'BATCH OK'."""
-        logger.info("[BATCH][WORKER] dummy worker started")
+    async def _batch_worker(self) -> None:
+        """Stap 2: worker die 1 FINAL segment in window markeert met 'BATCH OK'."""
+        logger.info("[BATCH][WORKER] worker started")
         while True:
             job = await self._batch_queue.get()
             try:
