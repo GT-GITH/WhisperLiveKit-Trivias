@@ -328,9 +328,9 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
     const st = (item?.state || "FINAL").toUpperCase();
 
-    // LIVE-fragmenten niet als losse regels tonen.
-    // Die tonen we alleen via bufferTranscription als één lopende live regel.
-    if (st === "LIVE") continue;
+    if (st === "LIVE" && bufferTranscription && bufferTranscription.trim().length > 0) {
+      continue;
+    }
 
     const cls = "seg seg-final";
 
