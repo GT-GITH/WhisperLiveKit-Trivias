@@ -38,7 +38,7 @@ _QUEUE_PUSHBACK: dict[int, Any] = {}
 SILENCE_TOKEN_MIN_DURATION = 0.10  # 100ms (mag 0.0 als je alles wil)
 
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
-SILENCE_RESET_THRESHOLD = 3.0  # kun je later tweaken (2–5s)
+SILENCE_RESET_THRESHOLD = 1.0  # sneller resetten om vervuilde live-state kort te houden
 
 ENABLE_HARD_CAP = False
 
@@ -274,6 +274,46 @@ class AudioProcessor:
         await self._push_silence_event()
         self.current_silence = None
 
+    def _hard_reset_live_decoder(self, reason: str) -> None:
+        """
+        Forceren van een schone reset van de live decoder + live buffers.
+        Dit voorkomt dat vervuilde hypothesen zichtbaar blijven terugkomen.
+        """
+        logger.warning(f"[LIVE][HARD_RESET] reason={reason}")
+
+        # 1) reset decoder via transcription.{asr|model}
+        base_asr = None
+        for attr_name in ("asr", "model"):
+            candidate = getattr(self.transcription, attr_name, None)
+            if candidate is not None and hasattr(candidate, "refresh_segment"):
+                base_asr = candidate
+                logger.info(
+                    f"[LIVE][HARD_RESET] using self.transcription.{attr_name}.refresh_segment(complete=True)"
+                )
+                break
+
+        if base_asr is not None:
+            try:
+                base_asr.refresh_segment(complete=True)
+            except Exception as e:
+                logger.warning(f"[LIVE][HARD_RESET] refresh_segment failed: {e}")
+        else:
+            logger.warning("[LIVE][HARD_RESET] no decoder with refresh_segment found")
+
+        # 2) wis live buffer in online processor
+        try:
+            if hasattr(self.transcription, "buffer"):
+                self.transcription.buffer = []
+        except Exception:
+            pass
+
+        # 3) wis zichtbare live tekstbuffer in state
+        try:
+            self.state.buffer_transcription = Transcript()
+            self.state.new_tokens_buffer = Transcript()
+        except Exception:
+            pass
+        
     async def _enqueue_active_audio(self, pcm_chunk: np.ndarray) -> None:
         if pcm_chunk is None or pcm_chunk.size == 0:
             return
@@ -594,39 +634,15 @@ class AudioProcessor:
                         except Exception as e:
                            logger.warning(f"[BATCH][WINDOW] silence-end handler failed: {e}")
 
-                        # 🔸 En nu de *enige* echte decoder-reset na lange stilte
+                        # 🔸 Echte live reset na stilte
                         if item.duration >= SILENCE_RESET_THRESHOLD:
                             logger.info(
-                                f"[Decoder reset] refresh_segment(complete=True) "
+                                f"[Decoder reset] hard live reset "
                                 f"na {item.duration:.2f}s stilte (threshold={SILENCE_RESET_THRESHOLD}s)"
                             )
-
-                            # Zoek de decoder met refresh_segment (asr of model)
-                            base_asr = None
-                            for attr_name in ("asr", "model"):
-                                candidate = getattr(self.transcription, attr_name, None)
-                                if candidate is not None and hasattr(candidate, "refresh_segment"):
-                                    base_asr = candidate
-                                    logger.info(
-                                        f"[Decoder reset] gebruik decoder via "
-                                        f"self.transcription.{attr_name}.refresh_segment(complete=True)"
-                                    )
-                                    break
-
-                            if base_asr is not None:
-                                # Dit roept onder water al aan:
-                                # - init_tokens()
-                                # - init_context()
-                                # - pending_incomplete_tokens = []
-                                # - segments leegmaken
-                                base_asr.refresh_segment(complete=True)
-                               
-                            else:
-                                logger.warning(
-                                    "[Decoder reset] geen decoder met refresh_segment gevonden "
-                                    "(asr/model) – geen reset uitgevoerd"
-                                )
-
+                            self._hard_reset_live_decoder(
+                                reason=f"silence_{item.duration:.2f}s"
+                            )
 
                     if self.state.tokens:
                         asr_processing_logs += f" | last_end = {self.state.tokens[-1].end} |"

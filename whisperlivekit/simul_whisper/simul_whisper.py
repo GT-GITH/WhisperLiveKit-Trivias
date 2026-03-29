@@ -475,6 +475,16 @@ class AlignAtt:
                 logger.info(f"Tokenizer language: {self.tokenizer.language}, {self.tokenizer.sot_sequence_including_notimestamps}")
 
         self.trim_context()
+        # Guard: als context/tokens al absurd groot of duidelijk vervuild zijn,
+        # dan liever hard resetten dan blijven door-decoden op corrupte state.
+        total_token_len = sum(t.shape[1] for t in self.state.tokens) if self.state.tokens else 0
+        if total_token_len > 256:
+            logger.warning(
+                f"[LIVE][GUARD] total_token_len={total_token_len} -> refresh_segment(complete=True)"
+            )
+            self.state.pending_incomplete_tokens = []
+            self.refresh_segment(complete=True)
+            return []
         current_tokens = self._current_tokens()
    
         fire_detected = self.fire_at_boundary(encoder_feature[:, :content_mel_len, :])
@@ -567,12 +577,22 @@ class AlignAtt:
                     logger.debug("omit rewinding from special tokens")
                     self.state.last_attend_frame = most_attended_frame
                 else:
-                    logger.debug(
+                    logger.warning(
                         f"[rewind detected] current attention pos: {most_attended_frame}, "
-                        f"last attention pos: {self.state.last_attend_frame}; omit this segment")
+                        f"last attention pos: {self.state.last_attend_frame}; HARD RESET LIVE SEGMENT"
+                    )
+
+                    # Zet attend-state terug
                     self.state.last_attend_frame = -self.cfg.rewind_threshold
-                    current_tokens = torch.cat(self.state.tokens, dim=1) if len(self.state.tokens) > 0 else self.state.tokens[0]
-                    break
+
+                    # Wis incomplete/partial state zodat we niet opnieuw dezelfde rommel hergebruiken
+                    self.state.pending_incomplete_tokens = []
+
+                    # Volledige segment-reset
+                    self.refresh_segment(complete=True)
+
+                    # Geen hypothese uit deze infer-step teruggeven
+                    return []
             else:
                 self.state.last_attend_frame = most_attended_frame
 
