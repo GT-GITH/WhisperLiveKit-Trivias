@@ -38,7 +38,7 @@ _QUEUE_PUSHBACK: dict[int, Any] = {}
 SILENCE_TOKEN_MIN_DURATION = 0.10  # 100ms (mag 0.0 als je alles wil)
 
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
-SILENCE_RESET_THRESHOLD = 3.0  # sneller resetten om vervuilde live-state kort te houden
+SILENCE_RESET_THRESHOLD = 8.0  # sneller resetten om vervuilde live-state kort te houden
 
 ENABLE_HARD_CAP = False
 
@@ -696,7 +696,7 @@ class AudioProcessor:
 
                 if new_tokens:
                     validated_text = self.sep.join([t.text for t in new_tokens]).strip()
-                    if buffer_text.startswith(validated_text):
+                    if validated_text and buffer_text.startswith(validated_text):
                         _buffer_transcript.text = buffer_text[len(validated_text):].lstrip()
                         buffer_text = (_buffer_transcript.text or "").strip()
 
