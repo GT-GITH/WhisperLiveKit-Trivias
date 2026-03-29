@@ -550,8 +550,8 @@ class AlignAtt:
                 probs_at_sot = logits[:, self.state.sot_index, :].float().softmax(dim=-1)
                 no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
                 if no_speech_probs[0] > self.cfg.nonspeech_prob:
-                    logger.info("no speech, skip decoding but KEEP timeline")
-                    return []
+                    logger.info("no speech, stop")
+                    break
 
             logits = logits[:, -1, :]  # logits for the last token
 
