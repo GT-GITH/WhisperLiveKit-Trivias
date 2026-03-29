@@ -503,16 +503,6 @@ class AlignAtt:
                 logger.info(f"Tokenizer language: {self.tokenizer.language}, {self.tokenizer.sot_sequence_including_notimestamps}")
 
         self.trim_context()
-        # Guard: als context/tokens al absurd groot of duidelijk vervuild zijn,
-        # dan liever hard resetten dan blijven door-decoden op corrupte state.
-        total_token_len = sum(t.shape[1] for t in self.state.tokens) if self.state.tokens else 0
-        if total_token_len > 96:
-            logger.warning(
-                f"[LIVE][GUARD] total_token_len={total_token_len} -> refresh_segment(complete=True)"
-            )
-            self.state.pending_incomplete_tokens = []
-            self.refresh_segment(complete=True)
-            return []
         current_tokens = self._current_tokens()
    
         fire_detected = self.fire_at_boundary(encoder_feature[:, :content_mel_len, :])

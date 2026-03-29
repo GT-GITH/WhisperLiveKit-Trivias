@@ -346,7 +346,6 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   }
 
   // Buffer transcription = lopend (provisional) → altijd LIVE styling
-/*
 if (bufferTranscription && bufferTranscription.trim().length > 0) {
   htmlParts.push(
     `<div class="seg seg-buffer seg-live">${escapeHtml(
@@ -354,7 +353,7 @@ if (bufferTranscription && bufferTranscription.trim().length > 0) {
     )}</div>`
   );
 }
-*/
+
 
   liveTranscriptDiv.innerHTML =
     htmlParts.join("") || "Nog geen tekst ontvangen";

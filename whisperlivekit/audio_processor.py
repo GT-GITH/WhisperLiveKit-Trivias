@@ -38,7 +38,7 @@ _QUEUE_PUSHBACK: dict[int, Any] = {}
 SILENCE_TOKEN_MIN_DURATION = 0.10  # 100ms (mag 0.0 als je alles wil)
 
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
-SILENCE_RESET_THRESHOLD = 1.0  # sneller resetten om vervuilde live-state kort te houden
+SILENCE_RESET_THRESHOLD = 3.0  # sneller resetten om vervuilde live-state kort te houden
 
 ENABLE_HARD_CAP = False
 
@@ -634,14 +634,13 @@ class AudioProcessor:
                         except Exception as e:
                            logger.warning(f"[BATCH][WINDOW] silence-end handler failed: {e}")
 
-                        # 🔸 Echte live reset na stilte
+                        # Voor nu géén harde live reset op normale stilte.
+                        # We willen de doorlopende live transcriptie intact houden
+                        # en batch later laten corrigeren.
                         if item.duration >= SILENCE_RESET_THRESHOLD:
                             logger.info(
-                                f"[Decoder reset] hard live reset "
-                                f"na {item.duration:.2f}s stilte (threshold={SILENCE_RESET_THRESHOLD}s)"
-                            )
-                            self._hard_reset_live_decoder(
-                                reason=f"silence_{item.duration:.2f}s"
+                                f"[Decoder reset] skip hard reset after silence "
+                                f"{item.duration:.2f}s (threshold={SILENCE_RESET_THRESHOLD}s)"
                             )
 
                     if self.state.tokens:
