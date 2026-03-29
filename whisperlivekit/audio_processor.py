@@ -694,11 +694,9 @@ class AudioProcessor:
                 _buffer_transcript = self.transcription.get_buffer()
                 buffer_text = (_buffer_transcript.text or "").strip()
 
-                if new_tokens:
-                    validated_text = self.sep.join([t.text for t in new_tokens]).strip()
-                    if validated_text and buffer_text.startswith(validated_text):
-                        _buffer_transcript.text = buffer_text[len(validated_text):].lstrip()
-                        buffer_text = (_buffer_transcript.text or "").strip()
+                # Laat buffer_transcription intact.
+                # We willen de volledige lopende hypothese in de GUI tonen,
+                # niet alleen het restant na aftrek van already-committed tokens.
 
                 # Live zichtbaar houden:
                 # alleen pure rommel/single-char junk onderdrukken,

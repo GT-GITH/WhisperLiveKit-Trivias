@@ -326,18 +326,19 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     if (!rawTxt) continue;
 
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
-
     const st = (item?.state || "FINAL").toUpperCase();
 
-    const cls = st === "LIVE" ? "seg seg-live" : "seg seg-final";
+    // LIVE-fragmenten niet als losse regels tonen.
+    // Die tonen we alleen via bufferTranscription als één lopende live regel.
+    if (st === "LIVE") continue;
 
+    const cls = "seg seg-final";
 
     const prefix =
       sp === undefined || sp === null || sp === "" || sp === -1
         ? ""
         : `[${escapeHtml(sp)}] `;
 
-    // data-id is handig voor debug/inspectie
     const idAttr = item?.id ? ` data-id="${escapeHtml(item.id)}"` : "";
 
     htmlParts.push(
