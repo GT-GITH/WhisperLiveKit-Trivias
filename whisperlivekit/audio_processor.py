@@ -701,14 +701,15 @@ class AudioProcessor:
                         _buffer_transcript.text = buffer_text[len(validated_text):].lstrip()
                         buffer_text = (_buffer_transcript.text or "").strip()
 
-                # Production-style live gating:
-                # toon geen onstabiele partials als de buffer nog te kort of duidelijk afgebroken is
+                # Live zichtbaar houden:
+                # alleen pure rommel/single-char junk onderdrukken,
+                # niet normale voorlopige partials die batch later toch overschrijft.
                 if buffer_text:
-                    unstable_tail = (
-                        len(buffer_text) < 12 or
-                        buffer_text.endswith((" v", " m", " ver", " med", " Amer", "Amerika"))
+                    junk_only = (
+                        len(buffer_text) <= 1 or
+                        buffer_text in {'"', "'", ",", ".", "?", "!"}
                     )
-                    if unstable_tail:
+                    if junk_only:
                         _buffer_transcript.text = ""
                         _buffer_transcript.start = None
                         _buffer_transcript.end = None
