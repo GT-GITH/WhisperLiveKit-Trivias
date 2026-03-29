@@ -328,11 +328,15 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
     const st = (item?.state || "FINAL").toUpperCase();
 
-    if (st === "LIVE" && bufferTranscription && bufferTranscription.trim().length > 0) {
-      continue;
-    }
+    let cls = "seg";
 
-    const cls = "seg seg-final";
+    if (st === "LIVE") {
+      cls += " seg-live";
+    } else if (st === "FINAL") {
+      cls += " seg-final";
+    } else {
+      cls += " seg-batch";
+    }
 
     const prefix =
       sp === undefined || sp === null || sp === "" || sp === -1

@@ -404,11 +404,12 @@ body {
 }
 
 .seg-live {
-  color: var(--text-muted);
+  color: #aaa;
 }
 
 .seg-final {
-  color: var(--text);
+  color: #fff;
+  font-weight: bold;
 }
 
 .seg-buffer {
