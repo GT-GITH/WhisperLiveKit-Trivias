@@ -275,18 +275,46 @@ class AlignAtt:
 
     def refresh_segment(self, complete=False):
         logger.debug("Refreshing segment:")
+
+        # 1) Cache/state eerst echt opschonen
+        try:
+            self._clean_cache()
+        except Exception as e:
+            logger.warning(f"[refresh_segment] clean_cache failed: {e}")
+
+        # 2) Tokens + context opnieuw initialiseren
         self.init_tokens()
-        self.state.last_attend_frame = -self.cfg.rewind_threshold       
+        self.state.last_attend_frame = -self.cfg.rewind_threshold
         self.state.cumulative_time_offset = 0.0
         self.init_context()
         logger.debug(f"Context: {self.state.context}")
+
+        # 3) Audio-segmentbuffer resetten / inkorten
         if not complete and len(self.state.segments) > 2:
             self.state.segments = self.state.segments[-2:]
         else:
             logger.debug("removing all segments.")
             self.state.segments = []
-        self.state.log_segments += 1
+
+        # 4) Incomplete hypotheses weggooien
         self.state.pending_incomplete_tokens = []
+
+        # 5) BEAM-SAFE re-init van inference/token decoder
+        if self.state.decoder_type == "beam":
+            self.state.inference = BeamPyTorchInference(
+                self.model,
+                self.state.initial_token_length
+            )
+            self.state.inference.kv_cache = self.state.kv_cache
+            self.state.token_decoder = BeamSearchDecoder(
+                inference=self.state.inference,
+                eot=self.tokenizer.eot,
+                beam_size=self.cfg.beam_size
+            )
+        elif self.state.decoder_type == "greedy":
+            self.state.token_decoder = GreedyDecoder(0.0, self.tokenizer.eot)
+
+        self.state.log_segments += 1
 
     def fire_at_boundary(self, chunked_encoder_feature: torch.Tensor):
         if self.state.always_fire: 
@@ -478,7 +506,7 @@ class AlignAtt:
         # Guard: als context/tokens al absurd groot of duidelijk vervuild zijn,
         # dan liever hard resetten dan blijven door-decoden op corrupte state.
         total_token_len = sum(t.shape[1] for t in self.state.tokens) if self.state.tokens else 0
-        if total_token_len > 256:
+        if total_token_len > 96:
             logger.warning(
                 f"[LIVE][GUARD] total_token_len={total_token_len} -> refresh_segment(complete=True)"
             )

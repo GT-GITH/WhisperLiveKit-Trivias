@@ -693,12 +693,25 @@ class AudioProcessor:
                     new_tokens = new_tokens or []
 
                 _buffer_transcript = self.transcription.get_buffer()
-                buffer_text = _buffer_transcript.text
+                buffer_text = (_buffer_transcript.text or "").strip()
 
                 if new_tokens:
-                    validated_text = self.sep.join([t.text for t in new_tokens])
+                    validated_text = self.sep.join([t.text for t in new_tokens]).strip()
                     if buffer_text.startswith(validated_text):
                         _buffer_transcript.text = buffer_text[len(validated_text):].lstrip()
+                        buffer_text = (_buffer_transcript.text or "").strip()
+
+                # Production-style live gating:
+                # toon geen onstabiele partials als de buffer nog te kort of duidelijk afgebroken is
+                if buffer_text:
+                    unstable_tail = (
+                        len(buffer_text) < 12 or
+                        buffer_text.endswith((" v", " m", " ver", " med", " Amer", "Amerika"))
+                    )
+                    if unstable_tail:
+                        _buffer_transcript.text = ""
+                        _buffer_transcript.start = None
+                        _buffer_transcript.end = None
 
                 candidate_end_times = [self.state.end_buffer]
 
@@ -723,8 +736,20 @@ class AudioProcessor:
             except Exception as e:
                 logger.warning(f"Exception in transcription_processor: {e}")
                 logger.warning(f"Traceback: {traceback.format_exc()}")
-                if 'pcm_array' in locals() and pcm_array is not SENTINEL : # Check if pcm_array was assigned from queue
-                    self.transcription_queue.task_done()
+
+                # HARD recovery voor live decoder zodat de pipeline niet in corrupte state blijft hangen
+                try:
+                    self._hard_reset_live_decoder(reason=f"transcription_exception:{type(e).__name__}")
+                except Exception as reset_e:
+                    logger.warning(f"[LIVE][HARD_RESET] failed after transcription exception: {reset_e}")
+
+                new_tokens = []
+                current_audio_processed_upto = max(
+                    self.state.end_buffer,
+                    cumulative_pcm_duration_stream_time
+                )
+
+                continue
         
         if self.is_stopping:
             logger.info("Transcription processor finishing due to stopping flag.")
