@@ -412,6 +412,11 @@ body {
   font-weight: bold;
 }
 
+.seg-batch {
+  color: #4ade80; /* licht groen */
+  font-weight: bold;
+}
+
 .seg-buffer {
   color: var(--text-muted);
   opacity: 0.9;

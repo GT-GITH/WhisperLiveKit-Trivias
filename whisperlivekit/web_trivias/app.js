@@ -333,9 +333,13 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     if (st === "LIVE") {
       cls += " seg-live";
     } else if (st === "FINAL") {
-      cls += " seg-final";
+      if (item.text_batch && item.text === item.text_batch) {
+        cls += " seg-batch";   // echte batch overwrite
+      } else {
+        cls += " seg-final";   // live-final
+      }
     } else {
-      cls += " seg-batch";
+      cls += " seg-final";
     }
 
     const prefix =
