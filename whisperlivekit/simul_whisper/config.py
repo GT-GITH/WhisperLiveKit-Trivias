@@ -35,9 +35,9 @@ class ChannelTranscriptionConfig:
     task: TaskType = "transcribe"
 
     # Live / SimulStreaming
-    live_frame_threshold: int = 6
-    live_audio_min_len: float = 0.6
-    live_audio_max_len: float = 20.0
+    live_frame_threshold: int = 25
+    live_audio_min_len: float = 0.0
+    live_audio_max_len: float = 30.0
     live_beams: int = 1
     live_decoder_type: Optional[Literal["greedy", "beam"]] = None
     live_init_prompt: Optional[str] = None
@@ -57,10 +57,10 @@ CHANNEL_CONFIGS: dict[str, ChannelTranscriptionConfig] = {
     "default": ChannelTranscriptionConfig(
         language="nl",
         task="transcribe",
-        live_frame_threshold=6,
-        live_audio_min_len=0.6,
-        live_audio_max_len=20.0,
-        live_beams=3,
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
+        live_audio_max_len=30.0,
+        live_beams=1,
         live_decoder_type="beam",
         batch_beam_size=7,
         batch_temperature=[0.0, 0.2],
@@ -72,40 +72,40 @@ CHANNEL_CONFIGS: dict[str, ChannelTranscriptionConfig] = {
     "employee": ChannelTranscriptionConfig(
         language="nl",
         task="transcribe",
-        live_frame_threshold=6,
-        live_audio_min_len=0.6,
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
         live_decoder_type="greedy",
         batch_initial_prompt=None,
     ),
     "foreign_nl": ChannelTranscriptionConfig(
         language="nl",
         task="transcribe",
-        live_frame_threshold=6,
-        live_audio_min_len=0.6,
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
         live_decoder_type="greedy",
         batch_initial_prompt=None,
     ),
     "foreign_ar": ChannelTranscriptionConfig(
         language="ar",
         task="transcribe",
-        live_frame_threshold=6,
-        live_audio_min_len=0.7,
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
         live_decoder_type="greedy",
         batch_initial_prompt=None,
     ),
     "foreign_fa": ChannelTranscriptionConfig(
         language="fa",
         task="transcribe",
-        live_frame_threshold=6,
-        live_audio_min_len=0.7,
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
         live_decoder_type="greedy",
         batch_initial_prompt=None,
     ),
     "foreign_ru": ChannelTranscriptionConfig(
         language="ru",
         task="transcribe",
-        live_frame_threshold=6,
-        live_audio_min_len=0.7,
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
         live_decoder_type="greedy",
         batch_initial_prompt=None,
     ),
