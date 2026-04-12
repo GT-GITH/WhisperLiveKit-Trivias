@@ -110,7 +110,7 @@ class TokensAlignment:
             kept.append(s)
 
        # als uitgeschakeld: Dan blijft live zichtbaar naast batch canonical groups. Voor debug is dit perfect.
-       # self.validated_segments = kept
+        self.validated_segments = kept
 
         # 3) Remove older batch groups that overlap the same window (defensive)
         new_groups: List[Segment] = []
