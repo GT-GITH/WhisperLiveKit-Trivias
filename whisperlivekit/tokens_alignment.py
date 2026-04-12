@@ -109,7 +109,8 @@ class TokensAlignment:
 
             kept.append(s)
 
-        self.validated_segments = kept
+       # als uitgeschakeld: Dan blijft live zichtbaar naast batch canonical groups. Voor debug is dit perfect.
+       # self.validated_segments = kept
 
         # 3) Remove older batch groups that overlap the same window (defensive)
         new_groups: List[Segment] = []
@@ -330,7 +331,15 @@ class TokensAlignment:
             # Start with validated FINAL segments + canonical batch groups
             segments = list(self.validated_segments) + list(self.batch_groups)
 
-
+            logger.debug(
+                f"[UI MIX] validated={len(self.validated_segments)} "
+                f"batch_groups={len(self.batch_groups)} "
+                f"current_live_tokens={len(self.current_line_tokens)}"
+            )
+            if self.current_line_tokens:
+                logger.debug(
+                    f"[UI LIVE TEXT] tail='{''.join([t.text for t in self.current_line_tokens[-5:]])}'"
+                )
             # validated segments are FINAL
             for s in segments:
                 # FORCE deterministic ID for ALL segments
