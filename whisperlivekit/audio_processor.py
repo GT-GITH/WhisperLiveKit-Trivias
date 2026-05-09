@@ -1183,10 +1183,41 @@ class AudioProcessor:
                     # compression_ratio: typisch ok < 2.4
                     ok_logprob = (batch_avg_logprob is None) or (batch_avg_logprob > -1.3)
                     ok_compr = (batch_compression is None) or (batch_compression < 2.4)
+                    ok_no_speech = (
+                        result.get("no_speech_prob") is None or
+                        result.get("no_speech_prob") < 0.6
+                    )
 
-                    if ok_logprob and ok_compr:
+                    # Technische Whisper-artefacten die nooit echte spraak zijn
+                    HALLUCINATION_PATTERNS = [
+                        "***",
+                        "Ondertiteling",
+                        "ondertiteling",
+                        "Ondertitels",
+                        "ondertitels",
+                        "www.",
+                        ".com",
+                        "Abonneer",
+                        "abonneer",
+                        "Subtitles by",
+                        "Subscribe",
+                        "subscribe",
+                    ]
+                    has_hallucination_pattern = any(
+                        p in batch_txt for p in HALLUCINATION_PATTERNS
+                    )
+
+                    if ok_logprob and ok_compr and ok_no_speech and not has_hallucination_pattern:
                         use_batch_as_final = True
-
+                    else:
+                        logger.warning(
+                            f"[BATCH][REJECTED] job={job['job_id']} "
+                            f"logprob={batch_avg_logprob} "
+                            f"compr={batch_compression} "
+                            f"no_speech_prob={result.get('no_speech_prob')} "
+                            f"hallucination_pattern={has_hallucination_pattern} "
+                            f"text='{batch_txt[:80]}'"
+                        )
                 # Fail-safe: als batch niet mag, gebruik live (als die er is), anders batch
                 if use_batch_as_final:
                     final_txt = batch_txt
