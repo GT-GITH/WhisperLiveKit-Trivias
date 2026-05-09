@@ -47,6 +47,7 @@ AUDIO_MIN_LEN="${AUDIO_MIN_LEN:-0.0}"
 AUDIO_MAX_LEN="${AUDIO_MAX_LEN:-30.0}"
 BEAMS="${BEAMS:-1}"
 DIARIZATION="${DIARIZATION:-0}"
+PCM_INPUT="${PCM_INPUT:-1}"  # altijd PCM voor multi-channel stabiliteit
 DIARIZATION_BACKEND="${DIARIZATION_BACKEND:-sortformer}"
 
 
@@ -260,6 +261,7 @@ startlive() {
     --audio-min-len "$AUDIO_MIN_LEN" \
     --audio-max-len "$AUDIO_MAX_LEN" \
     --beams "$BEAMS" \
+    --pcm-input \
     "${DIAR_ARGS[@]}"
 }
 
