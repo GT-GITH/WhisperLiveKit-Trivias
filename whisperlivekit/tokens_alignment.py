@@ -103,7 +103,7 @@ class TokensAlignment:
                 continue
 
             # overlap?
-            if s_end_ms > window_start_ms and s_start_ms < window_end_ms:
+            if s_end_ms >= window_start_ms and s_start_ms < window_end_ms:
                 # drop it (including silence segments) → BatchGroup becomes canonical truth
                 continue
 
@@ -461,7 +461,7 @@ class TokensAlignment:
 
                 overlaps = False
                 for c_s, c_e in canonical_ranges:
-                    if (s_end > c_s) and (s_start < c_e):
+                    if (s_end >= c_s) and (s_start < c_e):
                         overlaps = True
                         break
 
