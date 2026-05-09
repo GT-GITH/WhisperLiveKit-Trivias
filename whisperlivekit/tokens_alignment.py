@@ -377,27 +377,26 @@ class TokensAlignment:
 
                 # Guard: voorkom duplicate live segment met dezelfde ID als laatst gevalideerde segment
                 if live_seg:
-                    # Guard 1: geen duplicate ID
-                    skip = False
                     if segments:
                         last = segments[-1]
                         if hasattr(last, "id") and hasattr(live_seg, "id") and last.id == live_seg.id:
-                            skip = True
-
-
-                    # Guard 2: live tail niet tonen als die start binnen een batch window valt
-                    if not skip and self.suppressed_ranges_ms:
-                        live_start_ms = int(round((live_seg.start or 0) * 1000))
-                        for c_s, c_e in self.suppressed_ranges_ms:
-                            if live_start_ms >= c_s and live_start_ms < c_e:
-                                skip = True
-                                break
-                            
-                    if not skip:
+                            # Skip duplicate
+                            pass
+                        else:
+                            segments.append(live_seg)
+                    else:
                         segments.append(live_seg)
 
-        # current_silence wordt NA de pruning toegevoegd (zie onder)
 
+        if current_silence:
+            end_silence = current_silence.end if current_silence.has_ended else time() - self.beg_loop
+            if segments and segments[-1].is_silence():
+                segments[-1] = SilentSegment(start=segments[-1].start, end=end_silence)
+            else:
+                segments.append(SilentSegment(
+                    start=current_silence.start,
+                    end=end_silence
+                ))
         if translation:
             [self.add_translation(segment) for segment in segments if not segment.is_silence()]
 
@@ -471,26 +470,6 @@ class TokensAlignment:
                 pruned.append(s)
 
             segments = pruned
-
-        # --- Current silence toevoegen NA pruning ---
-        if current_silence:
-            end_silence = current_silence.end if current_silence.has_ended else time() - self.beg_loop
-            silence_start_ms = int(round((current_silence.start or 0) * 1000))
-            silence_end_ms = int(round(end_silence * 1000))
-
-            in_canonical = any(
-                silence_end_ms > c_s and silence_start_ms < c_e
-                for c_s, c_e in canonical_ranges
-            ) if canonical_ranges else False
-
-            if not in_canonical:
-                if segments and segments[-1].is_silence():
-                    segments[-1] = SilentSegment(start=segments[-1].start, end=end_silence)
-                else:
-                    segments.append(SilentSegment(
-                        start=current_silence.start,
-                        end=end_silence
-                    ))
             
         # --- Ensure deterministic chronological ordering (CRITICAL) ---
         def _seg_sort_key(s: Segment):
