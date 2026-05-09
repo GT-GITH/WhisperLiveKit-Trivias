@@ -384,15 +384,15 @@ class TokensAlignment:
                         if hasattr(last, "id") and hasattr(live_seg, "id") and last.id == live_seg.id:
                             skip = True
 
-                    # Guard 2: live tail niet tonen als die volledig binnen een batch window valt
+
+                    # Guard 2: live tail niet tonen als die start binnen een batch window valt
                     if not skip and self.suppressed_ranges_ms:
                         live_start_ms = int(round((live_seg.start or 0) * 1000))
-                        live_end_ms = int(round((live_seg.end or 0) * 1000))
                         for c_s, c_e in self.suppressed_ranges_ms:
-                            if live_start_ms >= c_s and live_end_ms <= c_e:
+                            if live_start_ms >= c_s and live_start_ms < c_e:
                                 skip = True
                                 break
-
+                            
                     if not skip:
                         segments.append(live_seg)
 
