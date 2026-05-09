@@ -13,4 +13,4 @@ class PCMForwarder extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor('pcm-forwarder', PCMForwarder);
+registerProcessor('pcm-worklet-processor', PCMForwarder);
