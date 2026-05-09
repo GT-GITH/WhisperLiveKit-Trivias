@@ -388,24 +388,8 @@ class TokensAlignment:
                         segments.append(live_seg)
 
 
-        if current_silence:
-            end_silence = current_silence.end if current_silence.has_ended else time() - self.beg_loop
-            silence_start_ms = int(round((current_silence.start or 0) * 1000))
-            silence_end_ms = int(round(end_silence * 1000))
 
-            in_canonical = any(
-                silence_end_ms > c_s and silence_start_ms < c_e
-                for c_s, c_e in canonical_ranges
-            )
-
-            if not in_canonical:
-                if segments and segments[-1].is_silence():
-                    segments[-1] = SilentSegment(start=segments[-1].start, end=end_silence)
-                else:
-                    segments.append(SilentSegment(
-                        start=current_silence.start,
-                        end=end_silence
-                    ))   
+        # current_silence wordt NA de pruning toegevoegd (zie onder)
 
         if translation:
             [self.add_translation(segment) for segment in segments if not segment.is_silence()]
@@ -480,6 +464,26 @@ class TokensAlignment:
                 pruned.append(s)
 
             segments = pruned
+
+        # --- Current silence toevoegen NA pruning ---
+        if current_silence:
+            end_silence = current_silence.end if current_silence.has_ended else time() - self.beg_loop
+            silence_start_ms = int(round((current_silence.start or 0) * 1000))
+            silence_end_ms = int(round(end_silence * 1000))
+
+            in_canonical = any(
+                silence_end_ms > c_s and silence_start_ms < c_e
+                for c_s, c_e in canonical_ranges
+            ) if canonical_ranges else False
+
+            if not in_canonical:
+                if segments and segments[-1].is_silence():
+                    segments[-1] = SilentSegment(start=segments[-1].start, end=end_silence)
+                else:
+                    segments.append(SilentSegment(
+                        start=current_silence.start,
+                        end=end_silence
+                    ))
             
         # --- Ensure deterministic chronological ordering (CRITICAL) ---
         def _seg_sort_key(s: Segment):
