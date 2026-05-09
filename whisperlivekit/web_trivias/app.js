@@ -495,17 +495,32 @@ async function startRecording() {
         }
       };
 
+      let lastAudioActivityMs = Date.now();
+      const AUDIO_WATCHDOG_INTERVAL_MS = 3000;  // check elke 3s
+      const AUDIO_SILENCE_WARN_MS = 5000;       // waarschuw na 5s geen audio
+
       workletNode.port.onmessage = (e) => {
-        const data = e.data;
-        const ab = data instanceof ArrayBuffer ? data : data.buffer;
-        recorderWorker.postMessage(
-          {
-            command: "record",
-            buffer: ab,
-          },
-          [ab]
-        );
+          lastAudioActivityMs = Date.now();
+          const data = e.data;
+          const ab = data instanceof ArrayBuffer ? data : data.buffer;
+          recorderWorker.postMessage(
+              { command: "record", buffer: ab },
+              [ab]
+          );
       };
+
+      // Watchdog: detecteer als worklet stopt met sturen
+      const audioWatchdog = setInterval(() => {
+          if (!isRecording) {
+              clearInterval(audioWatchdog);
+              return;
+          }
+          const silenceDuration = Date.now() - lastAudioActivityMs;
+          if (silenceDuration > AUDIO_SILENCE_WARN_MS) {
+              console.warn(`[WATCHDOG] Geen audio van worklet sinds ${silenceDuration}ms`);
+              setAsrStatus(`⚠️ Geen audio ontvangen sinds ${Math.round(silenceDuration/1000)}s — controleer microfoon`);
+          }
+      }, AUDIO_WATCHDOG_INTERVAL_MS);
 
       setModeStatus("AudioWorklet (PCM)");
     } else {
