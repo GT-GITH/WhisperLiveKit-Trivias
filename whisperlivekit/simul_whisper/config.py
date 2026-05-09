@@ -68,6 +68,27 @@ CHANNEL_CONFIGS: dict[str, ChannelTranscriptionConfig] = {
         batch_initial_prompt=None,
     ),
 
+    "interpreter": ChannelTranscriptionConfig(
+        language="nl",
+        task="transcribe",
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
+        live_decoder_type="beam",
+        batch_beam_size=7,
+        batch_temperature=[0.0, 0.2],
+        batch_condition_on_previous_text=False,
+    ),
+    "lawyer": ChannelTranscriptionConfig(
+        language="nl",
+        task="transcribe",
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
+        live_decoder_type="beam",
+        batch_beam_size=7,
+        batch_temperature=[0.0, 0.2],
+        batch_condition_on_previous_text=False,
+    ),
+
     # Voorbeeldrollen / toekomstige uitbreiding
     "employee": ChannelTranscriptionConfig(
         language="nl",

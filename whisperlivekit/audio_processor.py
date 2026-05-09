@@ -977,7 +977,7 @@ class AudioProcessor:
             return
 
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-        filename = f"session_{self.session_id}_{ts}.wav"
+        filename = f"session_{self.session_id}_{self.channel_id}_{ts}.wav"
         self._wav_path = self.recordings_dir / filename
 
         wf = wave.open(str(self._wav_path), "wb")

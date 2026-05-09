@@ -335,6 +335,7 @@ async def websocket_endpoint(
     case_ref: Optional[str] = Query(default=None),
     person_ref: Optional[str] = Query(default=None),
     user_id: Optional[str] = Query(default=None),
+    channel_id: Optional[str] = Query(default=None),  
 ):
     """Hoofdstream voor audio ÔåÆ ASR (exactzelfde kern als basic_server, maar met session-metadata)."""
     global transcription_engine
@@ -352,7 +353,12 @@ async def websocket_endpoint(
         user_id=user_id,
     )
 
-    audio_processor = AudioProcessor(transcription_engine=transcription_engine)
+    #audio_processor = AudioProcessor(transcription_engine=transcription_engine)
+    audio_processor = AudioProcessor(
+        transcription_engine=transcription_engine,
+        session_id=sid,
+        channel_id=channel_id or "default",
+    )
 
     await websocket.accept()
     logger.info(f"WebSocket connection opened for session {sid}.")
@@ -401,6 +407,7 @@ async def websocket_ws(
     case_ref: Optional[str] = Query(default=None),
     person_ref: Optional[str] = Query(default=None),
     user_id: Optional[str] = Query(default=None),
+    channel_id: Optional[str] = Query(default=None),  # NIEUW
 ):
     """
     Compat-endpoint voor clients die nog /ws gebruiken.
@@ -413,6 +420,7 @@ async def websocket_ws(
         case_ref=case_ref,
         person_ref=person_ref,
         user_id=user_id,
+        channel_id=channel_id,  # NIEUW
     )
 
 def main():
