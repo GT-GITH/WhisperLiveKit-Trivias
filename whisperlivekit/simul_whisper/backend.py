@@ -73,7 +73,7 @@ class BatchFasterWhisperASR:
             compute_type=compute_type,
         )
 
-    def transcribe(self, audio_f32: np.ndarray) -> dict:
+    def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False) -> dict:
         segments, info = self.model.transcribe(
             audio_f32,
             language=self.language if self.language and self.language != "auto" else None,
@@ -82,7 +82,42 @@ class BatchFasterWhisperASR:
             temperature=self.temperature,
             initial_prompt=self.initial_prompt,
             vad_filter=False,
+            word_timestamps=word_timestamps,
         )
+
+        texts = []
+        avg_logprobs = []
+        compression_ratios = []
+        no_speech_probs = []
+        sentence_segments = []  # lijst van {text, start, end} per faster-whisper segment
+
+        for s in segments:
+            if not getattr(s, "text", None):
+                continue
+            texts.append(s.text.strip())
+            if hasattr(s, "avg_logprob"):
+                avg_logprobs.append(s.avg_logprob)
+            if hasattr(s, "compression_ratio"):
+                compression_ratios.append(s.compression_ratio)
+            if hasattr(s, "no_speech_prob"):
+                no_speech_probs.append(s.no_speech_prob)
+            if word_timestamps:
+                sentence_segments.append({
+                    "text": s.text.strip(),
+                    "start": s.start,
+                    "end": s.end,
+                })
+
+        full_text = " ".join([t for t in texts if t]).strip()
+
+        return {
+            "text": full_text,
+            "avg_logprob": float(np.mean(avg_logprobs)) if avg_logprobs else None,
+            "compression_ratio": float(np.mean(compression_ratios)) if compression_ratios else None,
+            "no_speech_prob": float(np.mean(no_speech_probs)) if no_speech_probs else None,
+            "num_segments": len(texts),
+            "sentence_segments": sentence_segments,  # alleen gevuld als word_timestamps=True
+        }
 
         texts = []
         avg_logprobs = []

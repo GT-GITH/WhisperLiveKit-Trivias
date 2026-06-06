@@ -1160,8 +1160,9 @@ class AudioProcessor:
                     continue
 
                 #result = self.engine.batch_asr.transcribe(audio_f32)
-                result = self.batch_asr.transcribe(audio_f32)
+                result = self.batch_asr.transcribe(audio_f32, word_timestamps=True)
                 batch_txt = result["text"]
+                sentence_segments = result.get("sentence_segments", [])
                 
                 batch_avg_logprob = result["avg_logprob"]
                 batch_compression = result["compression_ratio"]
@@ -1251,16 +1252,32 @@ class AudioProcessor:
                 )
 
                 # 5) Emit SegmentUpdate naar UI
-                upd = SegmentUpdate(
-                    id=str(group_id),
-                    state="FINAL",
-                    start_ms=start_ms,
-                    end_ms=end_ms,
-                    text_batch=(batch_txt if batch_txt else None),
-                    text_final=final_txt
-                )
-
-                await self.emit_segment_update(upd)
+                if use_batch_as_final and sentence_segments:
+                    # Meerdere klikbare zinnen met eigen tijdstempels
+                    for i, sent in enumerate(sentence_segments):
+                        sent_start_ms = int(round(sent["start"] * 1000)) + start_ms
+                        sent_end_ms = int(round(sent["end"] * 1000)) + start_ms
+                        sent_id = f"{group_id}_s{i}"
+                        upd = SegmentUpdate(
+                            id=sent_id,
+                            state="FINAL",
+                            start_ms=sent_start_ms,
+                            end_ms=sent_end_ms,
+                            text_batch=sent["text"],
+                            text_final=sent["text"],
+                        )
+                        await self.emit_segment_update(upd)
+                else:
+                    # Fallback: één blok voor het hele window
+                    upd = SegmentUpdate(
+                        id=str(group_id),
+                        state="FINAL",
+                        start_ms=start_ms,
+                        end_ms=end_ms,
+                        text_batch=(batch_txt if batch_txt else None),
+                        text_final=final_txt
+                    )
+                    await self.emit_segment_update(upd)
 
                 logger.info(
                     f"[BATCH][WORKER] BATCHGROUP overwrite id={group_id} job={job['job_id']} "

@@ -212,13 +212,29 @@ function ensureWebSocket() {
         const id = data.id;
         if (!id) return;
 
+        }
         let line = lineById.get(id);
         if (!line) {
-          // Segment bestaat nog niet in currentLines; onthoud update tot volgende front_data
-          pendingSegmentUpdates.set(id, data);
+          // Nieuw segment (bijv. zin-segment van batch) — toevoegen aan currentLines
+          if (data.text_final || data.text_batch) {
+            const newLine = {
+              id: id,
+              text: data.text_final || data.text_batch || "",
+              text_batch: data.text_batch || null,
+              state: data.state || "FINAL",
+              start_ms: data.start_ms || 0,
+              end_ms: data.end_ms || 0,
+              speaker: -1,
+            };
+            currentLines.push(newLine);
+            lineById.set(id, newLine);
+            renderTranscript(currentLines, lastBufferTranscription, lastBufferTranslation, lastStatus);
+          } else {
+            pendingSegmentUpdates.set(id, data);
+          }
           return;
         }
-
+        
         if (data.text_batch !== undefined) {
           line.text_batch = data.text_batch;
         }
@@ -229,6 +245,12 @@ function ensureWebSocket() {
         }
 
         if (data.state !== undefined) {
+          if (data.start_ms !== undefined && data.start_ms !== null) {
+            line.start_ms = data.start_ms;
+          }
+          if (data.end_ms !== undefined && data.end_ms !== null) {
+            line.end_ms = data.end_ms;
+          }
           line.state = data.state;
         }
 
