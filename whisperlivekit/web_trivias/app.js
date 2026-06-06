@@ -365,6 +365,24 @@ function ensureWebSocket() {
   });
 }
 
+let liveIndicatorTimeout = null;
+
+function showLiveIndicator() {
+  let indicator = document.getElementById("live-indicator");
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.id = "live-indicator";
+    indicator.className = "live-indicator";
+    indicator.innerHTML = `<span class="live-dot"></span> Spreekt...`;
+    liveTranscriptDiv.appendChild(indicator);
+  }
+  clearTimeout(liveIndicatorTimeout);
+  liveIndicatorTimeout = setTimeout(() => {
+    const el = document.getElementById("live-indicator");
+    if (el) el.remove();
+  }, 2000);
+}
+
 function escapeHtml(s) {
   return String(s || "")
     .replaceAll("&", "&amp;")
@@ -399,9 +417,11 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
   safeLines.sort((a, b) => getStartMs(a) - getStartMs(b));
 
+
   for (const item of safeLines) {
     const rawTxt = (item?.text || "").trim();
     if (!rawTxt) continue;
+    if (item?.state === "LIVE") continue;
 
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
     const st = (item?.state || "FINAL").toUpperCase();
@@ -449,15 +469,11 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     );
   }
 
-  // Buffer transcription = lopend (provisional) → altijd LIVE styling
-if (bufferTranscription && bufferTranscription.trim().length > 0) {
-  htmlParts.push(
-    `<div class="seg seg-buffer seg-live">${escapeHtml(
-      bufferTranscription.trim()
-    )}</div>`
-  );
-}
-
+  // Live indicator in plaats van buffer tekst
+  if (bufferTranscription && bufferTranscription.trim().length > 0) {
+     showLiveIndicator();
+  
+  }
 
   liveTranscriptDiv.innerHTML =
     htmlParts.join("") || "Nog geen tekst ontvangen";
