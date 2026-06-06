@@ -328,10 +328,7 @@ function ensureWebSocket() {
 
         if (data.session_id) currentSessionId = data.session_id;
         if (data.channel_id) currentChannelId = data.channel_id || "default";
-        
-        if (data.buffer_transcription && data.buffer_transcription.trim()) {
-          showLiveIndicator();
-        }
+
         // Apply any pending segment updates now that lines exist
         for (const [pid, upd] of pendingSegmentUpdates.entries()) {
           const l = lineById.get(pid);
@@ -370,21 +367,6 @@ function ensureWebSocket() {
 
 let liveIndicatorTimeout = null;
 
-function showLiveIndicator() {
-  let indicator = document.getElementById("live-indicator");
-  if (!indicator) {
-    indicator = document.createElement("div");
-    indicator.id = "live-indicator";
-    indicator.className = "live-indicator";
-    indicator.innerHTML = `<span class="live-dot"></span> Spreekt...`;
-    liveTranscriptDiv.appendChild(indicator);
-  }
-  clearTimeout(liveIndicatorTimeout);
-  liveIndicatorTimeout = setTimeout(() => {
-    const el = document.getElementById("live-indicator");
-    if (el) el.remove();
-  }, 2000);
-}
 
 function escapeHtml(s) {
   return String(s || "")
@@ -473,25 +455,13 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     );
   }
 
-  // Live indicator in plaats van buffer tekst
+  // Pulserende indicator als er live audio is
   if (bufferTranscription && bufferTranscription.trim().length > 0) {
-     showLiveIndicator();
-  
+    htmlParts.push(`<div class="live-indicator"><span class="live-dot"></span> Spreekt...</div>`);
   }
-
+  
   liveTranscriptDiv.innerHTML =
     htmlParts.join("") || "Nog geen tekst ontvangen";
-
-  // Bewaar laatste tekst voor jouw bestaande “lastFullTranscript”
-// (optioneel) bufferTranslation ook uitgeschakeld
-// if (
-//   bufferTranslation &&
-//   bufferTranslation.trim().length > 0 &&
-//   finalTranscriptDiv
-// ) {
-//   finalTranscriptDiv.textContent = bufferTranslation.trim();
-// }
-
 
   setAsrStatus("Live transcriptie actief");
 }
