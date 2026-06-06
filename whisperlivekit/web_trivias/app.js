@@ -405,7 +405,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   for (const item of safeLines) {
 
     console.log("[RENDER]", item.id, item.state, "text:", item.text, "text_batch:", item.text_batch);
-    const rawTxt = (item?.text || "").trim();
+    const rawTxt = (item?.text_batch || item?.text || "").trim();
     if (!rawTxt) continue;
     // Alleen tonen als batch de tekst heeft goedgekeurd
     if (!item?.text_batch) continue;
