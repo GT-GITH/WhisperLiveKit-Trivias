@@ -50,6 +50,22 @@ const hintText = document.getElementById("hintText");
 const micSelect = document.getElementById("micSelect");
 // Zin-segmenten: overschrijven batch groups na front_data render
 const sentenceSegmentMap = new Map(); // parentId → [zinnen]
+// Rol mapping: channel_id → leesbare naam
+const CHANNEL_ROLE_LABELS = {
+  "employee":    "Medewerker",
+  "interpreter": "Tolk",
+  "lawyer":      "Advocaat",
+  "foreign_nl":  "Vreemdeling",
+  "foreign_ar":  "Vreemdeling",
+  "foreign_fa":  "Vreemdeling",
+  "foreign_ru":  "Vreemdeling",
+  "foreign_en":  "Vreemdeling",
+  "default":     "Spreker",
+};
+
+function getRoleLabel(channelId) {
+  return CHANNEL_ROLE_LABELS[channelId] || "Spreker";
+}
 
 function initWebsocketUrl() {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -59,6 +75,16 @@ function initWebsocketUrl() {
 }
 
 initWebsocketUrl();
+
+function formatMs(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return h > 0
+    ? `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+    : `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
 
 function setConnectionStatus(connected) {
   if (!connectionStatusSpan) return;
@@ -412,8 +438,14 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
       ? ` data-start-ms="${startMs}" data-end-ms="${endMs}" data-session="${escapeHtml(sessionId)}" data-channel="${escapeHtml(channelId)}"` 
       : "";
 
+
+    const timeLabel = startMs > 0 || item?.start_ms === 0
+      ? `<span class="seg-time">[${formatMs(startMs)}]</span> `
+      : "";
+    const roleLabel = `<span class="seg-role">${escapeHtml(getRoleLabel(currentChannelId))}</span> `;
+
     htmlParts.push(
-      `<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${prefix}${escapeHtml(rawTxt)}</div>`
+      `<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}</div>`
     );
   }
 
