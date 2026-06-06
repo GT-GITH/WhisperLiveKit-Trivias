@@ -456,8 +456,11 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     );
   }
 
-  // Pulserende indicator als er live audio is
-  if (bufferTranscription && bufferTranscription.trim().length > 0) {
+  // Pulserende indicator als er live segmenten zijn zonder batch
+  const hasLiveContent = (lines || []).some(
+    item => item?.text && !item?.text_batch && item?.speaker !== -2
+  );
+  if (hasLiveContent || (bufferTranscription && bufferTranscription.trim().length > 0)) {
     htmlParts.push(`<div class="live-indicator"><span class="live-dot"></span> Spreekt...</div>`);
   }
 
