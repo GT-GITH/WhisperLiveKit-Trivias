@@ -402,8 +402,9 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
   safeLines.sort((a, b) => getStartMs(a) - getStartMs(b));
 
-
   for (const item of safeLines) {
+
+    console.log("[RENDER]", item.id, item.state, "text:", item.text, "text_batch:", item.text_batch);
     const rawTxt = (item?.text || "").trim();
     if (!rawTxt) continue;
     // Alleen tonen als batch de tekst heeft goedgekeurd
