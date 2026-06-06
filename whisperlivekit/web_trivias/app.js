@@ -254,7 +254,7 @@ function ensureWebSocket() {
 
         currentLines = lines;
         rebuildLineIndex(currentLines);
-        
+
         if (data.session_id) currentSessionId = data.session_id;
         if (data.channel_id) currentChannelId = data.channel_id || "default";
         
@@ -686,7 +686,7 @@ liveTranscriptDiv.addEventListener("click", async (e) => {
   const session = seg.dataset.session;
   const channel = seg.dataset.channel;
 
-  if (!session || startMs === 0) return;
+  if (!session) return;
 
   const url = `/audio/${encodeURIComponent(session)}/${encodeURIComponent(channel)}?start_ms=${startMs}&end_ms=${endMs}`;
 
