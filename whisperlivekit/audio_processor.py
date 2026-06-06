@@ -1260,7 +1260,7 @@ class AudioProcessor:
                     # Meerdere klikbare zinnen met eigen tijdstempels
                     for i, sent in enumerate(sentence_segments):
                         sent_start_ms = int(round(sent["start"] * 1000)) + decode_start_ms
-                        sent_end_ms = int(round(sent["end"] * 1000)) + decode_start_ms
+                        sent_end_ms = int(round(sent["end"] * 1000)) + decode_start_ms + 300  # 300ms buffer
                         sent_id = f"{group_id}_s{i}"
                         upd = SegmentUpdate(
                             id=sent_id,
