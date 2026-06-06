@@ -1163,7 +1163,11 @@ class AudioProcessor:
                 result = self.batch_asr.transcribe(audio_f32, word_timestamps=True)
                 batch_txt = result["text"]
                 sentence_segments = result.get("sentence_segments", [])
-                
+                logger.info(
+                    f"[BATCH][SENTENCES] job={job['job_id']} "
+                    f"num_sentences={len(sentence_segments)} "
+                    f"segments={[(s['text'][:30], s['start'], s['end']) for s in sentence_segments[:3]]}"
+                )
                 batch_avg_logprob = result["avg_logprob"]
                 batch_compression = result["compression_ratio"]
 
@@ -1255,8 +1259,8 @@ class AudioProcessor:
                 if use_batch_as_final and sentence_segments:
                     # Meerdere klikbare zinnen met eigen tijdstempels
                     for i, sent in enumerate(sentence_segments):
-                        sent_start_ms = int(round(sent["start"] * 1000)) + start_ms
-                        sent_end_ms = int(round(sent["end"] * 1000)) + start_ms
+                        sent_start_ms = int(round(sent["start"] * 1000)) + decode_start_ms
+                        sent_end_ms = int(round(sent["end"] * 1000)) + decode_start_ms
                         sent_id = f"{group_id}_s{i}"
                         upd = SegmentUpdate(
                             id=sent_id,
