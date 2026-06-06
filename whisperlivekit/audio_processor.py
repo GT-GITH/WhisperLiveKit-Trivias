@@ -40,7 +40,7 @@ SILENCE_TOKEN_MIN_DURATION = 0.10  # 100ms (mag 0.0 als je alles wil)
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
 SILENCE_RESET_THRESHOLD = 8.0  # sneller resetten om vervuilde live-state kort te houden
 
-ENABLE_HARD_CAP = False
+ENABLE_HARD_CAP = True
 
 #BATCH_CONTEXT_PAD_MS = 600  # FO default pre/post padding
 BATCH_CONTEXT_PAD_LEFT_MS = 600
