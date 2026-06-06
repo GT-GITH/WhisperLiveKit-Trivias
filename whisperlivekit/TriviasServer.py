@@ -437,6 +437,15 @@ async def websocket_endpoint(
     results_generator = await audio_processor.create_tasks()
     websocket_task = asyncio.create_task(handle_websocket_results(websocket, results_generator))
 
+    # Registreer WAV zodra die aangemaakt wordt (binnen 0.5s na eerste audio)
+    async def _watch_wav_path():
+        for _ in range(60):
+            await asyncio.sleep(0.5)
+            if getattr(audio_processor, "_wav_path", None):
+                register_wav_path(sid, channel_id or "default", str(audio_processor._wav_path))
+                return
+    asyncio.create_task(_watch_wav_path())
+    
     try:
         while True:
             message = await websocket.receive_bytes()
