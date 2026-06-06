@@ -329,6 +329,9 @@ function ensureWebSocket() {
         if (data.session_id) currentSessionId = data.session_id;
         if (data.channel_id) currentChannelId = data.channel_id || "default";
         
+        if (data.buffer_transcription && data.buffer_transcription.trim()) {
+          showLiveIndicator();
+        }
         // Apply any pending segment updates now that lines exist
         for (const [pid, upd] of pendingSegmentUpdates.entries()) {
           const l = lineById.get(pid);
@@ -421,7 +424,8 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   for (const item of safeLines) {
     const rawTxt = (item?.text || "").trim();
     if (!rawTxt) continue;
-    if (item?.state === "LIVE") continue;
+    // Alleen tonen als batch de tekst heeft goedgekeurd
+    if (!item?.text_batch) continue;
 
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
     const st = (item?.state || "FINAL").toUpperCase();
