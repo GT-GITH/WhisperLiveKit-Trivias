@@ -361,7 +361,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     const sessionId = currentSessionId || "";
     const channelId = currentChannelId || "default";
     
-    const audioAttr = startMs > 0 
+    const audioAttr = startMs >= 0 
       ? ` data-start-ms="${startMs}" data-end-ms="${endMs}" data-session="${escapeHtml(sessionId)}" data-channel="${escapeHtml(channelId)}"` 
       : "";
 
