@@ -212,7 +212,6 @@ function ensureWebSocket() {
         const id = data.id;
         if (!id) return;
 
-        }
         let line = lineById.get(id);
         if (!line) {
           // Nieuw segment (bijv. zin-segment van batch) — toevoegen aan currentLines
