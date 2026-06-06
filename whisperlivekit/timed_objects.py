@@ -241,12 +241,16 @@ class FrontData():
     buffer_translation: str = ''
     remaining_time_transcription: float = 0.
     remaining_time_diarization: float = 0.
+    session_id: str = ''
+    channel_id: str = ''
     
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the front-end data payload."""
         _dict: Dict[str, Any] = {
             'type': 'front_data',
             'status': self.status,
+            'session_id': self.session_id,
+            'channel_id': self.channel_id,
             'lines': [line.to_dict() for line in self.lines if (line.text or line.speaker == -2)],
             'buffer_transcription': self.buffer_transcription,
             'buffer_diarization': self.buffer_diarization,

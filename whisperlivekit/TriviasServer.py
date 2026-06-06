@@ -14,6 +14,7 @@ from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
 
+
 # ====== Logging setup ======
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.DEBUG)
@@ -106,6 +107,18 @@ class SessionManager:
 
 
 session_manager = SessionManager()
+
+# Registry: session_id + channel_id → wav_path
+# Gevuld door AudioProcessor via callback bij sessie-afsluiting
+_wav_registry: Dict[str, str] = {}  # key = f"{session_id}:{channel_id}"
+
+def register_wav_path(session_id: str, channel_id: str, wav_path: str) -> None:
+    key = f"{session_id}:{channel_id}"
+    _wav_registry[key] = wav_path
+    logger.info(f"[WAV REGISTRY] {key} → {wav_path}")
+
+def get_wav_path(session_id: str, channel_id: str) -> Optional[str]:
+    return _wav_registry.get(f"{session_id}:{channel_id}")
 
 # ====== Shared transcription engine ======
 transcription_engine: Optional[TranscriptionEngine] = None
@@ -307,7 +320,59 @@ async def get_session(session_id: str):
         return JSONResponse({"error": "unknown session_id"}, status_code=404)
     return JSONResponse(meta)
 
+from fastapi.responses import StreamingResponse
+import wave
+import io
 
+@app.get("/audio/{session_id}/{channel_id}")
+async def serve_audio_slice(
+    session_id: str,
+    channel_id: str,
+    start_ms: int = Query(default=0),
+    end_ms: int = Query(default=0),
+):
+    """Serveer een WAV-slice voor terugluisteren."""
+    wav_path = get_wav_path(session_id, channel_id)
+    if not wav_path:
+        return JSONResponse({"error": "session or channel not found"}, status_code=404)
+    
+    path = Path(wav_path)
+    if not path.exists():
+        return JSONResponse({"error": "wav file not found"}, status_code=404)
+
+    try:
+        with wave.open(str(path), "rb") as wf:
+            sample_rate = wf.getframerate()
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            total_frames = wf.getnframes()
+
+            start_frame = int((start_ms / 1000.0) * sample_rate)
+            end_frame = int((end_ms / 1000.0) * sample_rate) if end_ms > 0 else total_frames
+            end_frame = min(end_frame, total_frames)
+            n_frames = max(0, end_frame - start_frame)
+
+            wf.setpos(start_frame)
+            raw = wf.readframes(n_frames)
+
+        # Schrijf slice als WAV naar buffer
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as out:
+            out.setnchannels(n_channels)
+            out.setsampwidth(sampwidth)
+            out.setframerate(sample_rate)
+            out.writeframes(raw)
+        buf.seek(0)
+
+        return StreamingResponse(
+            buf,
+            media_type="audio/wav",
+            headers={"Content-Disposition": "inline"},
+        )
+    except Exception as e:
+        logger.warning(f"[AUDIO SERVE] error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+    
 # ====== WebSocket result handler ======
 async def handle_websocket_results(websocket: WebSocket, results_generator):
     """Consumes results from the audio processor and sends them via WebSocket."""
@@ -395,7 +460,13 @@ async def websocket_endpoint(
         except asyncio.CancelledError:
             logger.info("WebSocket results handler task was cancelled.")
         except Exception as e:
-            logger.warning(f"Exception while awaiting websocket_task completion: {e}")
+            logger.warning(f"Exception while awaiting websocket_task completion: {e}") 
+            # Registreer WAV pad voor terugluisteren
+        if audio_processor._wav_path:
+            register_wav_path(sid, channel_id or "default", str(audio_processor._wav_path))
+        
+        logger.info(f"Cleaning up WebSocket endpoint for session {sid}...")
+                
         await audio_processor.cleanup()
         logger.info(f"WebSocket endpoint cleaned up successfully for session {sid}.")
 

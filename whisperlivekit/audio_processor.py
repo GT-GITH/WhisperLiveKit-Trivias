@@ -881,7 +881,9 @@ class AudioProcessor:
                     buffer_diarization=buffer_diarization_text,
                     buffer_translation=buffer_translation_text,
                     remaining_time_transcription=state.remaining_time_transcription,
-                    remaining_time_diarization=state.remaining_time_diarization if self.args.diarization else 0
+                    remaining_time_diarization=state.remaining_time_diarization if self.args.diarization else 0,
+                    session_id=self.session_id,
+                    channel_id=self.channel_id,
                 )
                                 
                 should_push = (response != self.last_response_content)

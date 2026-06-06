@@ -32,6 +32,8 @@ let availableMics = [];
 let selectedDeviceId = null;
 
 let pendingSegmentUpdates = new Map(); // id -> last update payload
+let currentSessionId = null;
+let currentChannelId = "default";
 
 // DOM elements
 const recordButton = document.getElementById("recordButton");
@@ -253,6 +255,9 @@ function ensureWebSocket() {
         currentLines = lines;
         rebuildLineIndex(currentLines);
         
+        if (data.session_id) currentSessionId = data.session_id;
+        if (data.channel_id) currentChannelId = data.channel_id || "default";
+        
         // Apply any pending segment updates now that lines exist
         for (const [pid, upd] of pendingSegmentUpdates.entries()) {
           const l = lineById.get(pid);
@@ -349,8 +354,19 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
     const idAttr = item?.id ? ` data-id="${escapeHtml(item.id)}"` : "";
 
+    const startMs = getStartMs(item);
+    const endMs = Number.isFinite(item?.end_ms) ? item.end_ms 
+                  : Number.isFinite(item?.end) ? Math.round(item.end * 1000) 
+                  : 0;
+    const sessionId = currentSessionId || "";
+    const channelId = currentChannelId || "default";
+    
+    const audioAttr = startMs > 0 
+      ? ` data-start-ms="${startMs}" data-end-ms="${endMs}" data-session="${escapeHtml(sessionId)}" data-channel="${escapeHtml(channelId)}"` 
+      : "";
+
     htmlParts.push(
-      `<div class="${cls}"${idAttr}>${prefix}${escapeHtml(rawTxt)}</div>`
+      `<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${prefix}${escapeHtml(rawTxt)}</div>`
     );
   }
 
@@ -659,6 +675,33 @@ if (micSelect) {
     }
   });
 }
+
+// Klik op segment → terugluisteren
+liveTranscriptDiv.addEventListener("click", async (e) => {
+  const seg = e.target.closest(".seg-clickable");
+  if (!seg) return;
+
+  const startMs = parseInt(seg.dataset.startMs || "0", 10);
+  const endMs = parseInt(seg.dataset.endMs || "0", 10);
+  const session = seg.dataset.session;
+  const channel = seg.dataset.channel;
+
+  if (!session || startMs === 0) return;
+
+  const url = `/audio/${encodeURIComponent(session)}/${encodeURIComponent(channel)}?start_ms=${startMs}&end_ms=${endMs}`;
+
+  // Verwijder vorige audio player
+  const prev = document.getElementById("trivias-audio-player");
+  if (prev) prev.remove();
+
+  const audio = document.createElement("audio");
+  audio.id = "trivias-audio-player";
+  audio.controls = true;
+  audio.autoplay = true;
+  audio.src = url;
+  audio.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:9999;background:#1e293b;border-radius:8px;";
+  document.body.appendChild(audio);
+});
 
 checkMicPermission();
 updateRecordButtonUI();
