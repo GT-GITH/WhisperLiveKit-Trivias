@@ -48,6 +48,8 @@ const asrStatusSpan = document.getElementById("asrStatus");
 const timerSpan = document.getElementById("recordingTimer");
 const hintText = document.getElementById("hintText");
 const micSelect = document.getElementById("micSelect");
+// Zin-segmenten: overschrijven batch groups na front_data render
+const sentenceSegmentMap = new Map(); // parentId → [zinnen]
 
 function initWebsocketUrl() {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -214,26 +216,48 @@ function ensureWebSocket() {
 
         let line = lineById.get(id);
         if (!line) {
-          // Nieuw segment (bijv. zin-segment van batch) — toevoegen aan currentLines
           if (data.text_final || data.text_batch) {
-            const newLine = {
-              id: id,
-              text: data.text_final || data.text_batch || "",
-              text_batch: data.text_batch || null,
-              state: data.state || "FINAL",
-              start_ms: data.start_ms || 0,
-              end_ms: data.end_ms || 0,
-              speaker: -1,
-            };
-            currentLines.push(newLine);
-            lineById.set(id, newLine);
-            renderTranscript(currentLines, lastBufferTranscription, lastBufferTranslation, lastStatus);
+            const sentMatch = id.match(/^(.+)_s(\d+)$/);
+            if (sentMatch) {
+              const parentId = sentMatch[1];
+              if (!sentenceSegmentMap.has(parentId)) {
+                sentenceSegmentMap.set(parentId, []);
+              }
+              sentenceSegmentMap.get(parentId).push({
+                id: id,
+                text: data.text_final || data.text_batch || "",
+                text_batch: data.text_batch || null,
+                state: data.state || "FINAL",
+                start_ms: data.start_ms || 0,
+                end_ms: data.end_ms || 0,
+                speaker: -1,
+              });
+            } else {
+              const newLine = {
+                id: id,
+                text: data.text_final || data.text_batch || "",
+                text_batch: data.text_batch || null,
+                state: data.state || "FINAL",
+                start_ms: data.start_ms || 0,
+                end_ms: data.end_ms || 0,
+                speaker: -1,
+              };
+              currentLines.push(newLine);
+              lineById.set(id, newLine);
+            }
+            // Render met zin-segmenten
+            let renderLines = currentLines.map(l => {
+              const sents = sentenceSegmentMap.get(l.id);
+              return sents ? sents : [l];
+            }).flat();
+            renderTranscript(renderLines, lastBufferTranscription, lastBufferTranslation, lastStatus);
+
           } else {
             pendingSegmentUpdates.set(id, data);
           }
           return;
         }
-        
+
         if (data.text_batch !== undefined) {
           line.text_batch = data.text_batch;
         }
@@ -295,12 +319,14 @@ function ensureWebSocket() {
         lastBufferTranslation = buffer_translation;
         lastStatus = status;
 
-        renderTranscript(
-          currentLines,
-          buffer_transcription,
-          buffer_translation,
-          status
-        );
+        // Vervang batch groups door zin-segmenten indien beschikbaar
+        let renderLines = currentLines.map(l => {
+          const sents = sentenceSegmentMap.get(l.id);
+          return sents ? sents : [l];
+        }).flat();
+        
+        renderTranscript(renderLines, lastBufferTranscription, lastBufferTranslation, lastStatus);
+
         return;
       }
 
