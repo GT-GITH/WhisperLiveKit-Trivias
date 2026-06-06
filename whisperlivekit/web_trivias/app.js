@@ -342,7 +342,6 @@ function ensureWebSocket() {
         }
 
         lastBufferTranscription = buffer_transcription;
-        console.log("[DEBUG] buffer_transcription:", buffer_transcription);
         lastBufferTranslation = buffer_translation;
         lastStatus = status;
 
