@@ -40,14 +40,14 @@ SILENCE_TOKEN_MIN_DURATION = 0.10  # 100ms (mag 0.0 als je alles wil)
 # Vanaf hoeveel seconden stilte we de decoder (AlignAtt) resetten
 SILENCE_RESET_THRESHOLD = 8.0  # sneller resetten om vervuilde live-state kort te houden
 
-ENABLE_HARD_CAP = True
+ENABLE_HARD_CAP = False
 
 #BATCH_CONTEXT_PAD_MS = 600  # FO default pre/post padding
 BATCH_CONTEXT_PAD_LEFT_MS = 600
-BATCH_CONTEXT_PAD_RIGHT_MS = 600
+BATCH_CONTEXT_PAD_RIGHT_MS = 0
 
 # Batch windowing (Stap 1)
-BATCH_TARGET_WINDOW_MS = 15_000   # 15s
+BATCH_TARGET_WINDOW_MS = 30_000   # 30s
 BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
 BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
 
