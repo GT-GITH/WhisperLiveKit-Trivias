@@ -385,11 +385,13 @@ function getStartMs(item) {
 
 function renderTranscript(lines, bufferTranscription, bufferTranslation, status) {
   if (!liveTranscriptDiv) return;
-
+  const scrollParent = liveTranscriptDiv.parentElement;
+  const isAtBottom = !scrollParent || 
+  (scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 80);
   if (status === "no_audio_detected") {
-    liveTranscriptDiv.innerHTML =
+      liveTranscriptDiv.innerHTML =
       "<em>Geen audio gedetecteerd. Probeer iets dichter bij de microfoon te spreken.</em>";
-    return;
+      return;
   }
 
   const safeLines = (lines || []).filter((item) => {
@@ -404,7 +406,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
   for (const item of safeLines) {
 
-    console.log("[RENDER]", item.id, item.state, "text:", item.text, "text_batch:", item.text_batch);
+   // console.log("[RENDER]", item.id, item.state, "text:", item.text, "text_batch:", item.text_batch);
     const rawTxt = (item?.text_batch || item?.text || "").trim();
     if (!rawTxt) continue;
     // Alleen tonen als batch de tekst heeft goedgekeurd
@@ -466,6 +468,10 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
   liveTranscriptDiv.innerHTML =
     htmlParts.join("") || "Nog geen tekst ontvangen";
+
+  if (isAtBottom && scrollParent) {
+    scrollParent.scrollTop = scrollParent.scrollHeight;
+  }
 
   setAsrStatus("Live transcriptie actief");
 }
