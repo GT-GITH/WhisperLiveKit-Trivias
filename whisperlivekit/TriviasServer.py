@@ -391,8 +391,13 @@ async def serve_audio_slice(
     """Serveer een WAV-slice voor terugluisteren."""
     wav_path = get_wav_path(session_id, channel_id)
     if not wav_path:
-        return JSONResponse({"error": "session or channel not found"}, status_code=404)
-    
+        # Fallback: zoek op disk
+        recordings_dir = Path("recordings")
+        pattern = f"session_{session_id}_{channel_id}_*.wav"
+        matches = list(recordings_dir.glob(pattern))
+        if not matches:
+            return JSONResponse({"error": "session or channel not found"}, status_code=404)
+        wav_path = str(sorted(matches, key=lambda f: f.stat().st_mtime)[-1])   
     path = Path(wav_path)
     if not path.exists():
         return JSONResponse({"error": "wav file not found"}, status_code=404)
