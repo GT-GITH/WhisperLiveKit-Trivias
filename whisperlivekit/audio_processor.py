@@ -686,9 +686,18 @@ class AudioProcessor:
 
                     # ✅ ASR MAG ALLEEN HIER
                     self.transcription.insert_audio_chunk(pcm_array, stream_time_end_of_current_pcm)
-                    new_tokens, current_audio_processed_upto = await asyncio.to_thread(
-                        self.transcription.process_iter
-                    )
+
+                    try:
+                        new_tokens, current_audio_processed_upto = await asyncio.wait_for(
+                            asyncio.to_thread(self.transcription.process_iter),
+                            timeout=15.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("[LIVE][TIMEOUT] process_iter exceeded 15s — forcing decoder reset")
+                        await asyncio.to_thread(self._hard_reset_live_decoder, "process_iter_timeout")
+                        new_tokens = []
+                        current_audio_processed_upto = self.state.end_buffer                    
+                    
                     new_tokens = new_tokens or []
 
                 _buffer_transcript = self.transcription.get_buffer()
