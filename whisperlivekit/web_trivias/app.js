@@ -113,10 +113,27 @@ async function loadSessionTranscript(sessionId, channelId) {
     for (const seg of (data.segments || [])) {
       const id = seg.id;
       if (!id) continue;
+      
       const sentMatch = id.match(/^(.+)_s(\d+)$/);
       if (sentMatch) {
         const parentId = sentMatch[1];
-        if (!sentenceSegmentMap.has(parentId)) sentenceSegmentMap.set(parentId, []);
+        if (!sentenceSegmentMap.has(parentId)) {
+          sentenceSegmentMap.set(parentId, []);
+          // Maak synthetische parent aan als die nog niet bestaat
+          if (!lineById.has(parentId)) {
+            const parentLine = {
+              id: parentId,
+              text: "",
+              text_batch: "placeholder",
+              state: "FINAL",
+              start_ms: seg.start_ms || 0,
+              end_ms: seg.end_ms || 0,
+              speaker: -1,
+            };
+            currentLines.push(parentLine);
+            lineById.set(parentId, parentLine);
+          }
+        }
         sentenceSegmentMap.get(parentId).push({
           id, text: seg.text_final || seg.text_batch || "",
           text_batch: seg.text_batch || null,
