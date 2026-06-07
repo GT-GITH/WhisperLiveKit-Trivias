@@ -15,6 +15,7 @@ from whisperlivekit.timed_objects import SegmentUpdate
 
 import numpy as np
 import hashlib  
+import json
 
 from whisperlivekit.core import (TranscriptionEngine,
                                  online_diarization_factory, online_factory,
@@ -243,6 +244,34 @@ class AudioProcessor:
     async def emit_segment_update(self, upd: SegmentUpdate) -> None:
         """Queue a WS update that will be yielded by results_formatter."""
         await self._ws_update_queue.put(upd)
+        # Persisteer naar JSON naast de WAV
+        self._persist_segment_update(upd)
+
+    def _persist_segment_update(self, upd: SegmentUpdate) -> None:
+        """Schrijf segment update naar JSON transcript bestand."""
+        if not self._wav_path:
+            return
+        try:
+            json_path = Path(str(self._wav_path).replace(".wav", ".json"))
+            # Lees bestaande entries
+            entries = []
+            if json_path.exists():
+                try:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        entries = json.load(f)
+                except Exception:
+                    entries = []
+            # Voeg toe of update bestaande entry
+            entry = upd.to_dict()
+            existing_ids = {e["id"]: i for i, e in enumerate(entries)}
+            if upd.id in existing_ids:
+                entries[existing_ids[upd.id]] = entry
+            else:
+                entries.append(entry)
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(entries, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"[TRANSCRIPT][PERSIST] failed: {e}")
 
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
@@ -1175,7 +1204,7 @@ class AudioProcessor:
                 logger.info(
                     f"[BATCH][SENTENCES] job={job['job_id']} "
                     f"num_sentences={len(sentence_segments)} "
-                    f"segments={[(s['text'][:30], s['start'], s['end']) for s in sentence_segments[:3]]}"
+                    f"segments={[(s['text'][:30], s['start'], s['end']) for s in sentence_segments[:10]]}"
                 )
                 batch_avg_logprob = result["avg_logprob"]
                 batch_compression = result["compression_ratio"]

@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import uuid
+import json
+
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, Any, Optional, Iterable
@@ -308,11 +310,65 @@ async def root():
     """Serve de inline Trivias STT webinterface."""
     return HTMLResponse(get_inline_ui_html())
 
-@app.get("/sessions")
-async def list_sessions():
-    """Debug endpoint: toon alle actieve / bekende sessies."""
-    return JSONResponse({"sessions": session_manager.all()})
+@app.get("/sessions/list")
+async def list_sessions_from_disk():
+    """Lijst van alle sessies op basis van WAV bestanden op disk."""
+    recordings_dir = Path("recordings")
+    if not recordings_dir.exists():
+        return JSONResponse({"sessions": []})
+    
+    sessions = {}
+    for wav_file in sorted(recordings_dir.glob("session_*.wav"), 
+                           key=lambda f: f.stat().st_mtime, reverse=True):
+        name = wav_file.stem  # session_{uuid}_{channel}_{ts}
+        parts = name.split("_")
+        if len(parts) < 4:
+            continue
+        # Formaat: session_{uuid}_{channel}_{timestamp}
+        # uuid kan underscores bevatten → timestamp is altijd laatste, channel is voorlaatste
+        timestamp_part = parts[-1]  # bijv 20260607T104051Z
+        channel_part = parts[-2]    # bijv default
+        session_uuid = "_".join(parts[1:-2])  # alles tussen session_ en channel
+        
+        key = session_uuid
+        if key not in sessions:
+            sessions[key] = {
+                "session_id": session_uuid,
+                "channels": [],
+                "created_at": timestamp_part,
+                "wav_size_mb": round(wav_file.stat().st_size / 1024 / 1024, 2),
+                "has_transcript": wav_file.with_suffix(".json").exists(),
+            }
+        sessions[key]["channels"].append(channel_part)
+    
+    return JSONResponse({"sessions": list(sessions.values())})
 
+
+@app.get("/sessions/{session_id}/transcript")
+async def get_session_transcript(session_id: str, channel_id: str = Query(default="default")):
+    """Haal het opgeslagen transcript op voor een sessie."""
+    recordings_dir = Path("recordings")
+    # Zoek JSON bestand voor deze sessie + channel
+    pattern = f"session_{session_id}_{channel_id}_*.json"
+    matches = list(recordings_dir.glob(pattern))
+    if not matches:
+        return JSONResponse({"error": "transcript not found"}, status_code=404)
+    
+    # Nieuwste bestand
+    json_path = sorted(matches, key=lambda f: f.stat().st_mtime)[-1]
+    wav_path = json_path.with_suffix(".wav")
+    
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            segments = json.load(f)
+        return JSONResponse({
+            "session_id": session_id,
+            "channel_id": channel_id,
+            "wav_available": wav_path.exists(),
+            "segments": segments,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/sessions/{session_id}")
 async def get_session(session_id: str):

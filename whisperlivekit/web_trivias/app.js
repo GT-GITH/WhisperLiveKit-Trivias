@@ -50,6 +50,129 @@ const hintText = document.getElementById("hintText");
 const micSelect = document.getElementById("micSelect");
 // Zin-segmenten: overschrijven batch groups na front_data render
 const sentenceSegmentMap = new Map(); // parentId → [zinnen]
+
+// === Sessie browser ===
+const sessionsBtn = document.getElementById("sessionsBtn");
+const sessionsModal = document.getElementById("sessionsModal");
+const sessionsModalClose = document.getElementById("sessionsModalClose");
+const sessionsList = document.getElementById("sessionsList");
+
+async function loadSessionsList() {
+  if (!sessionsList) return;
+  sessionsList.innerHTML = '<p class="sessions-loading">Laden...</p>';
+  try {
+    const resp = await fetch("/sessions/list");
+    const data = await resp.json();
+    if (!data.sessions || data.sessions.length === 0) {
+      sessionsList.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
+      return;
+    }
+    sessionsList.innerHTML = "";
+    for (const s of data.sessions) {
+      const date = s.created_at 
+        ? s.created_at.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, "$3-$2-$1 $4:$5")
+        : "onbekend";
+      const hasTranscript = s.has_transcript;
+      const item = document.createElement("div");
+      item.className = "session-item";
+      item.innerHTML = `
+        <div class="session-item-meta">
+          <span class="session-item-id">${s.session_id.substring(0, 18)}…</span>
+          <span class="session-item-date">📅 ${date} · 🎙 ${s.channels.join(", ")} · ${s.wav_size_mb} MB</span>
+        </div>
+        <span class="session-item-badge ${hasTranscript ? "" : "no-transcript"}">
+          ${hasTranscript ? "transcript ✓" : "geen transcript"}
+        </span>`;
+      if (hasTranscript) {
+        item.addEventListener("click", () => loadSessionTranscript(s.session_id, s.channels[0] || "default"));
+      }
+      sessionsList.appendChild(item);
+    }
+  } catch (e) {
+    sessionsList.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
+  }
+}
+
+async function loadSessionTranscript(sessionId, channelId) {
+  try {
+    const resp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/transcript?channel_id=${encodeURIComponent(channelId)}`);
+    if (!resp.ok) {
+      alert("Transcript niet gevonden.");
+      return;
+    }
+    const data = await resp.json();
+    // Sluit modal
+    sessionsModal.classList.add("hidden");
+    // Laad in UI
+    currentSessionId = data.session_id;
+    currentChannelId = data.channel_id;
+    currentLines = [];
+    lineById = new Map();
+    sentenceSegmentMap.clear();
+    // Verwerk segments als segment_updates
+    for (const seg of (data.segments || [])) {
+      const id = seg.id;
+      if (!id) continue;
+      const sentMatch = id.match(/^(.+)_s(\d+)$/);
+      if (sentMatch) {
+        const parentId = sentMatch[1];
+        if (!sentenceSegmentMap.has(parentId)) sentenceSegmentMap.set(parentId, []);
+        sentenceSegmentMap.get(parentId).push({
+          id, text: seg.text_final || seg.text_batch || "",
+          text_batch: seg.text_batch || null,
+          state: "FINAL",
+          start_ms: seg.start_ms || 0,
+          end_ms: seg.end_ms || 0,
+          speaker: -1,
+        });
+      } else {
+        const line = {
+          id, text: seg.text_final || seg.text_batch || "",
+          text_batch: seg.text_batch || null,
+          state: "FINAL",
+          start_ms: seg.start_ms || 0,
+          end_ms: seg.end_ms || 0,
+          speaker: -1,
+        };
+        currentLines.push(line);
+        lineById.set(id, line);
+      }
+    }
+    // Sorteer sentenceSegmentMap entries
+    for (const [pid, sents] of sentenceSegmentMap.entries()) {
+      sents.sort((a, b) => a.start_ms - b.start_ms);
+    }
+    const renderLines = currentLines.map(l => {
+      const sents = sentenceSegmentMap.get(l.id);
+      return sents ? sents : [l];
+    }).flat();
+    if (liveTranscriptDiv) {
+      renderTranscript(renderLines, "", "", "active_transcription");
+    }
+    setAsrStatus(`Sessie geladen: ${sessionId.substring(0, 12)}…`);
+  } catch (e) {
+    alert("Fout bij laden transcript: " + e.message);
+  }
+}
+
+if (sessionsBtn) {
+  sessionsBtn.addEventListener("click", () => {
+    sessionsModal.classList.remove("hidden");
+    loadSessionsList();
+  });
+}
+
+if (sessionsModalClose) {
+  sessionsModalClose.addEventListener("click", () => {
+    sessionsModal.classList.add("hidden");
+  });
+}
+
+if (sessionsModal) {
+  sessionsModal.addEventListener("click", (e) => {
+    if (e.target === sessionsModal) sessionsModal.classList.add("hidden");
+  });
+}
 // Rol mapping: channel_id → leesbare naam
 const CHANNEL_ROLE_LABELS = {
   "employee":    "Medewerker",
@@ -385,9 +508,10 @@ function getStartMs(item) {
 
 function renderTranscript(lines, bufferTranscription, bufferTranslation, status) {
   if (!liveTranscriptDiv) return;
-  const scrollParent = liveTranscriptDiv.parentElement;
-  const isAtBottom = !scrollParent || 
-  (scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 80);
+
+  const scrollParent = liveTranscriptDiv;
+  const isAtBottom = (scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 80);
+
   if (status === "no_audio_detected") {
       liveTranscriptDiv.innerHTML =
       "<em>Geen audio gedetecteerd. Probeer iets dichter bij de microfoon te spreken.</em>";
@@ -406,7 +530,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
   for (const item of safeLines) {
 
-   // console.log("[RENDER]", item.id, item.state, "text:", item.text, "text_batch:", item.text_batch);
+    console.log("[RENDER]", item.id, item.state, "text:", item.text, "text_batch:", item.text_batch);
     const rawTxt = (item?.text_batch || item?.text || "").trim();
     if (!rawTxt) continue;
     // Alleen tonen als batch de tekst heeft goedgekeurd
@@ -469,7 +593,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   liveTranscriptDiv.innerHTML =
     htmlParts.join("") || "Nog geen tekst ontvangen";
 
-  if (isAtBottom && scrollParent) {
+  if (isAtBottom) {
     scrollParent.scrollTop = scrollParent.scrollHeight;
   }
 
