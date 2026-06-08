@@ -52,6 +52,9 @@ BATCH_TARGET_WINDOW_MS = 30_000   # 30s
 BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
 BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
 
+_STATE_TOKENS_MAX_DURATION_S: float = 600.0  # maximaal 10 minuten tokens in state.tokens
+_STATE_TOKENS_PRUNE_TRIGGER: int = 13_000    # alleen prunen boven deze grens
+
 def _sha1_pcm16(audio_f32: Optional[np.ndarray]) -> str:
     if audio_f32 is None or audio_f32.size == 0:
         return ""
@@ -765,6 +768,13 @@ class AudioProcessor:
                     self.state.end_buffer = max(candidate_end_times)
                     self.state.new_tokens.extend(new_tokens)
                     self.state.new_tokens_buffer = _buffer_transcript
+
+                    if len(self.state.tokens) > _STATE_TOKENS_PRUNE_TRIGGER:
+                        _cutoff = self.state.tokens[-1].end - _STATE_TOKENS_MAX_DURATION_S
+                        if _cutoff > 0.0:
+                            self.state.tokens = [
+                                t for t in self.state.tokens if t.end >= _cutoff
+                            ]
 
                 if self.translation_queue:
                     for token in new_tokens:
