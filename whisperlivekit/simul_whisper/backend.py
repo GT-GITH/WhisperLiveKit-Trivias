@@ -81,7 +81,7 @@ class BatchFasterWhisperASR:
             condition_on_previous_text=self.condition_on_previous_text,
             temperature=self.temperature,
             initial_prompt=self.initial_prompt,
-            vad_filter=False,
+            vad_filter=True,
             word_timestamps=word_timestamps,
             no_speech_threshold=0.9,
         )

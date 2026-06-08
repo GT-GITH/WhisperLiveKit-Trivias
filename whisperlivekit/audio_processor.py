@@ -49,10 +49,9 @@ BATCH_CONTEXT_PAD_LEFT_MS = 600
 BATCH_CONTEXT_PAD_RIGHT_MS = 0
 
 # Batch windowing (Stap 1)
-BATCH_TARGET_WINDOW_MS   = 30_000   # 30s — trigger na eerste stilte voorbij dit punt
-BATCH_MIN_WINDOW_MS      = 15_000   # (nu nog niet gebruikt, maar handig)
-BATCH_HARD_CAP_MS        = 45_000   # (nu nog niet gebruikt, maar handig)
-BATCH_HARD_MAX_DECODE_MS = 27_000   # FasterWhisper mag nooit meer dan 27s krijgen (Whisper 30s grens)
+BATCH_TARGET_WINDOW_MS = 30_000   # 30s
+BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
+BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
 
 _STATE_TOKENS_MAX_DURATION_S: float = 600.0  # maximaal 10 minuten tokens in state.tokens
 _STATE_TOKENS_PRUNE_TRIGGER: int = 13_000    # alleen prunen boven deze grens
@@ -1174,8 +1173,7 @@ class AudioProcessor:
                 
                 # ====== Stap 2: ECHTE batch decode + SAFE overwrite (FO) ======
                 # Fallback live text: best effort window transcript from current lines (FINAL only)
-                # We bewaren start_ms per segment zodat we de kop kunnen splitsen bij een hard cap.
-                live_segs_data: List[dict] = []
+                live_parts: List[str] = []
                 for seg in lines:
                     if hasattr(seg, "is_silence") and seg.is_silence():
                         continue
@@ -1192,34 +1190,13 @@ class AudioProcessor:
 
                     t = (getattr(seg, "text", None) or "").strip()
                     if t:
-                        live_segs_data.append({"text": t, "start_ms": seg_start_ms})
+                        live_parts.append(t)
 
-                live_text = " ".join(s["text"] for s in live_segs_data).strip()
+                live_text = " ".join(live_parts).strip()
 
                 # 2) Decode audio slice met padding (FO)
                 decode_start_ms = max(0, start_ms - BATCH_CONTEXT_PAD_LEFT_MS)
                 decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_RIGHT_MS
-
-                # Hard cap: FasterWhisper mag nooit meer dan BATCH_HARD_MAX_DECODE_MS krijgen.
-                # Bij overschrijding nemen we de LAATSTE N seconden — die hebben de minste kans
-                # op Whisper's 30s-grens timestamp-drift. De uitgesloten kop wordt apart als
-                # zelfgoedgekeurde live-tekst batch groep geëmit zodat er geen gat ontstaat.
-                decode_len_ms = decode_end_ms - decode_start_ms
-                batch_window_start_ms = start_ms   # default: dekt het hele window
-                live_head_text = None
-
-                if decode_len_ms > BATCH_HARD_MAX_DECODE_MS:
-                    trimmed_start_ms = decode_start_ms
-                    decode_start_ms = decode_end_ms - BATCH_HARD_MAX_DECODE_MS
-                    batch_window_start_ms = decode_start_ms
-                    head_parts = [s["text"] for s in live_segs_data if s["start_ms"] < decode_start_ms]
-                    live_head_text = " ".join(head_parts).strip() or None
-                    logger.warning(
-                        f"[BATCH][DECODE][CAP] job={job['job_id']} "
-                        f"decode {decode_len_ms/1000:.1f}s > {BATCH_HARD_MAX_DECODE_MS/1000:.1f}s cap "
-                        f"→ decode_start {trimmed_start_ms}ms→{decode_start_ms}ms "
-                        f"head_live='{(live_head_text or '')[:60]}'"
-                    )
 
                 audio_f32 = self._read_wav_slice_float32(decode_start_ms, decode_end_ms)
                 logger.info(
@@ -1338,37 +1315,10 @@ class AudioProcessor:
                     f"final_len={len(final_txt)}"
                 )
 
-                # 4a) Uitgesloten kop (door hard cap): emit live-tekst als zelfgoedgekeurde batch.
-                # Dit vult het gat dat de cap zou veroorzaken — de gebruiker ziet geen lege seconden.
-                if live_head_text:
-                    async with self.lock:
-                        head_gid = self.tokens_alignment.apply_batch_group(
-                            window_start_ms=start_ms,
-                            window_end_ms=batch_window_start_ms,
-                            text_final=live_head_text,
-                            text_batch=live_head_text,
-                            speaker=-1,
-                        )
-                    logger.info(
-                        f"[BATCH][HEAD] job={job['job_id']} group={head_gid} "
-                        f"window={start_ms}..{batch_window_start_ms} text='{live_head_text[:60]}'"
-                    )
-                    try:
-                        await self.emit_segment_update(SegmentUpdate(
-                            id=str(head_gid),
-                            state="FINAL",
-                            start_ms=start_ms,
-                            end_ms=batch_window_start_ms,
-                            text_batch=live_head_text,
-                            text_final=live_head_text,
-                        ))
-                    except Exception as head_err:
-                        logger.warning(f"[BATCH][HEAD][EMIT] {head_err}")
-
-                # 4b) Mutate main segment (het batch-gedekte gedeelte)
+                # 4) Mutate segment
                 async with self.lock:
                     group_id = self.tokens_alignment.apply_batch_group(
-                        window_start_ms=batch_window_start_ms,
+                        window_start_ms=start_ms,
                         window_end_ms=end_ms,
                         text_final=final_txt,
                         text_batch=(batch_txt if (use_batch_as_final and batch_txt) else None),
