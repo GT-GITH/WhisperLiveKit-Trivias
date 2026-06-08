@@ -1379,10 +1379,11 @@ class AudioProcessor:
                 logger.info("FFmpeg manager stopped.")
             except Exception as e:
                 logger.warning(f"Error stopping FFmpeg manager: {e}")
-        if self.diarization:
-            self.diarization.close()
-
-        self._close_wav()    
+        try:
+            if self.diarization:
+                self.diarization.close()
+        finally:
+            self._close_wav()
         logger.info("AudioProcessor cleanup complete.")
 
     def _processing_tasks_done(self) -> bool:
