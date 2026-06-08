@@ -1315,13 +1315,13 @@ class AudioProcessor:
                     f"final_len={len(final_txt)}"
                 )
 
-                # 4) Mutate  segment 
+                # 4) Mutate  segment
                 async with self.lock:
                     group_id = self.tokens_alignment.apply_batch_group(
                         window_start_ms=start_ms,
                         window_end_ms=end_ms,
                         text_final=final_txt,
-                        text_batch=(batch_txt if batch_txt else None),
+                        text_batch=(batch_txt if (use_batch_as_final and batch_txt) else None),
                         speaker=-1,
                     )
 
@@ -1357,7 +1357,7 @@ class AudioProcessor:
                             state="FINAL",
                             start_ms=start_ms,
                             end_ms=end_ms,
-                            text_batch=(batch_txt if batch_txt else None),
+                            text_batch=(batch_txt if (use_batch_as_final and batch_txt) else None),
                             text_final=final_txt
                         )
                         await self.emit_segment_update(upd)

@@ -124,7 +124,7 @@ async function loadSessionTranscript(sessionId, channelId) {
             const parentLine = {
               id: parentId,
               text: "",
-              text_batch: "placeholder",
+              text_batch: null,
               state: "FINAL",
               start_ms: seg.start_ms || 0,
               end_ms: seg.end_ms || 0,
@@ -560,14 +560,10 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
     if (st === "LIVE") {
       cls += " seg-live";
-    } else if (st === "FINAL") {
-      if (item.text_batch && item.text === item.text_batch) {
-        cls += " seg-batch";   // echte batch overwrite
-      } else {
-        cls += " seg-final";   // live-final
-      }
+    } else if (item.text_batch) {
+      cls += " seg-batch";   // batch-goedgekeurde tekst
     } else {
-      cls += " seg-final";
+      cls += " seg-final";   // live-final (alleen zichtbaar als text_batch null is)
     }
 
     const prefix =
