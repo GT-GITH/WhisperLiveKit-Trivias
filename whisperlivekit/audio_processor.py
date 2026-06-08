@@ -1226,45 +1226,66 @@ class AudioProcessor:
 
                 batch_txt = (batch_txt or "").strip()
 
+                # --- Fix 1: filter hallucination-zinnen per sentence, niet op de volledige tekst ---
+                # Een enkel ***-artefact aan de stilte-grens mag niet het hele venster afkeuren.
+                HALLUCINATION_PATTERNS = [
+                    "***",
+                    "Ondertiteling",
+                    "ondertiteling",
+                    "Ondertitels",
+                    "ondertitels",
+                    "www.",
+                    ".com",
+                    "Abonneer",
+                    "abonneer",
+                    "Subtitles by",
+                    "Subscribe",
+                    "subscribe",
+                ]
+                if sentence_segments:
+                    clean_sentences = [
+                        s for s in sentence_segments
+                        if not any(p in (s.get("text") or "") for p in HALLUCINATION_PATTERNS)
+                    ]
+                    if len(clean_sentences) < len(sentence_segments):
+                        removed = len(sentence_segments) - len(clean_sentences)
+                        logger.info(
+                            f"[BATCH][FILTER] job={job['job_id']} "
+                            f"removed {removed} hallucination sentence(s) "
+                            f"from {len(sentence_segments)} → {len(clean_sentences)} clean"
+                        )
+                        sentence_segments = clean_sentences
+                        batch_txt = " ".join(s["text"] for s in clean_sentences).strip()
+
                 logger.info(
                     f"[BATCH][TEXT][DBG] job={job['job_id']} "
                     f"len_live={len(live_text)} len_batch={len(batch_txt)}"
                 )
 
-                # 3) CONFIDENCE-based accept policy (geen content hacks)
-                # Promoot batch alleen als:
-                # - batch tekst niet leeg is
-                # - avg_logprob niet te laag is (te laag = onzeker/hallucinatie)
-                # - compression_ratio niet te hoog is (te hoog = repetitie/hallucinatie)
+                # 3) CONFIDENCE-based accept policy
                 use_batch_as_final = False
 
                 if batch_txt:
-                    # avg_logprob: hoe hoger (minder negatief), hoe beter. Typisch "ok" > -1.3
-                    # compression_ratio: typisch ok < 2.4
                     ok_logprob = (batch_avg_logprob is None) or (batch_avg_logprob > -1.3)
                     ok_compr = (batch_compression is None) or (batch_compression < 2.4)
+
+                    # --- Fix 2: ruimere no_speech_prob-drempel voor korte end-of-stream fragmenten ---
+                    # FasterWhisper rapporteert structureel hoge no_speech_prob (0.85+) voor
+                    # korte clips aan het einde van een sessie, ook bij echte spraak.
+                    audio_duration_s = (end_ms - start_ms) / 1000.0
+                    no_speech_threshold = (
+                        0.95 if (reason == "end_of_stream" and audio_duration_s < 8.0) else 0.6
+                    )
                     ok_no_speech = (
                         result.get("no_speech_prob") is None or
-                        result.get("no_speech_prob") < 0.6
+                        result.get("no_speech_prob") < no_speech_threshold
                     )
 
-                    # Technische Whisper-artefacten die nooit echte spraak zijn
-                    HALLUCINATION_PATTERNS = [
-                        "***",
-                        "Ondertiteling",
-                        "ondertiteling",
-                        "Ondertitels",
-                        "ondertitels",
-                        "www.",
-                        ".com",
-                        "Abonneer",
-                        "abonneer",
-                        "Subtitles by",
-                        "Subscribe",
-                        "subscribe",
-                    ]
-                    has_hallucination_pattern = any(
-                        p in batch_txt for p in HALLUCINATION_PATTERNS
+                    # Na per-sentence filtering is de volledige batch_txt al schoon;
+                    # een tweede check is alleen nog nodig voor batch_txt zonder sentence_segments.
+                    has_hallucination_pattern = (
+                        not sentence_segments and
+                        any(p in batch_txt for p in HALLUCINATION_PATTERNS)
                     )
 
                     if ok_logprob and ok_compr and ok_no_speech and not has_hallucination_pattern:
@@ -1275,6 +1296,7 @@ class AudioProcessor:
                             f"logprob={batch_avg_logprob} "
                             f"compr={batch_compression} "
                             f"no_speech_prob={result.get('no_speech_prob')} "
+                            f"threshold={no_speech_threshold} "
                             f"hallucination_pattern={has_hallucination_pattern} "
                             f"text='{batch_txt[:80]}'"
                         )
