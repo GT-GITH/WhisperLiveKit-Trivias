@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import traceback
+import weakref
 
 import uuid
 
@@ -32,7 +33,7 @@ logger.setLevel(logging.DEBUG)
 
 SENTINEL = object() # unique sentinel object for end of stream marker
 # Per-queue pushback slot used by get_all_from_queue() to preserve ordering without peeking.
-_QUEUE_PUSHBACK: dict[int, Any] = {}
+_QUEUE_PUSHBACK: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 # Stilte die we als "segment boundary" gebruiken (dus FINAL/segment-close).
 # Dit heeft niets met decoder reset te maken.
@@ -74,11 +75,10 @@ async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.
     encounter SENTINEL or Silence while draining, we use a per-queue pushback slot.
     """
     items: List[Any] = []
-    qid = id(queue)
 
     # 0) If we have a pushed-back item, consume it first (preserves original order).
-    if qid in _QUEUE_PUSHBACK:
-        first_item = _QUEUE_PUSHBACK.pop(qid)
+    if queue in _QUEUE_PUSHBACK:
+        first_item = _QUEUE_PUSHBACK.pop(queue)
     else:
         first_item = await queue.get()
         queue.task_done()
@@ -101,13 +101,13 @@ async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.
 
         # Stop at boundary items; push back so it will be returned next call (order preserved)
         if nxt is SENTINEL or isinstance(nxt, Silence):
-            _QUEUE_PUSHBACK[qid] = nxt
+            _QUEUE_PUSHBACK[queue] = nxt
             break
 
         # Coalesce only homogeneous audio chunks
         if isinstance(first_item, np.ndarray) and not isinstance(nxt, np.ndarray):
             # This should not happen in a well-formed audio queue; don't mix types.
-            _QUEUE_PUSHBACK[qid] = nxt
+            _QUEUE_PUSHBACK[queue] = nxt
             break
 
         items.append(nxt)
