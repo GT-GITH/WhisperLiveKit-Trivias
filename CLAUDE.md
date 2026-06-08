@@ -113,6 +113,7 @@ Models are loaded once into `TranscriptionEngine` (singleton per server process)
 
 ## Docs
 
+- `docs/FO.md` — **Functioneel Ontwerp** — authoritative functional specification for this project; read this before making feature decisions
 - `docs/API.md` — WebSocket protocol and JSON message schema
 - `docs/technical_integration.md` — embedding WLK without FastAPI
 - `docs/default_and_custom_models.md` — model selection and quantization
