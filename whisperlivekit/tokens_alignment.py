@@ -168,6 +168,7 @@ class TokensAlignment:
 
         Tokens die nog niet zijn verwerkt tot een validated_segment worden
         beschermd via current_line_tokens en unvalidated_tokens.
+        validated_segments worden met dezelfde cutoff gesnoeid.
         """
         if not self.all_tokens:
             return
@@ -216,6 +217,12 @@ class TokensAlignment:
         if self.all_translation_segments:
             self.all_translation_segments = [
                 s for s in self.all_translation_segments
+                if (getattr(s, 'end', None) is None or s.end >= cutoff)
+            ]
+
+        if self.validated_segments:
+            self.validated_segments = [
+                s for s in self.validated_segments
                 if (getattr(s, 'end', None) is None or s.end >= cutoff)
             ]
 
