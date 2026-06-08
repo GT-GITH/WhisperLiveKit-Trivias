@@ -497,6 +497,18 @@ function ensureWebSocket() {
       }
 
       /* =========================
+      * READY TO STOP
+      * ========================= */
+      if (data.type === "ready_to_stop") {
+        waitingForStop = false;
+        setAsrStatus("Sessie afgerond.");
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+          websocket.close(1000, "Session complete");
+        }
+        return;
+      }
+
+      /* =========================
       * FALLBACK / UNKNOWN
       * ========================= */
       console.debug("Unhandled WS message:", data);
