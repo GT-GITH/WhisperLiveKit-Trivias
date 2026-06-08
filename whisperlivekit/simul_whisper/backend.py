@@ -83,6 +83,7 @@ class BatchFasterWhisperASR:
             initial_prompt=self.initial_prompt,
             vad_filter=False,
             word_timestamps=word_timestamps,
+            no_speech_threshold=0.9,
         )
 
         texts = []

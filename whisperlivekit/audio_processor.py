@@ -49,9 +49,10 @@ BATCH_CONTEXT_PAD_LEFT_MS = 600
 BATCH_CONTEXT_PAD_RIGHT_MS = 0
 
 # Batch windowing (Stap 1)
-BATCH_TARGET_WINDOW_MS = 30_000   # 30s
-BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
-BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
+BATCH_TARGET_WINDOW_MS   = 30_000   # 30s — trigger na eerste stilte voorbij dit punt
+BATCH_MIN_WINDOW_MS      = 15_000   # (nu nog niet gebruikt, maar handig)
+BATCH_HARD_CAP_MS        = 45_000   # (nu nog niet gebruikt, maar handig)
+BATCH_HARD_MAX_DECODE_MS = 27_000   # FasterWhisper mag nooit meer dan 27s krijgen (Whisper 30s grens)
 
 _STATE_TOKENS_MAX_DURATION_S: float = 600.0  # maximaal 10 minuten tokens in state.tokens
 _STATE_TOKENS_PRUNE_TRIGGER: int = 13_000    # alleen prunen boven deze grens
@@ -1197,6 +1198,20 @@ class AudioProcessor:
                 # 2) Decode audio slice met padding (FO)
                 decode_start_ms = max(0, start_ms - BATCH_CONTEXT_PAD_LEFT_MS)
                 decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_RIGHT_MS
+
+                # Hard cap: FasterWhisper mag nooit meer dan BATCH_HARD_MAX_DECODE_MS krijgen.
+                # Bij overschrijding nemen we de LAATSTE N seconden — die hebben de minste kans
+                # op Whisper's 30s-grens timestamp-drift en bevatten de meest recente spraak.
+                decode_len_ms = decode_end_ms - decode_start_ms
+                if decode_len_ms > BATCH_HARD_MAX_DECODE_MS:
+                    trimmed_start_ms = decode_start_ms
+                    decode_start_ms = decode_end_ms - BATCH_HARD_MAX_DECODE_MS
+                    logger.warning(
+                        f"[BATCH][DECODE][CAP] job={job['job_id']} "
+                        f"decode {decode_len_ms/1000:.1f}s > {BATCH_HARD_MAX_DECODE_MS/1000:.1f}s cap "
+                        f"→ trim {trimmed_start_ms}ms→{decode_start_ms}ms "
+                        f"(verlies {(decode_start_ms - trimmed_start_ms)/1000:.1f}s aan het begin)"
+                    )
 
                 audio_f32 = self._read_wav_slice_float32(decode_start_ms, decode_end_ms)
                 logger.info(
