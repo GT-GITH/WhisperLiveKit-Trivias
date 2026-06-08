@@ -1309,32 +1309,41 @@ class AudioProcessor:
                 )
 
                 # 5) Emit SegmentUpdate naar UI
-                if use_batch_as_final and sentence_segments:
-                    # Meerdere klikbare zinnen met eigen tijdstempels
-                    for i, sent in enumerate(sentence_segments):
-                        sent_start_ms = int(round(sent["start"] * 1000)) + decode_start_ms
-                        sent_end_ms = int(round(sent["end"] * 1000)) + decode_start_ms + 300  # 300ms buffer
-                        sent_id = f"{group_id}_s{i}"
+                # apply_batch_group() is al uitgevoerd; state is de bron van waarheid.
+                # Als de emit mislukt (bijv. WebSocket disconnect) wordt de batch_group
+                # alsnog opgepikt door de eerstvolgende reguliere FrontData-emissie.
+                try:
+                    if use_batch_as_final and sentence_segments:
+                        # Meerdere klikbare zinnen met eigen tijdstempels
+                        for i, sent in enumerate(sentence_segments):
+                            sent_start_ms = int(round(sent["start"] * 1000)) + decode_start_ms
+                            sent_end_ms = int(round(sent["end"] * 1000)) + decode_start_ms + 300  # 300ms buffer
+                            sent_id = f"{group_id}_s{i}"
+                            upd = SegmentUpdate(
+                                id=sent_id,
+                                state="FINAL",
+                                start_ms=sent_start_ms,
+                                end_ms=sent_end_ms,
+                                text_batch=sent["text"],
+                                text_final=sent["text"],
+                            )
+                            await self.emit_segment_update(upd)
+                    else:
+                        # Fallback: één blok voor het hele window
                         upd = SegmentUpdate(
-                            id=sent_id,
+                            id=str(group_id),
                             state="FINAL",
-                            start_ms=sent_start_ms,
-                            end_ms=sent_end_ms,
-                            text_batch=sent["text"],
-                            text_final=sent["text"],
+                            start_ms=start_ms,
+                            end_ms=end_ms,
+                            text_batch=(batch_txt if batch_txt else None),
+                            text_final=final_txt
                         )
                         await self.emit_segment_update(upd)
-                else:
-                    # Fallback: één blok voor het hele window
-                    upd = SegmentUpdate(
-                        id=str(group_id),
-                        state="FINAL",
-                        start_ms=start_ms,
-                        end_ms=end_ms,
-                        text_batch=(batch_txt if batch_txt else None),
-                        text_final=final_txt
+                except Exception as emit_err:
+                    logger.warning(
+                        f"[BATCH][EMIT] segment update failed for group={group_id} "
+                        f"job={job['job_id']}: {emit_err} — state correct, UI synct bij volgende FrontData"
                     )
-                    await self.emit_segment_update(upd)
 
                 logger.info(
                     f"[BATCH][WORKER] BATCHGROUP overwrite id={group_id} job={job['job_id']} "
