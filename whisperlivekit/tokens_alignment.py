@@ -168,7 +168,8 @@ class TokensAlignment:
 
         Tokens die nog niet zijn verwerkt tot een validated_segment worden
         beschermd via current_line_tokens en unvalidated_tokens.
-        validated_segments worden met dezelfde cutoff gesnoeid.
+        validated_segments, batch_groups, segment_overrides en
+        suppressed_ranges_ms worden met dezelfde cutoff gesnoeid.
         """
         if not self.all_tokens:
             return
@@ -224,6 +225,26 @@ class TokensAlignment:
             self.validated_segments = [
                 s for s in self.validated_segments
                 if (getattr(s, 'end', None) is None or s.end >= cutoff)
+            ]
+
+        cutoff_ms = int(cutoff * 1000)
+
+        if self.batch_groups:
+            self.batch_groups = [
+                g for g in self.batch_groups
+                if (getattr(g, 'end', None) is None or g.end >= cutoff)
+            ]
+
+        if self.segment_overrides:
+            self.segment_overrides = {
+                seg_id: ov for seg_id, ov in self.segment_overrides.items()
+                if (ov.get('end_ms') is None or ov['end_ms'] >= cutoff_ms)
+            }
+
+        if self.suppressed_ranges_ms:
+            self.suppressed_ranges_ms = [
+                r for r in self.suppressed_ranges_ms
+                if r[1] >= cutoff_ms
             ]
 
     def add_translation(self, segment: Segment) -> None:
