@@ -630,11 +630,16 @@ class AudioProcessor:
                 if isinstance(item, Silence):
                     if item.is_starting:
                         # Begin van stilte → ASR informeren
-                        new_tokens, current_audio_processed_upto = await asyncio.to_thread(
-                            self.transcription.start_silence
-                        )
-                        asr_processing_logs += f" + Silence starting"
+                        try:
+                            new_tokens, current_audio_processed_upto = await asyncio.to_thread(
+                                self.transcription.start_silence
+                            )
+                            asr_processing_logs += f" + Silence starting"
+                        except Exception as e:
+                            logger.warning(f"[LIVE] start_silence failed: {e}")
+                            new_tokens = []
                         # ===== Stap 1: batch windowing proberen te sluiten op silence-start =====
+                        # Loopt altijd, ook als start_silence hierboven faalde.
                         try:
                             stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
                             await self._batch_on_silence_boundary(
