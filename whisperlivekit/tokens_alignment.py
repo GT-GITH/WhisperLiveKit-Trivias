@@ -10,6 +10,9 @@ logger = logging.getLogger("whisperlivekit.tokens_alignment")
 # Geen basicConfig en geen forced setLevel hier.
 # De applicatie (server) bepaalt het loglevel.
 
+_PRUNE_MAX_DURATION_S: float = 600.0  # maximaal 10 minuten tokens in memory
+_PRUNE_TRIGGER_COUNT: int = 13_000    # alleen uitvoeren als de lijst deze grens overschrijdt
+
 class TokensAlignment:
 
     def __init__(self, state: Any, args: Any, sep: Optional[str]) -> None:
@@ -156,6 +159,65 @@ class TokensAlignment:
         self.all_diarization_segments.extend(self.new_diarization)
         self.all_translation_segments.extend(self.new_translation)
         self.new_translation_buffer = self.state.new_translation_buffer
+
+        if len(self.all_tokens) > _PRUNE_TRIGGER_COUNT:
+            self._prune_buffers()
+
+    def _prune_buffers(self) -> None:
+        """Verwijder tokens en segmenten ouder dan _PRUNE_MAX_DURATION_S.
+
+        Tokens die nog niet zijn verwerkt tot een validated_segment worden
+        beschermd via current_line_tokens en unvalidated_tokens.
+        """
+        if not self.all_tokens:
+            return
+
+        newest_end = 0.0
+        for t in self.all_tokens:
+            e = getattr(t, 'end', None)
+            if e is not None and e > newest_end:
+                newest_end = e
+        horizon = newest_end - _PRUNE_MAX_DURATION_S
+        if horizon <= 0.0:
+            return
+
+        # Bescherm tokens die nog in de live tail zitten (nog niet gevalideerd)
+        protected = float('inf')
+        for t in self.current_line_tokens:
+            s = getattr(t, 'start', None)
+            if s is not None and s < protected:
+                protected = s
+        for t in self.unvalidated_tokens:
+            s = getattr(t, 'start', None)
+            if s is not None and s < protected:
+                protected = s
+        cutoff = min(horizon, protected)
+        if cutoff <= 0.0:
+            return
+
+        n_before = len(self.all_tokens)
+        self.all_tokens = [
+            t for t in self.all_tokens
+            if (getattr(t, 'end', None) is None or t.end >= cutoff)
+        ]
+        pruned = n_before - len(self.all_tokens)
+        if pruned:
+            logger.debug(
+                "[PRUNE] all_tokens -%d → %d (cutoff=%.1fs)",
+                pruned, len(self.all_tokens), cutoff,
+            )
+
+        if self.all_diarization_segments:
+            self.all_diarization_segments = [
+                s for s in self.all_diarization_segments
+                if (getattr(s, 'end', None) is None or s.end >= cutoff)
+            ]
+
+        if self.all_translation_segments:
+            self.all_translation_segments = [
+                s for s in self.all_translation_segments
+                if (getattr(s, 'end', None) is None or s.end >= cutoff)
+            ]
 
     def add_translation(self, segment: Segment) -> None:
         """Append translated text segments that overlap with a segment."""
