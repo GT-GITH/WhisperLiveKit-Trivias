@@ -444,11 +444,6 @@ async def handle_websocket_results(websocket: WebSocket, results_generator):
             await websocket.send_json(response.to_dict())
         logger.info("Results generator finished. Sending 'ready_to_stop' to client.")
         await websocket.send_json({"type": "ready_to_stop"})
-        try:
-            await websocket.close(code=1000)
-            logger.info("WebSocket closed by server after session complete.")
-        except Exception:
-            pass
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected while handling results (client closed connection?).")
     except Exception as e:
