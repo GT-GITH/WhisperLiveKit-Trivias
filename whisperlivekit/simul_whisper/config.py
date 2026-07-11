@@ -130,14 +130,6 @@ CHANNEL_CONFIGS: dict[str, ChannelTranscriptionConfig] = {
         live_decoder_type="greedy",
         batch_initial_prompt=None,
     ),
-    "foreign_tr": ChannelTranscriptionConfig(
-        language="tr",
-        task="transcribe",
-        live_frame_threshold=25,
-        live_audio_min_len=0.0,
-        live_decoder_type="greedy",
-        batch_initial_prompt=None,
-    ),
 }
 
 
