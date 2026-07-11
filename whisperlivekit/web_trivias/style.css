@@ -655,8 +655,9 @@ body {
   color: var(--text-muted);
 }
 
-.tab-pane.hidden {
-  display: none;
+.tab-pane.hidden,
+.hidden {
+  display: none !important;
 }
 
 /* === Configuratie tab: channel rows === */
