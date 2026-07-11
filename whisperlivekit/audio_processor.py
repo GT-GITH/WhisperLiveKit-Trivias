@@ -1214,8 +1214,12 @@ class AudioProcessor:
                     )
                     continue
 
-                #result = self.engine.batch_asr.transcribe(audio_f32)
-                result = self.batch_asr.transcribe(audio_f32, word_timestamps=True)
+                # Tolk met taalpaar → auto-detectie; overige kanalen → channel_language als hint
+                _lang_override = (
+                    "auto" if self.channel_language2
+                    else self.channel_language
+                )
+                result = self.batch_asr.transcribe(audio_f32, word_timestamps=True, language_override=_lang_override)
                 batch_txt = result["text"]
                 sentence_segments = result.get("sentence_segments", [])
                 logger.info(

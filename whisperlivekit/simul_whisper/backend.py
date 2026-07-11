@@ -73,10 +73,11 @@ class BatchFasterWhisperASR:
             compute_type=compute_type,
         )
 
-    def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False) -> dict:
+    def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False, language_override: str | None = None) -> dict:
+        lang = language_override if language_override is not None else self.language
         segments, info = self.model.transcribe(
             audio_f32,
-            language=self.language if self.language and self.language != "auto" else None,
+            language=lang if lang and lang != "auto" else None,
             beam_size=self.beam_size,
             condition_on_previous_text=self.condition_on_previous_text,
             temperature=self.temperature,
