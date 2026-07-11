@@ -738,7 +738,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   const htmlParts = [];
 
   for (const item of safeLines) {
-    const rawTxt = (item?.text_batch || item?.text || "").trim();
+    const rawTxt = (item?.text_batch || item?.text || item?.text_live || "").trim();
     if (!rawTxt) continue;
 
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
@@ -778,7 +778,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}</div>`);
   }
 
-  const hasLiveContent = (lines || []).some(item => item?.text && !item?.text_batch && item?.speaker !== -2);
+  const hasLiveContent = (lines || []).some(item => (item?.text || item?.text_live) && !item?.text_batch && item?.speaker !== -2);
   if (hasLiveContent || (bufferTranscription && bufferTranscription.trim())) {
     htmlParts.push(`<div class="live-indicator"><span class="live-dot"></span> Spreekt…</div>`);
   }
