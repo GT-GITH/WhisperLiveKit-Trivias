@@ -1282,9 +1282,14 @@ class AudioProcessor:
                     no_speech_threshold = (
                         0.95 if (reason == "end_of_stream" and audio_duration_s < 8.0) else 0.6
                     )
+                    _nsp = result.get("no_speech_prob")
                     ok_no_speech = (
-                        result.get("no_speech_prob") is None or
-                        result.get("no_speech_prob") < no_speech_threshold
+                        _nsp is None or
+                        _nsp < no_speech_threshold or
+                        # Hoge kwaliteit audio met licht verhoogde no_speech_prob:
+                        # YouTube-video's en niet-Europese talen (bijv. Turks) scoren
+                        # structureel hoger op no_speech_prob ondanks uitstekende logprob.
+                        (_nsp < 0.85 and batch_avg_logprob is not None and batch_avg_logprob > -0.3)
                     )
 
                     # Na per-sentence filtering is de volledige batch_txt al schoon;

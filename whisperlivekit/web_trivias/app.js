@@ -739,7 +739,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
   for (const item of safeLines) {
     const rawTxt = (item?.text_batch || item?.text || "").trim();
-    if (!rawTxt || !item?.text_batch) continue;
+    if (!rawTxt) continue;
 
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
     const st = (item?.state || "FINAL").toUpperCase();
