@@ -154,11 +154,17 @@ class AudioProcessor:
         # Audio processing settings
         self.args = models.args
         self.batch_asr = getattr(models, "batch_asr", None)
+        _live_lang_effective = self.channel_language or getattr(self.args, "lan", None)
+        _batch_lang_init     = getattr(self.batch_asr, "language", None) if self.batch_asr else None
+        _batch_lang_override = self.channel_language  # van URL-param lang=
         logger.info(
-            "AudioProcessor engine bound: channel_id=%s live_decoder=%s batch_lang=%s",
+            "AudioProcessor engine bound: channel_id=%s "
+            "live_lang=%s batch_lang_init=%s batch_lang_override=%s (batch effectief: %s)",
             self.channel_id,
-            getattr(self.args, "decoder_type", None),
-            getattr(self.batch_asr, "language", None) if self.batch_asr else None,
+            _live_lang_effective,
+            _batch_lang_init,
+            _batch_lang_override,
+            _batch_lang_override if _batch_lang_override else _batch_lang_init,
         )
         self.sample_rate = 16000
         self.channels = 1
@@ -223,7 +229,7 @@ class AudioProcessor:
         self.diarization: Optional[Any] = None
 
         if self.args.transcription:
-            self.transcription = online_factory(self.args, models.asr)        
+            self.transcription = online_factory(self.args, models.asr, language=self.channel_language)
             self.sep = self.transcription.asr.sep   
         if self.args.diarization:
             self.diarization = online_diarization_factory(self.args, models.diarization_model)
@@ -1219,6 +1225,13 @@ class AudioProcessor:
                     "auto" if self.channel_language2
                     else self.channel_language
                 )
+                logger.info(
+                    "[BATCH][LANG] job=%s channel=%s lang_used=%s (override=%s init=%s)",
+                    job["job_id"], self.channel_id,
+                    _lang_override if _lang_override else getattr(self.batch_asr, "language", None),
+                    _lang_override,
+                    getattr(self.batch_asr, "language", None),
+                )
                 result = self.batch_asr.transcribe(audio_f32, word_timestamps=True, language_override=_lang_override)
                 batch_txt = result["text"]
                 sentence_segments = result.get("sentence_segments", [])
@@ -1282,9 +1295,14 @@ class AudioProcessor:
                     no_speech_threshold = (
                         0.95 if (reason == "end_of_stream" and audio_duration_s < 8.0) else 0.6
                     )
+                    _nsp = result.get("no_speech_prob")
                     ok_no_speech = (
-                        result.get("no_speech_prob") is None or
-                        result.get("no_speech_prob") < no_speech_threshold
+                        _nsp is None or
+                        _nsp < no_speech_threshold or
+                        # Hoge kwaliteit audio met licht verhoogde no_speech_prob:
+                        # YouTube-video's en niet-Europese talen (bijv. Turks) scoren
+                        # structureel hoger op no_speech_prob ondanks uitstekende logprob.
+                        (_nsp < 0.85 and batch_avg_logprob is not None and batch_avg_logprob > -0.3)
                     )
 
                     # Na per-sentence filtering is de volledige batch_txt al schoon;

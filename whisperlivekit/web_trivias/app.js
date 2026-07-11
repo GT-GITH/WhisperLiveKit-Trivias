@@ -51,6 +51,15 @@ function getChannelId(cfg) {
   return cfg.roleId;
 }
 
+// === Noise gate presets ===
+
+const GATE_PRESETS = [
+  { label: "Uit",    value: 0     },
+  { label: "Laag",   value: 0.005 },
+  { label: "Normaal",value: 0.015 },
+  { label: "Streng", value: 0.03  },
+];
+
 // === Channel config management ===
 
 const STORAGE_KEY = "trivias_channel_config";
@@ -67,7 +76,7 @@ function loadChannelConfigs() {
     }
   } catch (e) { /* ignore */ }
   channelConfigs = [
-    { uid: "ch_default", roleId: "employee", deviceId: "", language: "nl", language2: null },
+    { uid: "ch_default", roleId: "employee", deviceId: "", language: "nl", language2: null, gateThreshold: 0.015 },
   ];
 }
 
@@ -82,6 +91,7 @@ function addChannelConfig() {
     deviceId: "",
     language: "nl",
     language2: null,
+    gateThreshold: 0.015,
   });
   saveChannelConfigs();
   renderChannelConfigs();
@@ -171,6 +181,12 @@ function renderChannelConfigs() {
             ${buildLangOptions(cfg.language2 || "ar")}
           </select>
         </div>
+        <div class="channel-field">
+          <label>Ruispoort</label>
+          <select class="channel-select ch-gate">
+            ${GATE_PRESETS.map(p => `<option value="${p.value}"${p.value === (cfg.gateThreshold ?? 0.015) ? " selected" : ""}>${p.label}</option>`).join("")}
+          </select>
+        </div>
       </div>
       <button class="ch-remove" title="Kanaal verwijderen">✕</button>
     `;
@@ -205,6 +221,11 @@ function renderChannelConfigs() {
     div.querySelector(".ch-lang2").addEventListener("change", e => {
       const c = channelConfigs.find(x => x.uid === cfg.uid);
       if (c) { c.language2 = e.target.value; saveChannelConfigs(); }
+    });
+
+    div.querySelector(".ch-gate").addEventListener("change", e => {
+      const c = channelConfigs.find(x => x.uid === cfg.uid);
+      if (c) { c.gateThreshold = parseFloat(e.target.value); saveChannelConfigs(); }
     });
 
     div.querySelector(".ch-remove").addEventListener("click", () => removeChannelConfig(cfg.uid));
@@ -377,6 +398,9 @@ async function openAudioStream(ws, cfg, useWorklet) {
     recorderWorker.onmessage = e => {
       if (ws.readyState === WebSocket.OPEN) ws.send(e.data.buffer);
     };
+
+    // Noise gate instellen op de worklet
+    workletNode.port.postMessage({ threshold: cfg.gateThreshold ?? 0 });
 
     let lastActivity = Date.now();
     workletNode.port.onmessage = e => {
@@ -714,8 +738,8 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   const htmlParts = [];
 
   for (const item of safeLines) {
-    const rawTxt = (item?.text_batch || item?.text || "").trim();
-    if (!rawTxt || !item?.text_batch) continue;
+    const rawTxt = (item?.text_batch || item?.text || item?.text_live || "").trim();
+    if (!rawTxt) continue;
 
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
     const st = (item?.state || "FINAL").toUpperCase();
@@ -754,7 +778,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}</div>`);
   }
 
-  const hasLiveContent = (lines || []).some(item => item?.text && !item?.text_batch && item?.speaker !== -2);
+  const hasLiveContent = (lines || []).some(item => (item?.text || item?.text_live) && !item?.text_batch && item?.speaker !== -2);
   if (hasLiveContent || (bufferTranscription && bufferTranscription.trim())) {
     htmlParts.push(`<div class="live-indicator"><span class="live-dot"></span> Spreekt…</div>`);
   }

@@ -204,10 +204,10 @@ class TranscriptionEngine:
 
 
 
-def online_factory(args, asr):
+def online_factory(args, asr, language: str = None):
     if args.backend_policy == "simulstreaming":
         from whisperlivekit.simul_whisper import SimulStreamingOnlineProcessor
-        return SimulStreamingOnlineProcessor(asr)
+        return SimulStreamingOnlineProcessor(asr, language=language)
     return OnlineASRProcessor(asr)
   
   
