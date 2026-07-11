@@ -18,6 +18,13 @@
   --transition-med: 0.25s ease-out;
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
+
+  /* Rol-kleuren */
+  --role-employee:    #3b82f6;
+  --role-interpreter: #a855f7;
+  --role-lawyer:      #22c55e;
+  --role-foreign:     #f97316;
+  --role-default:     #9ca3af;
 }
 
 *,
@@ -607,3 +614,159 @@ body {
   border-color: rgba(59,130,246,0.6) !important;
   color: #bfdbfe;
 }
+
+/* === Tab bar === */
+
+.panel-header-tabs {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(30, 64, 175, 0.35);
+  width: 100%;
+}
+
+.tab-btn {
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.tab-btn.active {
+  border-color: rgba(59, 130, 246, 0.6);
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.tab-btn:not(.active):hover {
+  border-color: rgba(148, 163, 184, 0.4);
+  color: var(--text-muted);
+}
+
+.tab-pane.hidden {
+  display: none;
+}
+
+/* === Configuratie tab: channel rows === */
+
+.channel-config-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.channel-row {
+  display: grid;
+  grid-template-columns: 4px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  padding: 10px 10px 10px 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  transition: border-color var(--transition-fast);
+}
+
+.channel-row:hover {
+  border-color: rgba(59, 130, 246, 0.25);
+}
+
+.channel-color-bar {
+  border-radius: 2px;
+  align-self: stretch;
+  min-height: 36px;
+}
+
+.channel-row-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.channel-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.channel-field label {
+  color: var(--text-soft);
+  min-width: 52px;
+  flex-shrink: 0;
+}
+
+.channel-select {
+  flex: 1;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(15, 23, 42, 0.95);
+  color: var(--text-muted);
+  font-size: 11px;
+  outline: none;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.channel-select:focus {
+  border-color: rgba(59, 130, 246, 0.7);
+}
+
+.ch-remove {
+  background: none;
+  border: none;
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  line-height: 1;
+  align-self: flex-start;
+  transition: all var(--transition-fast);
+}
+
+.ch-remove:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.add-channel-btn {
+  width: 100%;
+  padding: 8px;
+  border: 1px dashed rgba(148, 163, 184, 0.25);
+  border-radius: var(--radius-xl);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.add-channel-btn:hover {
+  border-color: rgba(59, 130, 246, 0.5);
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+/* === Rol-badge kleuren in transcript === */
+
+.seg-role-employee    { color: var(--role-employee); }
+.seg-role-interpreter { color: var(--role-interpreter); }
+.seg-role-lawyer      { color: var(--role-lawyer); }
+.seg-role-foreign     { color: var(--role-foreign); }
+.seg-role-default     { color: var(--role-default); }

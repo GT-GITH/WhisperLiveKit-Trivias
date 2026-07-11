@@ -128,6 +128,8 @@ class AudioProcessor:
         """Initialize the audio processor with configuration, models, and state."""
 
         self.channel_id = kwargs.get("channel_id", "default")
+        self.channel_language  = kwargs.get("language",  None)
+        self.channel_language2 = kwargs.get("language2", None)
 
         if 'transcription_engine' in kwargs and isinstance(kwargs['transcription_engine'], TranscriptionEngine):
             models = kwargs['transcription_engine']
