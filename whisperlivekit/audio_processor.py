@@ -154,11 +154,18 @@ class AudioProcessor:
         # Audio processing settings
         self.args = models.args
         self.batch_asr = getattr(models, "batch_asr", None)
+        _live_lang_singleton = getattr(self.args, "lan", None)
+        _batch_lang_init     = getattr(self.batch_asr, "language", None) if self.batch_asr else None
+        _batch_lang_override = self.channel_language  # van URL-param lang=
         logger.info(
-            "AudioProcessor engine bound: channel_id=%s live_decoder=%s batch_lang=%s",
+            "AudioProcessor engine bound: channel_id=%s "
+            "live_lang=%s (singleton, niet per-kanaal) "
+            "batch_lang_init=%s batch_lang_override=%s (effectief: %s)",
             self.channel_id,
-            getattr(self.args, "decoder_type", None),
-            getattr(self.batch_asr, "language", None) if self.batch_asr else None,
+            _live_lang_singleton,
+            _batch_lang_init,
+            _batch_lang_override,
+            _batch_lang_override if _batch_lang_override else _batch_lang_init,
         )
         self.sample_rate = 16000
         self.channels = 1
@@ -1218,6 +1225,13 @@ class AudioProcessor:
                 _lang_override = (
                     "auto" if self.channel_language2
                     else self.channel_language
+                )
+                logger.info(
+                    "[BATCH][LANG] job=%s channel=%s lang_used=%s (override=%s init=%s)",
+                    job["job_id"], self.channel_id,
+                    _lang_override if _lang_override else getattr(self.batch_asr, "language", None),
+                    _lang_override,
+                    getattr(self.batch_asr, "language", None),
                 )
                 result = self.batch_asr.transcribe(audio_f32, word_timestamps=True, language_override=_lang_override)
                 batch_txt = result["text"]
