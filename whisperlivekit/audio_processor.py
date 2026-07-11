@@ -154,15 +154,14 @@ class AudioProcessor:
         # Audio processing settings
         self.args = models.args
         self.batch_asr = getattr(models, "batch_asr", None)
-        _live_lang_singleton = getattr(self.args, "lan", None)
+        _live_lang_effective = self.channel_language or getattr(self.args, "lan", None)
         _batch_lang_init     = getattr(self.batch_asr, "language", None) if self.batch_asr else None
         _batch_lang_override = self.channel_language  # van URL-param lang=
         logger.info(
             "AudioProcessor engine bound: channel_id=%s "
-            "live_lang=%s (singleton, niet per-kanaal) "
-            "batch_lang_init=%s batch_lang_override=%s (effectief: %s)",
+            "live_lang=%s batch_lang_init=%s batch_lang_override=%s (batch effectief: %s)",
             self.channel_id,
-            _live_lang_singleton,
+            _live_lang_effective,
             _batch_lang_init,
             _batch_lang_override,
             _batch_lang_override if _batch_lang_override else _batch_lang_init,
@@ -230,7 +229,7 @@ class AudioProcessor:
         self.diarization: Optional[Any] = None
 
         if self.args.transcription:
-            self.transcription = online_factory(self.args, models.asr)        
+            self.transcription = online_factory(self.args, models.asr, language=self.channel_language)
             self.sep = self.transcription.asr.sep   
         if self.args.diarization:
             self.diarization = online_diarization_factory(self.args, models.diarization_model)

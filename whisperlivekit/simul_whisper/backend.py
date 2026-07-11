@@ -1,3 +1,4 @@
+import copy
 import gc
 import logging
 import os
@@ -151,7 +152,7 @@ class SimulStreamingOnlineProcessor:
     """Online processor for SimulStreaming ASR."""
     SAMPLING_RATE = 16000
 
-    def __init__(self, asr, logfile=sys.stderr):
+    def __init__(self, asr, logfile=sys.stderr, language: Optional[str] = None):
         self.logger = logging.getLogger("whisperlivekit.backend.SimulStreamingOnlineProcessor")
         self.logger.setLevel(logging.DEBUG)
         self.logger.debug("🔥 SimulStreamingOnlineProcessor logger ACTIVE, DEBUG level 🔥")
@@ -160,32 +161,36 @@ class SimulStreamingOnlineProcessor:
         self.end = 0.0
         self.buffer = []
         self.committed: List[ASRToken] = []
-        self.last_result_tokens: List[ASRToken] = []        
+        self.last_result_tokens: List[ASRToken] = []
+        # Per-sessie taaloverride: kopieer cfg zodat de singleton niet wordt gewijzigd
+        self._session_cfg = copy.copy(asr.cfg)
+        if language and language != self._session_cfg.language:
+            self._session_cfg.language = language
         self.model = self._create_alignatt()
-        
+
         # GT Added for debug
         self.logger.debug("=== INITIALIZING STREAMING DECODER ===")
-        self.logger.debug(f"Decoder type: {self.asr.cfg.decoder_type}")
-        self.logger.debug(f"Beam size: {self.asr.cfg.beam_size}")
-        self.logger.debug(f"Language: {self.asr.cfg.language}")
-        self.logger.debug(f"Task: {self.asr.cfg.task}")
-        self.logger.debug(f"Tokenizer multilingual: {self.asr.cfg.tokenizer_is_multilingual}")
-        self.logger.debug(f"Audio min length: {self.asr.cfg.audio_min_len}")
-        self.logger.debug(f"Audio max length: {self.asr.cfg.audio_max_len}")
+        self.logger.debug(f"Decoder type: {self._session_cfg.decoder_type}")
+        self.logger.debug(f"Beam size: {self._session_cfg.beam_size}")
+        self.logger.debug(f"Language: {self._session_cfg.language} (singleton was: {asr.cfg.language})")
+        self.logger.debug(f"Task: {self._session_cfg.task}")
+        self.logger.debug(f"Tokenizer multilingual: {self._session_cfg.tokenizer_is_multilingual}")
+        self.logger.debug(f"Audio min length: {self._session_cfg.audio_min_len}")
+        self.logger.debug(f"Audio max length: {self._session_cfg.audio_max_len}")
         self.logger.debug("=== END STREAMING DECODER INIT ===")
 
-
-        if asr.tokenizer:
+        if asr.tokenizer and language is None:
+            # Alleen singleton-tokenizer hergebruiken als taal niet is overschreven
             self.model.tokenizer = asr.tokenizer
             self.model.state.tokenizer = asr.tokenizer
 
     def _create_alignatt(self):
         """Create the AlignAtt decoder instance based on ASR mode."""
         if self.asr.use_full_mlx and HAS_MLX_WHISPER:
-            return MLXAlignAtt(cfg=self.asr.cfg, mlx_model=self.asr.mlx_model)
+            return MLXAlignAtt(cfg=self._session_cfg, mlx_model=self.asr.mlx_model)
         else:
             return AlignAtt(
-                cfg=self.asr.cfg,
+                cfg=self._session_cfg,
                 loaded_model=self.asr.shared_model,
                 mlx_encoder=self.asr.mlx_encoder,
                 fw_encoder=self.asr.fw_encoder,
