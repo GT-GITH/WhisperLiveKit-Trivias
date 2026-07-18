@@ -10,15 +10,16 @@ def load_cif(cfg, n_audio_state, device):
             never_fire = True
             always_fire = False
         else:
-            # LET OP: never_fire=True (laatste woord altijd vasthouden) leek op papier de
-            # correcte default volgens --cif-ckpt-path's documentatie, maar bleek in de
-            # praktijk kapot — dit codepad draaide nog nooit als actieve default in dit
-            # project, en veroorzaakte structurele woordherhaling in de live tekst
-            # ("okuyorum okuyorum", "seviyorum seviyorum", ...). Teruggezet naar de
-            # geteste always_fire=True. De ellipsis-runaway (losse "...") wordt nu alleen
-            # nog opgevangen door de defensieve filter in tokens_alignment.py.
-            always_fire = True
-            never_fire = False
+            # Zonder CIF-checkpoint kan er geen betrouwbare per-token boundary-detectie
+            # gebeuren. Volgens --cif-ckpt-path's eigen documentatie is de bedoelde default
+            # dan: het laatste woord altijd vasthouden (nooit direct committen) — niet
+            # always_fire, wat een los onzeker laatste token (bv. "...") meteen permanent
+            # in de live-context vastzet en laat opstapelen.
+            # (Eerdere poging veroorzaakte woordherhaling door een mismatch tussen wat
+            # intern gecommit werd en wat naar de UI ging -- gefixed in simul_whisper.py's
+            # decode-loop, zie de commentaar bij full_split_words/full_split_tokens.)
+            always_fire = False
+            never_fire = True
     else:
         always_fire = False
         never_fire = cfg.never_fire

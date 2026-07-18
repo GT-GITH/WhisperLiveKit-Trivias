@@ -642,10 +642,19 @@ class AlignAtt:
             split_words, split_tokens = self.tokenizer.split_to_word_tokens(new_hypothesis)
         else:
             # going to truncate the tokens after the last space
-            split_words, split_tokens = self.tokenizer.split_to_word_tokens(tokens_to_split.tolist())
-            if len(split_words) > 1:
-                new_hypothesis = [i for sublist in split_tokens[:-1] for i in sublist]  
+            full_split_words, full_split_tokens = self.tokenizer.split_to_word_tokens(tokens_to_split.tolist())
+            if len(full_split_words) > 1:
+                # Let op: split_words/split_tokens moeten dezelfde afgekapte subset zijn als
+                # new_hypothesis. Eerder werden hier de VOLLEDIGE (niet-afgekapte) lijsten
+                # gebruikt om timestamped_words op te bouwen, terwijl new_hypothesis het
+                # laatste woord al weghield -- het vastgehouden woord werd zo elke cyclus
+                # opnieuw als "nieuw" naar de UI gestuurd, wat tot structurele woordherhaling
+                # leidde (bv. "okuyorum okuyorum okuyorum ..."). Nu blijven weergave en
+                # gecommitte modelcontext exact gelijk.
+                split_words, split_tokens = full_split_words[:-1], full_split_tokens[:-1]
+                new_hypothesis = [i for sublist in split_tokens for i in sublist]
             else:
+                split_words, split_tokens = [], []
                 new_hypothesis = []
 
         logger.debug(f"new_hypothesis: {new_hypothesis}")

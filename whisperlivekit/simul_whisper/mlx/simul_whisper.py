@@ -205,11 +205,12 @@ class MLXAlignAtt:
                 self.state.never_fire = True
                 self.state.always_fire = False
             else:
-                # Teruggezet naar always_fire=True: zie whisperlivekit/simul_whisper/
-                # eow_detection.py voor de rationale -- never_fire=True bleek in de
-                # praktijk structurele woordherhaling te veroorzaken in de live tekst.
-                self.state.always_fire = True
-                self.state.never_fire = False
+                # Zie whisperlivekit/simul_whisper/eow_detection.py voor de rationale.
+                # De eerdere poging veroorzaakte woordherhaling door een mismatch tussen
+                # wat intern gecommit werd en wat naar de UI ging -- de MLX-decode-loop
+                # verderop in dit bestand had dezelfde bug, nu ook hier gefixed.
+                self.state.always_fire = False
+                self.state.never_fire = True
         else:
             logger.warning("CIF checkpoint provided but MLX CIF not implemented. Using always_fire=True")
             self.state.always_fire = True
@@ -633,10 +634,16 @@ class MLXAlignAtt:
             new_hypothesis = tokens_to_split
             split_words, split_tokens = self.tokenizer.split_to_word_tokens(new_hypothesis)
         else:
-            split_words, split_tokens = self.tokenizer.split_to_word_tokens(tokens_to_split)
-            if len(split_words) > 1:
-                new_hypothesis = [i for sublist in split_tokens[:-1] for i in sublist]
+            # split_words/split_tokens moeten dezelfde afgekapte subset zijn als
+            # new_hypothesis, anders wordt het vastgehouden laatste woord elke cyclus
+            # opnieuw als "nieuw" naar de UI gestuurd (structurele woordherhaling).
+            # Zie whisperlivekit/simul_whisper/simul_whisper.py voor de volledige rationale.
+            full_split_words, full_split_tokens = self.tokenizer.split_to_word_tokens(tokens_to_split)
+            if len(full_split_words) > 1:
+                split_words, split_tokens = full_split_words[:-1], full_split_tokens[:-1]
+                new_hypothesis = [i for sublist in split_tokens for i in sublist]
             else:
+                split_words, split_tokens = [], []
                 new_hypothesis = []
 
         logger.debug(f"new_hypothesis: {new_hypothesis}")
