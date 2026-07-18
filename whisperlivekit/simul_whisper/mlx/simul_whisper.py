@@ -582,17 +582,21 @@ class MLXAlignAtt:
             logits = self._suppress_tokens(logits)
 
             # Anti-herhaling: zie whisperlivekit/simul_whisper/simul_whisper.py voor
-            # de volledige rationale (max. 2x identiek achter elkaar, daarna
-            # onderdrukt). MLX-arrays zijn immutable, vandaar .at[].add() i.p.v.
+            # de volledige rationale (patroon van 1/2/3 tokens max. 2x achter
+            # elkaar, daarna onderdrukt -- vangt ook afwisselende cycli zoals
+            # " Ja" + "."). MLX-arrays zijn immutable, vandaar .at[].add() i.p.v.
             # in-place index-assignment zoals in de CUDA-variant.
-            MAX_IMMEDIATE_REPEATS = 2
-            if current_tokens.shape[1] >= MAX_IMMEDIATE_REPEATS:
-                last_tokens = current_tokens[:, -MAX_IMMEDIATE_REPEATS:]
-                all_same = (last_tokens == last_tokens[:, :1]).all(axis=1)
-                if bool(mx.any(all_same)):
+            for period in (1, 2, 3):
+                needed = period * 2
+                if current_tokens.shape[1] < needed:
+                    continue
+                prev_block = current_tokens[:, -needed:-period]
+                last_block = current_tokens[:, -period:]
+                cycle_repeats = (prev_block == last_block).all(axis=1)
+                if bool(mx.any(cycle_repeats)):
                     for b in range(logits.shape[0]):
-                        if bool(all_same[b]):
-                            logits = logits.at[b, int(last_tokens[b, 0])].add(-float('inf'))
+                        if bool(cycle_repeats[b]):
+                            logits = logits.at[b, int(last_block[b, 0])].add(-float('inf'))
 
             current_tokens, completed = self.state.token_decoder.update(
                 current_tokens, logits, sum_logprobs

@@ -561,20 +561,29 @@ class AlignAtt:
             new_segment = False
             self.state.suppress_tokens_fn(logits)
 
-            # Anti-herhaling: een token mag hoogstens 2x identiek achter elkaar
-            # gekozen worden (bv. "nee nee" is legitieme spraak); bij een 3e
-            # identieke poging op rij wordt het onderdrukt. Voorkomt runaway-
-            # herhaal-lussen ("Müzik Müzik Müzik...", "Evet Evet Evet...") die de
-            # live-decoder kan produceren op ambigue/muzikale audio. Raakt alleen
-            # de live-pass -- batch heeft al een eigen compression-ratio-check en
-            # blijft het autoritatieve, ongewijzigde pad.
-            MAX_IMMEDIATE_REPEATS = 2
-            if current_tokens.shape[1] >= MAX_IMMEDIATE_REPEATS:
-                last_tokens = current_tokens[:, -MAX_IMMEDIATE_REPEATS:]
-                all_same = (last_tokens == last_tokens[:, :1]).all(dim=1)
-                if all_same.any():
-                    repeat_token = last_tokens[:, 0]
-                    logits[all_same, repeat_token[all_same]] = -np.inf
+            # Anti-herhaling: een patroon van 1, 2 of 3 tokens mag hoogstens 2x
+            # achter elkaar voorkomen (bv. "nee nee" is legitieme spraak); bij een
+            # 3e herhaling op rij wordt het token dat 'm zou starten onderdrukt.
+            # Periode 2/3 vangt ook afwisselende patronen zoals " Ja" + "." die
+            # als aparte tokens blijven herhalen ("Ja. Ja. Ja. Ja...") -- een
+            # letterlijk-hetzelfde-token-check (periode 1 alleen) mist dit soort
+            # cycli. Voorkomt runaway-herhaal-lussen die de live-decoder kan
+            # produceren op ambigue/muzikale audio, én voorkomt onderweg dat een
+            # decodeerstap zo lang blijft duren dat de 15s process_iter-timeout
+            # afgaat (die zelf een race-condition-crash kan veroorzaken omdat de
+            # afgebroken thread op de achtergrond blijft doorrekenen tegen
+            # inmiddels gereset state). Raakt alleen de live-pass -- batch heeft
+            # al een eigen compression-ratio-check en blijft ongewijzigd.
+            for period in (1, 2, 3):
+                needed = period * 2
+                if current_tokens.shape[1] < needed:
+                    continue
+                prev_block = current_tokens[:, -needed:-period]
+                last_block = current_tokens[:, -period:]
+                cycle_repeats = (prev_block == last_block).all(dim=1)
+                if cycle_repeats.any():
+                    next_in_cycle = last_block[:, 0]
+                    logits[cycle_repeats, next_in_cycle[cycle_repeats]] = -np.inf
 
             current_tokens, completed = self.state.token_decoder.update(current_tokens, logits, sum_logprobs)
 
