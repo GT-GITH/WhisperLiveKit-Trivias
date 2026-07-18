@@ -205,12 +205,13 @@ class MLXAlignAtt:
                 self.state.never_fire = True
                 self.state.always_fire = False
             else:
-                # Zie whisperlivekit/simul_whisper/eow_detection.py voor de rationale.
-                # De eerdere poging veroorzaakte woordherhaling door een mismatch tussen
-                # wat intern gecommit werd en wat naar de UI ging -- de MLX-decode-loop
-                # verderop in dit bestand had dezelfde bug, nu ook hier gefixed.
-                self.state.always_fire = False
-                self.state.never_fire = True
+                # Teruggezet naar always_fire=True: zie whisperlivekit/simul_whisper/
+                # eow_detection.py voor de volledige rationale -- never_fire=True bleek
+                # in twee aparte praktijktests kapot (woordherhaling + vaker afgaande
+                # rewind/HARD RESET-logica), dit codepad heeft nooit als actieve default
+                # in productie gedraaid.
+                self.state.always_fire = True
+                self.state.never_fire = False
         else:
             logger.warning("CIF checkpoint provided but MLX CIF not implemented. Using always_fire=True")
             self.state.always_fire = True
