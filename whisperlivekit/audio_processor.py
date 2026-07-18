@@ -343,6 +343,17 @@ class AudioProcessor:
         if base_asr is not None:
             try:
                 base_asr.refresh_segment(complete=True)
+                # refresh_segment() zet cumulative_time_offset terug naar 0.0, alsof de
+                # audio opnieuw bij het begin start. Zonder correctie krijgen alle tokens
+                # na een reset een tijdstempel die weer bij ~0 begint i.p.v. doortelt vanaf
+                # het huidige punt in de sessie -- _get_last_speech_end_ms() (gebruikt door
+                # de stilte-gestuurde batch-venster-sluiting) raakt daardoor voorgoed in de
+                # war (window_end < window_start), en er sluit geen venster meer tussentijds
+                # tot de eind-flush bij Stop (die wél een eigen fallback heeft en daarom
+                # per ongeluk goed bleef gaan). Herstel de offset naar de echte absolute
+                # positie in de sessie zodat tijdstempels doorlopend blijven.
+                if hasattr(base_asr, "state") and hasattr(base_asr.state, "cumulative_time_offset"):
+                    base_asr.state.cumulative_time_offset = float(getattr(self.state, "end_buffer", 0.0) or 0.0)
             except Exception as e:
                 logger.warning(f"[LIVE][HARD_RESET] refresh_segment failed: {e}")
         else:
