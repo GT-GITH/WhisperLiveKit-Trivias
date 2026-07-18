@@ -560,6 +560,22 @@ class AlignAtt:
                 logits[:, self.tokenizer.encode(" ") + [self.tokenizer.eot]] = -np.inf
             new_segment = False
             self.state.suppress_tokens_fn(logits)
+
+            # Anti-herhaling: een token mag hoogstens 2x identiek achter elkaar
+            # gekozen worden (bv. "nee nee" is legitieme spraak); bij een 3e
+            # identieke poging op rij wordt het onderdrukt. Voorkomt runaway-
+            # herhaal-lussen ("Müzik Müzik Müzik...", "Evet Evet Evet...") die de
+            # live-decoder kan produceren op ambigue/muzikale audio. Raakt alleen
+            # de live-pass -- batch heeft al een eigen compression-ratio-check en
+            # blijft het autoritatieve, ongewijzigde pad.
+            MAX_IMMEDIATE_REPEATS = 2
+            if current_tokens.shape[1] >= MAX_IMMEDIATE_REPEATS:
+                last_tokens = current_tokens[:, -MAX_IMMEDIATE_REPEATS:]
+                all_same = (last_tokens == last_tokens[:, :1]).all(dim=1)
+                if all_same.any():
+                    repeat_token = last_tokens[:, 0]
+                    logits[all_same, repeat_token[all_same]] = -np.inf
+
             current_tokens, completed = self.state.token_decoder.update(current_tokens, logits, sum_logprobs)
 
             logger.debug(f"Decoding completed: {completed}, sum_logprobs: {sum_logprobs.tolist()}, tokens: ")

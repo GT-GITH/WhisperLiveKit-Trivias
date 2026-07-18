@@ -19,6 +19,13 @@ _PRUNE_TRIGGER_COUNT: int = 13_000    # alleen uitvoeren als de lijst deze grens
 # voorkomt dat dit soort tokens permanent in de live-context vastgezet wordt.
 _ELLIPSIS_ONLY_RE = re.compile(r'^[\s.]*$')
 
+# Defensieve backstop tegen herhaal-lussen ("Müzik Müzik Müzik...", "Evet Evet
+# Evet...") in de live-weergave, naast (niet i.p.v.) de primaire fix in de
+# decode-loop zelf (simul_whisper.py, MAX_IMMEDIATE_REPEATS). Staat tot en met
+# 3x hetzelfde woord toe (bv. "nee nee nee" is legitieme spraak); de 4e identieke
+# poging op rij wordt niet meer aan de live-buffer toegevoegd.
+_MAX_DISPLAY_REPEATS = 3
+
 class TokensAlignment:
 
     def __init__(self, state: Any, args: Any, sep: Optional[str]) -> None:
@@ -423,6 +430,14 @@ class TokensAlignment:
                 elif _ELLIPSIS_ONLY_RE.match(token.text or ""):
                     continue
                 else:
+                    stripped = (token.text or "").strip()
+                    if stripped and len(self.current_line_tokens) >= _MAX_DISPLAY_REPEATS:
+                        recent = [
+                            (t.text or "").strip()
+                            for t in self.current_line_tokens[-_MAX_DISPLAY_REPEATS:]
+                        ]
+                        if all(r == stripped for r in recent):
+                            continue
                     self.current_line_tokens.append(token)
 
             # tokens_alignment.py (in get_lines, non-diarization pad)
