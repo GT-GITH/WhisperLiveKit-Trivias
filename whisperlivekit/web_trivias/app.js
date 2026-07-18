@@ -309,6 +309,8 @@ const activeConnections = new Map();
 
 let currentSessionId  = null;
 let isRecording       = false;
+let isPaused          = false;
+let keepAliveTimer    = null;
 let serverUseAudioWorklet = true;
 let startTime         = null;
 let timerInterval     = null;
@@ -316,9 +318,17 @@ let lastBufferTranscription = "";
 let lastBufferTranslation   = "";
 let lastStatus              = "active_transcription";
 
+// Puur voor de keep-alive tijdens pauze: 100ms stilte @ 16kHz, 1-byte gate-vlag (dicht)
+// ervoor. Dit is geen echte microfoonaudio -- de mic staat dan al uit (audioContext
+// suspended) -- puur bedoeld om de WebSocket/proxy niet te laten timeouten.
+const KEEP_ALIVE_INTERVAL_MS = 15000;
+const KEEP_ALIVE_SILENT_PCM  = new Uint8Array(1600 * 2); // all-zero = digitale stilte
+
 // === DOM refs ===
 
 const recordButton       = document.getElementById("recordButton");
+const pauseButton        = document.getElementById("pauseButton");
+const stopButton         = document.getElementById("stopButton");
 const liveTranscriptDiv  = document.getElementById("liveTranscript");
 if (liveTranscriptDiv) liveTranscriptDiv.style.whiteSpace = "pre-wrap";
 const connectionStatusSpan = document.getElementById("connectionStatus");
@@ -358,12 +368,23 @@ function setAsrStatus(text) {
 
 function updateRecordButtonUI() {
   if (!recordButton) return;
-  if (isRecording) {
-    recordButton.textContent = "Stop";
-    recordButton.classList.add("recording");
-  } else {
+  if (!isRecording) {
+    recordButton.classList.remove("hidden");
     recordButton.textContent = "🎙 Start";
     recordButton.classList.remove("recording");
+    if (pauseButton) pauseButton.classList.add("hidden");
+    if (stopButton) stopButton.classList.add("hidden");
+  } else {
+    recordButton.classList.add("hidden");
+    if (pauseButton) {
+      pauseButton.classList.remove("hidden");
+      pauseButton.textContent = isPaused ? "▶ Hervatten" : "⏸ Pauze";
+      pauseButton.classList.toggle("paused", isPaused);
+    }
+    if (stopButton) {
+      stopButton.classList.remove("hidden");
+      stopButton.classList.add("recording");
+    }
   }
 }
 
@@ -371,6 +392,8 @@ function updateHint() {
   if (!hintText) return;
   if (!isRecording) {
     hintText.innerHTML = "Stel kanalen in via <strong>Configuratie</strong>, dan klik <strong>Start</strong>.";
+  } else if (isPaused) {
+    hintText.textContent = "Gepauzeerd. Klik Hervatten om door te gaan, of Stop om te beëindigen.";
   } else {
     hintText.textContent = "Opname loopt. Spreek in de microfoon(s).";
   }
@@ -489,7 +512,7 @@ async function openAudioStream(ws, cfg, useWorklet) {
     };
 
     watchdog = setInterval(() => {
-      if (isRecording && Date.now() - lastActivity > 5000) {
+      if (isRecording && !isPaused && Date.now() - lastActivity > 5000) {
         setAsrStatus("Geen audio — controleer microfoon");
       }
     }, 3000);
@@ -634,6 +657,8 @@ async function startRecording() {
 async function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
+  isPaused = false;
+  stopKeepAlive();
 
   resetTimer();
   updateRecordButtonUI();
@@ -653,8 +678,97 @@ async function stopRecording() {
   setConnectionStatus(0, channelConfigs.length);
 }
 
-function toggleRecording() {
-  if (isRecording) stopRecording(); else startRecording();
+async function confirmAndStop() {
+  if (!isRecording) return;
+  const ok = confirm(
+    "Weet je zeker dat je de opname wilt beëindigen?\n\n" +
+    "Dit sluit de sessie definitief af en kan niet ongedaan worden gemaakt. " +
+    "Gebruik Pauze als je later wilt doorgaan."
+  );
+  if (!ok) return;
+  await stopRecording();
+}
+
+// === Pauze / hervatten ===
+// Pauze stopt de daadwerkelijke microfooncapture (audioContext.suspend()) -- er wordt
+// dan helemaal niets meer opgenomen, niet alleen "niet naar ASR gestuurd". De WebSocket-
+// verbinding en de sessie op de server blijven gewoon leven; bij hervatten gaat dezelfde
+// sessie/WAV/transcript gewoon door, er wordt geen nieuwe sessie gestart.
+
+function sendKeepAliveFrames() {
+  for (const [, conn] of activeConnections.entries()) {
+    if (conn.ws?.readyState !== WebSocket.OPEN) continue;
+    // Alleen relevant voor de PCM-worklet-modus; de WebM/MediaRecorder-fallback
+    // gebruikt mediaRecorder.pause()/resume(), die geen los keep-alive-signaal nodig heeft.
+    if (!serverUseAudioWorklet) continue;
+    const framed = new Uint8Array(KEEP_ALIVE_SILENT_PCM.length + 1);
+    framed[0] = 0; // gate dicht: puur keep-alive, nooit naar ASR
+    framed.set(KEEP_ALIVE_SILENT_PCM, 1);
+    try { conn.ws.send(framed.buffer); } catch (e) {}
+  }
+}
+
+function startKeepAlive() {
+  stopKeepAlive();
+  keepAliveTimer = setInterval(sendKeepAliveFrames, KEEP_ALIVE_INTERVAL_MS);
+}
+
+function stopKeepAlive() {
+  if (keepAliveTimer) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
+}
+
+async function pauseAllConnections() {
+  for (const [, conn] of activeConnections.entries()) {
+    try {
+      if (conn.audioContext && conn.audioContext.state === "running") {
+        await conn.audioContext.suspend();
+      }
+      if (conn.mediaRecorder && conn.mediaRecorder.state === "recording") {
+        conn.mediaRecorder.pause();
+      }
+    } catch (e) { console.warn("Pauzeren mislukt voor kanaal:", conn.channelId, e); }
+  }
+}
+
+async function resumeAllConnections() {
+  for (const [, conn] of activeConnections.entries()) {
+    try {
+      if (conn.audioContext && conn.audioContext.state === "suspended") {
+        await conn.audioContext.resume();
+      }
+      if (conn.mediaRecorder && conn.mediaRecorder.state === "paused") {
+        conn.mediaRecorder.resume();
+      }
+    } catch (e) { console.warn("Hervatten mislukt voor kanaal:", conn.channelId, e); }
+  }
+}
+
+async function pauseRecording() {
+  if (!isRecording || isPaused) return;
+  isPaused = true;
+  await pauseAllConnections();
+  startKeepAlive();
+  updateRecordButtonUI();
+  updateHint();
+  setAsrStatus("Gepauzeerd");
+}
+
+async function resumeRecording() {
+  if (!isRecording || !isPaused) return;
+  isPaused = false;
+  stopKeepAlive();
+  await resumeAllConnections();
+  updateRecordButtonUI();
+  updateHint();
+  setAsrStatus("Live transcriptie actief");
+}
+
+function togglePause() {
+  if (!isRecording) return;
+  if (isPaused) resumeRecording(); else pauseRecording();
 }
 
 // === Per-kanaal berichtverwerking ===
@@ -997,7 +1111,9 @@ if (liveTranscriptDiv) {
 
 // === Event wiring ===
 
-if (recordButton) recordButton.addEventListener("click", toggleRecording);
+if (recordButton) recordButton.addEventListener("click", startRecording);
+if (pauseButton) pauseButton.addEventListener("click", togglePause);
+if (stopButton) stopButton.addEventListener("click", confirmAndStop);
 
 if (sessionsBtn) sessionsBtn.addEventListener("click", () => {
   sessionsModal.classList.remove("hidden");
