@@ -628,7 +628,15 @@ class AudioProcessor:
         """Client-side Pauze: sluit het huidige live-segment + batch-venster netjes
         af (zelfde bouwstenen als de stop-sequentie in process_audio), maar zonder
         is_stopping te zetten, de WAV te sluiten of de queues/ffmpeg te stoppen --
-        de sessie blijft volledig leven voor Hervatten."""
+        de sessie blijft volledig leven voor Hervatten.
+
+        Reset ook de live-decoder: een pauze is een echte discontinuïteit in de
+        audio (de microfoon staat écht stil), en zonder reset probeert de decoder
+        na hervatten door te decoderen met verouderde interne context alsof de
+        audio doorlopend was -- geobserveerd als een woordherhaling-lus ("Evet
+        Evet Evet...") die kort na hervatten begint. validated_segments/
+        batch_groups (de al opgebouwde transcript-historie) blijven ongemoeid;
+        alleen de in-flight decoder-hypothese wordt gewist."""
         if self.pcm_buffer:
             await self.handle_pcm_data()
         if self.current_silence:
@@ -637,6 +645,10 @@ class AudioProcessor:
             except Exception as e:
                 logger.warning(f"[PAUSE][FLUSH] ending current silence failed: {e}")
         await self._flush_final_batch_tail(reason="pause")
+        try:
+            self._hard_reset_live_decoder(reason="pause")
+        except Exception as e:
+            logger.warning(f"[PAUSE][FLUSH] live decoder reset failed: {e}")
         logger.info(f"[PAUSE][FLUSH] channel={self.channel_id} session paused, segment/window flushed")
 
     async def transcription_processor(self) -> None:
