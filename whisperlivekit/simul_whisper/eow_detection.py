@@ -10,8 +10,13 @@ def load_cif(cfg, n_audio_state, device):
             never_fire = True
             always_fire = False
         else:
-            always_fire = True
-            never_fire = False
+            # Zonder CIF-checkpoint kan er geen betrouwbare per-token boundary-detectie
+            # gebeuren. Volgens --cif-ckpt-path's eigen documentatie is de bedoelde default
+            # dan: het laatste woord altijd vasthouden (nooit direct committen) — niet
+            # always_fire, wat een los onzeker laatste token (bv. "...") meteen permanent
+            # in de live-context vastzet en laat opstapelen.
+            always_fire = False
+            never_fire = True
     else:
         always_fire = False
         never_fire = cfg.never_fire
