@@ -825,9 +825,10 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     const st = (item?.state || "FINAL").toUpperCase();
 
     let cls = "seg";
+    const isBatchConfirmed = st !== "LIVE" && !!item.text_batch;
     if (st === "LIVE") {
       cls += " seg-live";
-    } else if (item.text_batch) {
+    } else if (isBatchConfirmed) {
       cls += " seg-batch";
     } else {
       cls += " seg-final";
@@ -855,7 +856,13 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     const roleColor = getRoleColor(roleId);
     const roleLabel = `<span class="seg-role" style="color:${roleColor}">${escapeHtml(getRoleLabel(roleId))}</span> `;
 
-    htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}</div>`);
+    // Wit vs. groen oogde voor klanten als "werkt niet goed" -- FINAL en batch-bevestigde
+    // tekst zien er nu identiek uit; alleen een klein vinkje geeft aan dat de batch-pass
+    // dit segment heeft bevestigd. Het onderscheid blijft intact in de data (text_batch),
+    // alleen de live-weergave is verzacht.
+    const confirmedBadge = isBatchConfirmed ? ` <span class="seg-confirmed" title="Bevestigd door batch-pass">✓</span>` : "";
+
+    htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}${confirmedBadge}</div>`);
   }
 
   const hasLiveContent = (lines || []).some(item => (item?.text || item?.text_live) && !item?.text_batch && item?.speaker !== -2);

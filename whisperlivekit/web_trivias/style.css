@@ -419,9 +419,16 @@ body {
   font-weight: bold;
 }
 
+/* Zelfde uiterlijk als .seg-final: klanten lazen wit-vs-groen als "werkt niet goed".
+   Batch-bevestiging wordt nu alleen via het .seg-confirmed vinkje getoond. */
 .seg-batch {
-  color: #4ade80; /* licht groen */
+  color: #fff;
   font-weight: bold;
+}
+
+.seg-confirmed {
+  color: #4ade80; /* licht groen, alleen voor het vinkje zelf */
+  font-weight: normal;
 }
 
 .seg-buffer {

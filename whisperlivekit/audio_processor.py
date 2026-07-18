@@ -1310,7 +1310,11 @@ class AudioProcessor:
                         # Hoge kwaliteit audio met licht verhoogde no_speech_prob:
                         # YouTube-video's en niet-Europese talen (bijv. Turks) scoren
                         # structureel hoger op no_speech_prob ondanks uitstekende logprob.
-                        (_nsp < 0.85 and batch_avg_logprob is not None and batch_avg_logprob > -0.3)
+                        # Drempel bewust ruim (0.92) omdat logprob > -0.3 hier al de echte
+                        # kwaliteitspoort is -- een net-niet-geval (bv. nsp=0.8507 bij
+                        # logprob=-0.094, geobserveerd bij Turks materiaal) werd anders
+                        # ten onrechte permanent onbevestigd (wit) gelaten.
+                        (_nsp < 0.92 and batch_avg_logprob is not None and batch_avg_logprob > -0.3)
                     )
 
                     # Na per-sentence filtering is de volledige batch_txt al schoon;
