@@ -13,7 +13,6 @@ class AlignAttConfig():
     never_fire: bool = False
     language: str = field(default="zh")
     nonspeech_prob: float = 0.5
-    min_language_prob: float = 0.05  # conservatief: alleen weigeren bij sterke twijfel over de taal
     audio_min_len: float = 2.0
     decoder_type: Literal["greedy","beam"] = "beam"
     beam_size: int = 3

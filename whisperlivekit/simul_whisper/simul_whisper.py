@@ -553,25 +553,6 @@ class AlignAtt:
                     logger.info("no speech, stop")
                     break
 
-                # Taal-mismatch: probs_at_sot bevat ook een kans per taal-token, zelfs
-                # als de taal geforceerd is. Een lage kans hier betekent dat het model
-                # zelf niet gelooft dat deze audio in de geconfigureerde kanaaltaal is
-                # -- een sterk signaal voor lek van een ander kanaal (bv. Turkse audio
-                # geforceerd door een Nederlands-getunede decoder, wat anders een
-                # overtuigend klinkende maar volledig gehallucineerde "vertaling"
-                # oplevert). Alleen relevant bij geforceerde taal: bij "auto" past de
-                # tokenizer zich al aan de gedetecteerde taal aan (zie hierboven), dus
-                # daar zou dit altijd hoog scoren.
-                if self.cfg.language != "auto":
-                    lang_prob = probs_at_sot[:, self.tokenizer.language_token].tolist()[0]
-                    if lang_prob < self.cfg.min_language_prob:
-                        logger.info(
-                            f"[LANG_MISMATCH] taalkans {lang_prob:.4f} < drempel "
-                            f"{self.cfg.min_language_prob} voor '{self.tokenizer.language}' "
-                            f"-- stop (waarschijnlijk kanaal-lek in verkeerde taal)"
-                        )
-                        break
-
             logits = logits[:, -1, :]  # logits for the last token
 
             # suppress blank tokens only at the beginning of the segment

@@ -571,18 +571,6 @@ class MLXAlignAtt:
                     logger.info("no speech, stop")
                     break
 
-                # Taal-mismatch: zie whisperlivekit/simul_whisper/simul_whisper.py voor
-                # de volledige rationale. Alleen relevant bij geforceerde taal.
-                if self.cfg.language != "auto":
-                    lang_prob = np.array(probs_at_sot[:, self.tokenizer.language_token]).tolist()[0]
-                    if lang_prob < self.cfg.min_language_prob:
-                        logger.info(
-                            f"[LANG_MISMATCH] taalkans {lang_prob:.4f} < drempel "
-                            f"{self.cfg.min_language_prob} voor '{self.tokenizer.language}' "
-                            f"-- stop (waarschijnlijk kanaal-lek in verkeerde taal)"
-                        )
-                        break
-
             logits = logits[:, -1, :]  # Last token logits
 
             # Suppress tokens at segment start
