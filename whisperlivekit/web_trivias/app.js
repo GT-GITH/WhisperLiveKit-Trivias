@@ -67,7 +67,8 @@ const GATE_PRESETS = [
 
 const CROSS_GATE_STORAGE_KEY = "trivias_cross_gate_enabled";
 const ARBITRATION_MARGIN = 0.4;  // eigen RMS moet >= 40% van de luidste andere kanaal zijn
-const CLOSE_HOLD_MS      = 250;  // verdenking moet dit lang aanhouden vóór ASR-onderdrukking
+const CLOSE_HOLD_MS      = 100;  // verdenking moet dit lang aanhouden vóór ASR-onderdrukking
+const REOPEN_HOLD_MS     = 200;  // hersteld-van-verdenking moet dit lang aanhouden vóór heropenen
 const STALE_MS           = 200;  // negeer peers waarvan we >200ms niets meer hoorden
 
 let crossGateEnabled = true;
@@ -89,6 +90,9 @@ function saveCrossGateEnabled() {
 
 // Combineert de eigen stilte-gate (stage 1) met cross-kanaal arbitrage (stage 2).
 // Bij twijfel (geen duidelijk dominant ander kanaal) blijft dit kanaal altijd open.
+// Asymmetrische hysterese: snel dicht bij verdenking (CLOSE_HOLD_MS), maar pas
+// weer open na een aangehouden herstel (REOPEN_HOLD_MS) -- voorkomt flikkeren
+// bij een korte terugval van het dominante kanaal (bv. een adempauze).
 function computeCombinedGate(uid, state) {
   if (!state.gateOpen1) return false; // eigen stilte-gate heeft altijd voorrang
   if (!crossGateEnabled) return true;
@@ -106,11 +110,23 @@ function computeCombinedGate(uid, state) {
 
   if (!suspected) {
     state.suspectSince = null;
-    return true;
+    if (!state.gateClosed) return true;
+    // We waren dicht: pas heropenen na een korte, aangehouden hersteltijd.
+    if (state.recoverySince == null) state.recoverySince = now;
+    if (now - state.recoverySince >= REOPEN_HOLD_MS) {
+      state.gateClosed = false;
+      state.recoverySince = null;
+      return true;
+    }
+    return false;
   }
 
+  state.recoverySince = null;
   if (state.suspectSince == null) state.suspectSince = now;
-  return (now - state.suspectSince) < CLOSE_HOLD_MS; // pas sluiten na de hold-periode
+  if (now - state.suspectSince >= CLOSE_HOLD_MS) {
+    state.gateClosed = true;
+  }
+  return !state.gateClosed;
 }
 
 // === Channel config management ===
@@ -492,7 +508,7 @@ async function openAudioStream(ws, cfg, useWorklet) {
     // Noise gate instellen op de worklet
     workletNode.port.postMessage({ threshold: cfg.gateThreshold ?? 0 });
 
-    channelAudioState.set(cfg.uid, { rms: 0, gateOpen1: false, lastUpdate: 0, suspectSince: null });
+    channelAudioState.set(cfg.uid, { rms: 0, gateOpen1: false, lastUpdate: 0, suspectSince: null, recoverySince: null, gateClosed: false });
 
     let lastActivity = Date.now();
     workletNode.port.onmessage = e => {
