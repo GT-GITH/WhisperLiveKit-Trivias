@@ -425,9 +425,15 @@ function buildWebSocketUrl(sessionId, channelId, cfg) {
 }
 
 async function openAudioStream(ws, cfg, useWorklet) {
-  const audioConstraints = cfg.deviceId
-    ? { deviceId: { exact: cfg.deviceId } }
-    : true;
+  // AGC/echo-cancellation/noise-suppression expliciet uit: deze normaliseren volume
+  // en vervormen het signaal, wat zowel de cross-kanaal RMS-arbitrage ondermijnt
+  // (lek wordt opgepompt richting normaal niveau) als de ruwe audio-integriteit aantast.
+  const audioConstraints = {
+    autoGainControl: false,
+    echoCancellation: false,
+    noiseSuppression: false,
+    ...(cfg.deviceId ? { deviceId: { exact: cfg.deviceId } } : {}),
+  };
 
   const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
 
