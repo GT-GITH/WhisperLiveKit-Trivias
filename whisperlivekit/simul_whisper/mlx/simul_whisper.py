@@ -205,12 +205,11 @@ class MLXAlignAtt:
                 self.state.never_fire = True
                 self.state.always_fire = False
             else:
-                # Zie whisperlivekit/simul_whisper/eow_detection.py voor de rationale:
-                # zonder CIF-checkpoint moet het laatste woord altijd vastgehouden worden,
-                # niet direct gecommit (always_fire), om te voorkomen dat een los onzeker
-                # token permanent in de live-context vastgezet wordt en opstapelt.
-                self.state.always_fire = False
-                self.state.never_fire = True
+                # Teruggezet naar always_fire=True: zie whisperlivekit/simul_whisper/
+                # eow_detection.py voor de rationale -- never_fire=True bleek in de
+                # praktijk structurele woordherhaling te veroorzaken in de live tekst.
+                self.state.always_fire = True
+                self.state.never_fire = False
         else:
             logger.warning("CIF checkpoint provided but MLX CIF not implemented. Using always_fire=True")
             self.state.always_fire = True
