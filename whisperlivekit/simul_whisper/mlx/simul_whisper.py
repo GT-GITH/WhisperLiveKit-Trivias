@@ -205,6 +205,11 @@ class MLXAlignAtt:
                 self.state.never_fire = True
                 self.state.always_fire = False
             else:
+                # Teruggezet naar always_fire=True: zie whisperlivekit/simul_whisper/
+                # eow_detection.py voor de volledige rationale -- never_fire=True bleek
+                # in twee aparte praktijktests kapot (woordherhaling + vaker afgaande
+                # rewind/HARD RESET-logica), dit codepad heeft nooit als actieve default
+                # in productie gedraaid.
                 self.state.always_fire = True
                 self.state.never_fire = False
         else:
@@ -630,10 +635,16 @@ class MLXAlignAtt:
             new_hypothesis = tokens_to_split
             split_words, split_tokens = self.tokenizer.split_to_word_tokens(new_hypothesis)
         else:
-            split_words, split_tokens = self.tokenizer.split_to_word_tokens(tokens_to_split)
-            if len(split_words) > 1:
-                new_hypothesis = [i for sublist in split_tokens[:-1] for i in sublist]
+            # split_words/split_tokens moeten dezelfde afgekapte subset zijn als
+            # new_hypothesis, anders wordt het vastgehouden laatste woord elke cyclus
+            # opnieuw als "nieuw" naar de UI gestuurd (structurele woordherhaling).
+            # Zie whisperlivekit/simul_whisper/simul_whisper.py voor de volledige rationale.
+            full_split_words, full_split_tokens = self.tokenizer.split_to_word_tokens(tokens_to_split)
+            if len(full_split_words) > 1:
+                split_words, split_tokens = full_split_words[:-1], full_split_tokens[:-1]
+                new_hypothesis = [i for sublist in split_tokens for i in sublist]
             else:
+                split_words, split_tokens = [], []
                 new_hypothesis = []
 
         logger.debug(f"new_hypothesis: {new_hypothesis}")

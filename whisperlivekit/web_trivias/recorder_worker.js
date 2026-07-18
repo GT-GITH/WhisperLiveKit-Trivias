@@ -7,7 +7,7 @@ self.onmessage = function (e) {
       init(e.data.config);
       break;
     case 'record':
-      record(e.data.buffer);
+      record(e.data.buffer, e.data.gateOpen);
       break;
   }
 };
@@ -17,11 +17,11 @@ function init(config) {
   targetSampleRate = config.targetSampleRate || 16000;
 }
 
-function record(inputBuffer) {
+function record(inputBuffer, gateOpen) {
   const buffer = new Float32Array(inputBuffer);
   const resampledBuffer = resample(buffer, sampleRate, targetSampleRate);
   const pcmBuffer = toPCM(resampledBuffer);
-  self.postMessage({ buffer: pcmBuffer }, [pcmBuffer]);
+  self.postMessage({ buffer: pcmBuffer, gateOpen }, [pcmBuffer]);
 }
 
 function resample(buffer, from, to) {

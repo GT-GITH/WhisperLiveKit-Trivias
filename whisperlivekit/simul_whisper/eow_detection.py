@@ -10,6 +10,16 @@ def load_cif(cfg, n_audio_state, device):
             never_fire = True
             always_fire = False
         else:
+            # LET OP: never_fire=True (laatste woord altijd vasthouden) is op papier de
+            # bedoelde default volgens --cif-ckpt-path's documentatie, maar is in twee
+            # aparte praktijktests kapot gebleken: (1) UI/model-mismatch die woordherhaling
+            # veroorzaakte (gefixed in simul_whisper.py's decode-loop, blijft behouden),
+            # en (2) een bredere, herhaaldelijk herberekende decodeervenster dat de
+            # bestaande [rewind detected]/HARD RESET-logica vaker laat afgaan, wat hele
+            # live-segmenten laat verdwijnen en herstarten. Dit codepad heeft nog nooit
+            # als actieve default in productie gedraaid. Teruggezet naar het geteste
+            # always_fire=True; de ellipsis-runaway blijft opgevangen door de
+            # onafhankelijke filter in tokens_alignment.py.
             always_fire = True
             never_fire = False
     else:

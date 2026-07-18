@@ -1,253 +1,351 @@
-// Trivias STT Simple 1-channel UI with microphone selection
+// Trivias STT Multi-channel UI
 
-let currentLines = [];
-let lineById = new Map();
-let lastBufferTranscription = "";
-let lastBufferTranslation = "";
-let lastStatus = "active_transcription";
+// === Rol- en taaldefinities ===
 
-let websocket = null;
-let websocketUrl = null;
+const ROLES = [
+  { id: "employee",    label: "Medewerker",  color: "#3b82f6" },
+  { id: "interpreter", label: "Tolk",        color: "#a855f7", hasLanguage2: true },
+  { id: "lawyer",      label: "Advocaat",    color: "#22c55e" },
+  { id: "foreign",     label: "Vreemdeling", color: "#f97316" },
+  { id: "default",     label: "Spreker",     color: "#9ca3af" },
+];
 
-let isRecording = false;
-let serverUseAudioWorklet = true;
+const LANGUAGES = [
+  { code: "nl", label: "Nederlands" },
+  { code: "en", label: "Engels" },
+  { code: "ar", label: "Arabisch" },
+  { code: "fa", label: "Farsi / Perzisch" },
+  { code: "ru", label: "Russisch" },
+  { code: "fr", label: "Frans" },
+  { code: "de", label: "Duits" },
+  { code: "tr", label: "Turks" },
+  { code: "so", label: "Somalisch" },
+  { code: "ti", label: "Tigrinya" },
+  { code: "ku", label: "Koerdisch" },
+  { code: "sr", label: "Servisch" },
+  { code: "bs", label: "Bosnisch" },
+];
 
-let audioContext = null;
-let microphone = null;
-let workletNode = null;
-let recorderWorker = null;
-let mediaRecorder = null;
-let mediaStream = null;
+function getRoleById(id) {
+  return ROLES.find(r => r.id === id) || ROLES[ROLES.length - 1];
+}
 
-let startTime = null;
-let timerInterval = null;
-let lastFullTranscript = "";
+function getRoleLabel(roleId) {
+  return getRoleById(roleId).label;
+}
 
-let configResolve = null;
-let waitingForStop = false;
-let userClosing = false;
+function getRoleColor(roleId) {
+  return getRoleById(roleId).color;
+}
 
-// NEW: microphone selection state
+// "foreign_ar" → "foreign", "interpreter" → "interpreter"
+function channelIdToRoleId(channelId) {
+  if (!channelId) return "default";
+  if (channelId.startsWith("foreign")) return "foreign";
+  return channelId;
+}
+
+// channel_id op de server: "foreign" + taal → "foreign_ar", rest ongewijzigd
+function getChannelId(cfg) {
+  if (cfg.roleId === "foreign") return `foreign_${cfg.language || "nl"}`;
+  return cfg.roleId;
+}
+
+// === Noise gate presets ===
+
+const GATE_PRESETS = [
+  { label: "Uit",    value: 0     },
+  { label: "Laag",   value: 0.005 },
+  { label: "Normaal",value: 0.015 },
+  { label: "Streng", value: 0.03  },
+];
+
+// === Cross-kanaal anti-lek arbitrage ===
+// Onderdrukt ASR op een kanaal wanneer een ander kanaal duidelijk luider is
+// (waarschijnlijk akoestisch lek van diens spreker in deze microfoon).
+// Raakt nooit de WAV-opname — die krijgt altijd de volledige, ongewijzigde audio.
+
+const CROSS_GATE_STORAGE_KEY = "trivias_cross_gate_enabled";
+const ARBITRATION_MARGIN = 0.4;  // eigen RMS moet >= 40% van de luidste andere kanaal zijn
+const CLOSE_HOLD_MS      = 250;  // verdenking moet dit lang aanhouden vóór ASR-onderdrukking
+const STALE_MS           = 200;  // negeer peers waarvan we >200ms niets meer hoorden
+
+let crossGateEnabled = true;
+
+// uid → { rms, gateOpen1, lastUpdate, suspectSince }
+const channelAudioState = new Map();
+
+function loadCrossGateEnabled() {
+  try {
+    const saved = localStorage.getItem(CROSS_GATE_STORAGE_KEY);
+    if (saved !== null) { crossGateEnabled = saved === "1"; return; }
+  } catch (e) { /* ignore */ }
+  crossGateEnabled = true;
+}
+
+function saveCrossGateEnabled() {
+  localStorage.setItem(CROSS_GATE_STORAGE_KEY, crossGateEnabled ? "1" : "0");
+}
+
+// Combineert de eigen stilte-gate (stage 1) met cross-kanaal arbitrage (stage 2).
+// Bij twijfel (geen duidelijk dominant ander kanaal) blijft dit kanaal altijd open.
+function computeCombinedGate(uid, state) {
+  if (!state.gateOpen1) return false; // eigen stilte-gate heeft altijd voorrang
+  if (!crossGateEnabled) return true;
+
+  const now = Date.now();
+  let maxPeerRms = 0;
+  for (const [otherUid, peer] of channelAudioState.entries()) {
+    if (otherUid === uid) continue;
+    if (!peer.gateOpen1) continue;
+    if (now - peer.lastUpdate > STALE_MS) continue;
+    if (peer.rms > maxPeerRms) maxPeerRms = peer.rms;
+  }
+
+  const suspected = maxPeerRms > 0 && state.rms < maxPeerRms * ARBITRATION_MARGIN;
+
+  if (!suspected) {
+    state.suspectSince = null;
+    return true;
+  }
+
+  if (state.suspectSince == null) state.suspectSince = now;
+  return (now - state.suspectSince) < CLOSE_HOLD_MS; // pas sluiten na de hold-periode
+}
+
+// === Channel config management ===
+
+const STORAGE_KEY = "trivias_channel_config";
+
+let channelConfigs = [];
 let availableMics = [];
-let selectedDeviceId = null;
 
-let pendingSegmentUpdates = new Map(); // id -> last update payload
-let currentSessionId = null;
-let currentChannelId = "default";
-
-// DOM elements
-const recordButton = document.getElementById("recordButton");
-const liveTranscriptDiv = document.getElementById("liveTranscript");
-if (liveTranscriptDiv) liveTranscriptDiv.style.whiteSpace = "pre-wrap";
-
-const finalTranscriptDiv = document.getElementById("finalTranscript");
-const connectionStatusSpan = document.getElementById("connectionStatus");
-const micStatusSpan = document.getElementById("micStatus");
-const modeStatusSpan = document.getElementById("modeStatus");
-const asrStatusSpan = document.getElementById("asrStatus");
-const timerSpan = document.getElementById("recordingTimer");
-const hintText = document.getElementById("hintText");
-const micSelect = document.getElementById("micSelect");
-// Zin-segmenten: overschrijven batch groups na front_data render
-const sentenceSegmentMap = new Map(); // parentId → [zinnen]
-
-// === Sessie browser ===
-const sessionsBtn = document.getElementById("sessionsBtn");
-const sessionsModal = document.getElementById("sessionsModal");
-const sessionsModalClose = document.getElementById("sessionsModalClose");
-const sessionsList = document.getElementById("sessionsList");
-
-async function loadSessionsList() {
-  if (!sessionsList) return;
-  sessionsList.innerHTML = '<p class="sessions-loading">Laden...</p>';
+function loadChannelConfigs() {
   try {
-    const resp = await fetch("/sessions/list");
-    const data = await resp.json();
-    if (!data.sessions || data.sessions.length === 0) {
-      sessionsList.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      channelConfigs = JSON.parse(saved);
       return;
     }
-    sessionsList.innerHTML = "";
-    for (const s of data.sessions) {
-      const date = s.created_at 
-        ? s.created_at.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, "$3-$2-$1 $4:$5")
-        : "onbekend";
-      const hasTranscript = s.has_transcript;
-      const item = document.createElement("div");
-      item.className = "session-item";
-      item.innerHTML = `
-        <div class="session-item-meta">
-          <span class="session-item-id">${s.session_id.substring(0, 18)}…</span>
-          <span class="session-item-date">📅 ${date} · 🎙 ${s.channels.join(", ")} · ${s.wav_size_mb} MB</span>
+  } catch (e) { /* ignore */ }
+  channelConfigs = [
+    { uid: "ch_default", roleId: "employee", deviceId: "", language: "nl", language2: null, gateThreshold: 0.015 },
+  ];
+}
+
+function saveChannelConfigs() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(channelConfigs));
+}
+
+function addChannelConfig() {
+  channelConfigs.push({
+    uid: "ch_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+    roleId: "default",
+    deviceId: "",
+    language: "nl",
+    language2: null,
+    gateThreshold: 0.015,
+  });
+  saveChannelConfigs();
+  renderChannelConfigs();
+}
+
+function removeChannelConfig(uid) {
+  channelConfigs = channelConfigs.filter(c => c.uid !== uid);
+  saveChannelConfigs();
+  renderChannelConfigs();
+}
+
+// === Tab management ===
+
+function initTabs() {
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".tab-pane").forEach(p => p.classList.add("hidden"));
+      btn.classList.add("active");
+      document.getElementById(`tab-${btn.dataset.tab}`)?.classList.remove("hidden");
+    });
+  });
+}
+
+// === Config tab rendering ===
+
+function cleanMicLabel(label) {
+  return (label || "")
+    .replace(/^Standaard\s*-\s*/i, "")
+    .replace(/^Communicatie\s*-\s*/i, "")
+    .trim();
+}
+
+function buildLangOptions(selectedCode) {
+  return LANGUAGES.map(l =>
+    `<option value="${l.code}"${l.code === selectedCode ? " selected" : ""}>${l.label}</option>`
+  ).join("");
+}
+
+function buildMicOptions(selectedDeviceId) {
+  let html = `<option value=""${!selectedDeviceId ? " selected" : ""}>Systeemstandaard</option>`;
+  let idx = 1;
+  for (const mic of availableMics) {
+    const label = cleanMicLabel(mic.label) || `Microfoon ${idx++}`;
+    const sel = mic.deviceId === selectedDeviceId ? " selected" : "";
+    html += `<option value="${escapeHtml(mic.deviceId)}"${sel}>${escapeHtml(label)}</option>`;
+  }
+  return html;
+}
+
+function renderChannelConfigs() {
+  const list = document.getElementById("channelConfigList");
+  if (!list) return;
+  list.innerHTML = "";
+
+  for (const cfg of channelConfigs) {
+    const role = getRoleById(cfg.roleId);
+    const isInterpreter = cfg.roleId === "interpreter";
+
+    const div = document.createElement("div");
+    div.className = "channel-row";
+    div.dataset.uid = cfg.uid;
+    div.innerHTML = `
+      <div class="channel-color-bar" style="background:${role.color}"></div>
+      <div class="channel-row-fields">
+        <div class="channel-field">
+          <label>Rol</label>
+          <select class="channel-select ch-role">
+            ${ROLES.map(r => `<option value="${r.id}"${r.id === cfg.roleId ? " selected" : ""}>${r.label}</option>`).join("")}
+          </select>
         </div>
-        <span class="session-item-badge ${hasTranscript ? "" : "no-transcript"}">
-          ${hasTranscript ? "transcript ✓" : "geen transcript"}
-        </span>`;
-      if (hasTranscript) {
-        item.addEventListener("click", () => loadSessionTranscript(s.session_id, s.channels[0] || "default"));
-      }
-      sessionsList.appendChild(item);
-    }
-  } catch (e) {
-    sessionsList.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
+        <div class="channel-field">
+          <label>Microfoon</label>
+          <select class="channel-select ch-mic">
+            ${buildMicOptions(cfg.deviceId)}
+          </select>
+        </div>
+        <div class="channel-field">
+          <label class="ch-lang-label">${isInterpreter ? "Taal 1" : "Taal"}</label>
+          <select class="channel-select ch-lang">
+            ${buildLangOptions(cfg.language || "nl")}
+          </select>
+        </div>
+        <div class="channel-field ch-lang2-field${isInterpreter ? "" : " hidden"}">
+          <label>Taal 2</label>
+          <select class="channel-select ch-lang2">
+            ${buildLangOptions(cfg.language2 || "ar")}
+          </select>
+        </div>
+        <div class="channel-field">
+          <label>Ruispoort</label>
+          <select class="channel-select ch-gate">
+            ${GATE_PRESETS.map(p => `<option value="${p.value}"${p.value === (cfg.gateThreshold ?? 0.015) ? " selected" : ""}>${p.label}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+      <button class="ch-remove" title="Kanaal verwijderen">✕</button>
+    `;
+
+    const colorBar   = div.querySelector(".channel-color-bar");
+    const roleSelect = div.querySelector(".ch-role");
+    const lang2Field = div.querySelector(".ch-lang2-field");
+    const langLabel  = div.querySelector(".ch-lang-label");
+
+    roleSelect.addEventListener("change", () => {
+      const c = channelConfigs.find(x => x.uid === cfg.uid);
+      if (!c) return;
+      c.roleId = roleSelect.value;
+      const newRole = getRoleById(c.roleId);
+      colorBar.style.background = newRole.color;
+      const isInterp = c.roleId === "interpreter";
+      lang2Field.classList.toggle("hidden", !isInterp);
+      langLabel.textContent = isInterp ? "Taal 1" : "Taal";
+      saveChannelConfigs();
+    });
+
+    div.querySelector(".ch-mic").addEventListener("change", e => {
+      const c = channelConfigs.find(x => x.uid === cfg.uid);
+      if (c) { c.deviceId = e.target.value; saveChannelConfigs(); }
+    });
+
+    div.querySelector(".ch-lang").addEventListener("change", e => {
+      const c = channelConfigs.find(x => x.uid === cfg.uid);
+      if (c) { c.language = e.target.value; saveChannelConfigs(); }
+    });
+
+    div.querySelector(".ch-lang2").addEventListener("change", e => {
+      const c = channelConfigs.find(x => x.uid === cfg.uid);
+      if (c) { c.language2 = e.target.value; saveChannelConfigs(); }
+    });
+
+    div.querySelector(".ch-gate").addEventListener("change", e => {
+      const c = channelConfigs.find(x => x.uid === cfg.uid);
+      if (c) { c.gateThreshold = parseFloat(e.target.value); saveChannelConfigs(); }
+    });
+
+    div.querySelector(".ch-remove").addEventListener("click", () => removeChannelConfig(cfg.uid));
+
+    list.appendChild(div);
   }
 }
 
-async function loadSessionTranscript(sessionId, channelId) {
-  try {
-    const resp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/transcript?channel_id=${encodeURIComponent(channelId)}`);
-    if (!resp.ok) {
-      alert("Transcript niet gevonden.");
-      return;
-    }
-    const data = await resp.json();
-    // Sluit modal
-    sessionsModal.classList.add("hidden");
-    // Laad in UI
-    currentSessionId = data.session_id;
-    currentChannelId = data.channel_id;
-    currentLines = [];
-    lineById = new Map();
-    sentenceSegmentMap.clear();
-    // Verwerk segments als segment_updates
-    for (const seg of (data.segments || [])) {
-      const id = seg.id;
-      if (!id) continue;
-      
-      const sentMatch = id.match(/^(.+)_s(\d+)$/);
-      if (sentMatch) {
-        const parentId = sentMatch[1];
-        if (!sentenceSegmentMap.has(parentId)) {
-          sentenceSegmentMap.set(parentId, []);
-          // Maak synthetische parent aan als die nog niet bestaat
-          if (!lineById.has(parentId)) {
-            const parentLine = {
-              id: parentId,
-              text: "",
-              text_batch: null,
-              state: "FINAL",
-              start_ms: seg.start_ms || 0,
-              end_ms: seg.end_ms || 0,
-              speaker: -1,
-            };
-            currentLines.push(parentLine);
-            lineById.set(parentId, parentLine);
-          }
-        }
-        sentenceSegmentMap.get(parentId).push({
-          id, text: seg.text_final || seg.text_batch || "",
-          text_batch: seg.text_batch || null,
-          state: "FINAL",
-          start_ms: seg.start_ms || 0,
-          end_ms: seg.end_ms || 0,
-          speaker: -1,
-        });
-      } else {
-        const line = {
-          id, text: seg.text_final || seg.text_batch || "",
-          text_batch: seg.text_batch || null,
-          state: "FINAL",
-          start_ms: seg.start_ms || 0,
-          end_ms: seg.end_ms || 0,
-          speaker: -1,
-        };
-        currentLines.push(line);
-        lineById.set(id, line);
-      }
-    }
-    // Sorteer sentenceSegmentMap entries
-    for (const [pid, sents] of sentenceSegmentMap.entries()) {
-      sents.sort((a, b) => a.start_ms - b.start_ms);
-    }
-    const renderLines = currentLines.map(l => {
-      const sents = sentenceSegmentMap.get(l.id);
-      return sents ? sents : [l];
-    }).flat();
-    if (liveTranscriptDiv) {
-      renderTranscript(renderLines, "", "", "active_transcription");
-    }
-    setAsrStatus(`Sessie geladen: ${sessionId.substring(0, 12)}…`);
-  } catch (e) {
-    alert("Fout bij laden transcript: " + e.message);
-  }
-}
+// === Multi-channel transcript state ===
 
-if (sessionsBtn) {
-  sessionsBtn.addEventListener("click", () => {
-    sessionsModal.classList.remove("hidden");
-    loadSessionsList();
-  });
-}
+// Per kanaal: lines array, id→line map, parentId→sentences map, pending updates
+const channelLines        = new Map(); // channelId → line[]
+const channelLineById     = new Map(); // channelId → Map(id → line)
+const channelSentenceMap  = new Map(); // channelId → Map(parentId → sentence[])
+const channelPendingUpd   = new Map(); // channelId → Map(id → update)
 
-if (sessionsModalClose) {
-  sessionsModalClose.addEventListener("click", () => {
-    sessionsModal.classList.add("hidden");
-  });
-}
+// Voor sessie-terugluister (single-channel pad)
+let playbackLines = [];
+let playbackLineById = new Map();
+let playbackSentenceMap = new Map();
+let playbackChannelId = "default";
+let isPlaybackMode = false;
 
-if (sessionsModal) {
-  sessionsModal.addEventListener("click", (e) => {
-    if (e.target === sessionsModal) sessionsModal.classList.add("hidden");
-  });
-}
-// Rol mapping: channel_id → leesbare naam
-const CHANNEL_ROLE_LABELS = {
-  "employee":    "Medewerker",
-  "interpreter": "Tolk",
-  "lawyer":      "Advocaat",
-  "foreign_nl":  "Vreemdeling",
-  "foreign_ar":  "Vreemdeling",
-  "foreign_fa":  "Vreemdeling",
-  "foreign_ru":  "Vreemdeling",
-  "foreign_en":  "Vreemdeling",
-  "default":     "Spreker",
-};
+// === Opname state ===
 
-function getRoleLabel(channelId) {
-  return CHANNEL_ROLE_LABELS[channelId] || "Spreker";
-}
+// uid → { ws, channelId, audioContext, mediaStream, workletNode, recorderWorker, mediaRecorder, watchdog }
+const activeConnections = new Map();
 
-function initWebsocketUrl() {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const host = window.location.host || "localhost:8000";
-  // We gebruiken nu /ws (server heeft compat endpoint naar /asr)
-  websocketUrl = `${proto}//${host}/ws`;
-}
+let currentSessionId  = null;
+let isRecording       = false;
+let serverUseAudioWorklet = true;
+let startTime         = null;
+let timerInterval     = null;
+let lastBufferTranscription = "";
+let lastBufferTranslation   = "";
+let lastStatus              = "active_transcription";
 
-initWebsocketUrl();
+// === DOM refs ===
 
-function formatMs(ms) {
-  const totalSec = Math.floor(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  return h > 0
-    ? `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
-    : `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
-}
+const recordButton       = document.getElementById("recordButton");
+const liveTranscriptDiv  = document.getElementById("liveTranscript");
+if (liveTranscriptDiv) liveTranscriptDiv.style.whiteSpace = "pre-wrap";
+const connectionStatusSpan = document.getElementById("connectionStatus");
+const modeStatusSpan       = document.getElementById("modeStatus");
+const asrStatusSpan        = document.getElementById("asrStatus");
+const timerSpan            = document.getElementById("recordingTimer");
+const hintText             = document.getElementById("hintText");
 
-function setConnectionStatus(connected) {
+const sessionsBtn        = document.getElementById("sessionsBtn");
+const sessionsModal      = document.getElementById("sessionsModal");
+const sessionsModalClose = document.getElementById("sessionsModalClose");
+const sessionsList       = document.getElementById("sessionsList");
+
+// === Status UI helpers ===
+
+function setConnectionStatus(connectedCount, totalCount) {
   if (!connectionStatusSpan) return;
-  if (connected) {
-    connectionStatusSpan.textContent = "Verbonden";
-    connectionStatusSpan.classList.remove("status-disconnected");
-    connectionStatusSpan.classList.add("status-connected");
-  } else {
+  if (connectedCount === 0) {
     connectionStatusSpan.textContent = "Niet verbonden";
-    connectionStatusSpan.classList.remove("status-connected");
-    connectionStatusSpan.classList.add("status-disconnected");
+    connectionStatusSpan.className = "status-value status-disconnected";
+  } else if (connectedCount < totalCount) {
+    connectionStatusSpan.textContent = `${connectedCount}/${totalCount} verbonden`;
+    connectionStatusSpan.className = "status-value status-recording";
+  } else {
+    connectionStatusSpan.textContent = totalCount === 1 ? "Verbonden" : `${connectedCount} kanalen verbonden`;
+    connectionStatusSpan.className = "status-value status-connected";
   }
-}
-
-function rebuildLineIndex(lines) {
-  lineById = new Map();
-  (lines || []).forEach((l) => {
-    if (l && l.id) lineById.set(l.id, l);
-  });
-}
-
-function setMicStatus(text) {
-  if (micStatusSpan) micStatusSpan.textContent = text;
 }
 
 function setModeStatus(text) {
@@ -264,7 +362,7 @@ function updateRecordButtonUI() {
     recordButton.textContent = "Stop";
     recordButton.classList.add("recording");
   } else {
-    recordButton.textContent = "­Start";
+    recordButton.textContent = "🎙 Start";
     recordButton.classList.remove("recording");
   }
 }
@@ -272,241 +370,407 @@ function updateRecordButtonUI() {
 function updateHint() {
   if (!hintText) return;
   if (!isRecording) {
-    hintText.innerHTML =
-      "Klik op <strong>Start</strong> om de microfoon te activeren en audio naar de server te sturen.";
+    hintText.innerHTML = "Stel kanalen in via <strong>Configuratie</strong>, dan klik <strong>Start</strong>.";
   } else {
-    hintText.textContent = "Spreek rustig in. De tekst verschijnt hier live.";
+    hintText.textContent = "Opname loopt. Spreek in de microfoon(s).";
   }
 }
 
-function formatTime(seconds) {
-  const s = Math.max(0, Math.floor(seconds));
-  const mm = String(Math.floor(s / 60)).padStart(2, "0");
-  const ss = String(s % 60).padStart(2, "0");
-  return `${mm}:${ss}`;
-}
+// === Timer ===
 
 function startTimer() {
   if (!timerSpan) return;
   startTime = Date.now();
   clearInterval(timerInterval);
   timerInterval = setInterval(() => {
-    const elapsed = (Date.now() - startTime) / 1000;
-    timerSpan.textContent = formatTime(elapsed);
+    const s = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
+    const mm = String(Math.floor(s / 60)).padStart(2, "0");
+    const ss = String(s % 60).padStart(2, "0");
+    timerSpan.textContent = `${mm}:${ss}`;
   }, 1000);
 }
 
 function resetTimer() {
   clearInterval(timerInterval);
   timerInterval = null;
-  if (timerSpan) {
-    timerSpan.textContent = "00:00";
-  }
+  if (timerSpan) timerSpan.textContent = "00:00";
 }
 
-function ensureWebSocket() {
-  if (websocket && websocket.readyState === WebSocket.OPEN) {
-    return Promise.resolve();
-  }
+// === Microfoonlijst ===
 
-  return new Promise((resolve, reject) => {
-    configResolve = resolve;
-    try {
-      websocket = new WebSocket(websocketUrl);
-    } catch (e) {
-      console.error("Cannot create WebSocket:", e);
-      setConnectionStatus(false);
-      setAsrStatus("WebSocket-verbinding mislukt.");
-      return reject(e);
+async function refreshMicrophoneList() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioInputs = devices.filter(d => d.kind === "audioinput");
+    const byKey = new Map();
+    for (const dev of audioInputs) {
+      const key = dev.groupId || cleanMicLabel(dev.label) || dev.deviceId;
+      if (!byKey.has(key)) byKey.set(key, dev);
     }
-
-    websocket.onopen = () => {
-      setConnectionStatus(true);
-      setAsrStatus("Verbonden met STT-server, wacht op audio");
-    };
-
-    websocket.onerror = (err) => {
-      console.error("WebSocket error:", err);
-      setConnectionStatus(false);
-      setAsrStatus("WebSocket-fout, controleer server.");
-      if (configResolve) {
-        const r = configResolve;
-        configResolve = null;
-        r(); // alsnog resolve om niet te blijven hangen
-      }
-    };
-
-    websocket.onclose = () => {
-      setConnectionStatus(false);
-      if (isRecording) {
-        isRecording = false;
-        updateRecordButtonUI();
-        updateHint();
-      }
-      websocket = null;
-    };
-
-    websocket.onmessage = (event) => {
-      let data;
-      try {
-        data = JSON.parse(event.data);
-      } catch (e) {
-        console.warn("Non-JSON message:", event.data);
-        return;
-      }
-
-      /* =========================
-      * CONFIG (ongewijzigd)
-      * ========================= */
-      if (data.type === "config") {
-        serverUseAudioWorklet = !!data.useAudioWorklet;
-        const modeText = serverUseAudioWorklet
-          ? "AudioWorklet (PCM)"
-          : "MediaRecorder (WebM)";
-        setModeStatus(modeText);
-
-        if (configResolve) {
-          const r = configResolve;
-          configResolve = null;
-          r();
-        }
-        return;
-      }
-
-      /* =========================
-      * SEGMENT UPDATE (NIEUW)
-      * ========================= */
-      if (data.type === "segment_update") {
-        const id = data.id;
-        if (!id) return;
-
-        let line = lineById.get(id);
-        if (!line) {
-          if (data.text_final || data.text_batch) {
-            const sentMatch = id.match(/^(.+)_s(\d+)$/);
-            if (sentMatch) {
-              const parentId = sentMatch[1];
-              if (!sentenceSegmentMap.has(parentId)) {
-                sentenceSegmentMap.set(parentId, []);
-              }
-              sentenceSegmentMap.get(parentId).push({
-                id: id,
-                text: data.text_final || data.text_batch || "",
-                text_batch: data.text_batch || null,
-                state: data.state || "FINAL",
-                start_ms: data.start_ms || 0,
-                end_ms: data.end_ms || 0,
-                speaker: -1,
-              });
-            } else {
-              const newLine = {
-                id: id,
-                text: data.text_final || data.text_batch || "",
-                text_batch: data.text_batch || null,
-                state: data.state || "FINAL",
-                start_ms: data.start_ms || 0,
-                end_ms: data.end_ms || 0,
-                speaker: -1,
-              };
-              currentLines.push(newLine);
-              lineById.set(id, newLine);
-            }
-            // Render met zin-segmenten
-            let renderLines = currentLines.map(l => {
-              const sents = sentenceSegmentMap.get(l.id);
-              return sents ? sents : [l];
-            }).flat();
-            renderTranscript(renderLines, lastBufferTranscription, lastBufferTranslation, lastStatus);
-
-          } else {
-            pendingSegmentUpdates.set(id, data);
-          }
-          return;
-        }
-
-        if (data.text_batch !== undefined) {
-          line.text_batch = data.text_batch;
-        }
-
-        if (data.text_final !== undefined) {
-          // Dit is de tekst die we daadwerkelijk tonen
-          line.text = data.text_final;
-        }
-
-        if (data.state !== undefined) {
-          if (data.start_ms !== undefined && data.start_ms !== null) {
-            line.start_ms = data.start_ms;
-          }
-          if (data.end_ms !== undefined && data.end_ms !== null) {
-            line.end_ms = data.end_ms;
-          }
-          line.state = data.state;
-        }
-
-        renderTranscript(
-          currentLines,
-          lastBufferTranscription,
-          lastBufferTranslation,
-          lastStatus
-        );
-        return;
-      }
-
-      /* =========================
-      * FRONT DATA (volledige refresh)
-      * ========================= */
-      if (data.type === "front_data" || data.lines) {
-        const {
-          lines = [],
-          buffer_transcription = "",
-          buffer_translation = "",
-          status = "active_transcription",
-        } = data;
-
-        currentLines = lines;
-        rebuildLineIndex(currentLines);
-
-        if (data.session_id) currentSessionId = data.session_id;
-        if (data.channel_id) currentChannelId = data.channel_id || "default";
-
-        // Apply any pending segment updates now that lines exist
-        for (const [pid, upd] of pendingSegmentUpdates.entries()) {
-          const l = lineById.get(pid);
-          if (!l) continue;
-
-          if (upd.text_batch !== undefined) l.text_batch = upd.text_batch;
-          if (upd.text_final !== undefined) l.text = upd.text_final;
-          if (upd.state !== undefined) l.state = upd.state;
-
-          pendingSegmentUpdates.delete(pid);
-        }
-
-        lastBufferTranscription = buffer_transcription;
-        lastBufferTranslation = buffer_translation;
-        lastStatus = status;
-
-        // Vervang batch groups door zin-segmenten indien beschikbaar
-        let renderLines = currentLines.map(l => {
-          const sents = sentenceSegmentMap.get(l.id);
-          return sents ? sents : [l];
-        }).flat();
-        
-        renderTranscript(renderLines, lastBufferTranscription, lastBufferTranslation, lastStatus);
-
-        return;
-      }
-
-      /* =========================
-      * FALLBACK / UNKNOWN
-      * ========================= */
-      console.debug("Unhandled WS message:", data);
-    };
-
-  });
+    availableMics = Array.from(byKey.values());
+    renderChannelConfigs();
+  } catch (e) {
+    console.warn("Cannot enumerate audio devices:", e);
+  }
 }
 
-let liveIndicatorTimeout = null;
+// === Per-kanaal WebSocket + audio ===
 
+function buildWebSocketUrl(sessionId, channelId, cfg) {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const params = new URLSearchParams({ session_id: sessionId, channel_id: channelId, lang: cfg.language || "nl", gate_framed: "1" });
+  if (cfg.language2) params.set("lang2", cfg.language2);
+  return `${proto}//${location.host}/ws?${params}`;
+}
+
+async function openAudioStream(ws, cfg, useWorklet) {
+  // AGC/echo-cancellation/noise-suppression expliciet uit: deze normaliseren volume
+  // en vervormen het signaal, wat zowel de cross-kanaal RMS-arbitrage ondermijnt
+  // (lek wordt opgepompt richting normaal niveau) als de ruwe audio-integriteit aantast.
+  const audioConstraints = {
+    autoGainControl: false,
+    echoCancellation: false,
+    noiseSuppression: false,
+    ...(cfg.deviceId ? { deviceId: { exact: cfg.deviceId } } : {}),
+  };
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+
+  const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+  let workletNode = null;
+  let recorderWorker = null;
+  let mediaRecorder = null;
+  let watchdog = null;
+
+  if (useWorklet) {
+    await audioContext.audioWorklet.addModule("/web/pcm_worklet.js");
+    const source = audioContext.createMediaStreamSource(stream);
+    workletNode = new AudioWorkletNode(audioContext, "pcm-worklet-processor", {
+      numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1,
+    });
+    source.connect(workletNode);
+
+    recorderWorker = new Worker("/web/recorder_worker.js");
+    recorderWorker.postMessage({ command: "init", config: { sampleRate: audioContext.sampleRate } });
+    recorderWorker.onmessage = e => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      // Frame: [1 byte gate-vlag][s16le PCM]. Audio wordt altijd verstuurd —
+      // de vlag bepaalt alleen of de server dit fragment naar ASR doorlaat,
+      // nooit of het wordt opgenomen (WAV blijft altijd compleet).
+      const pcm = new Uint8Array(e.data.buffer);
+      const framed = new Uint8Array(pcm.length + 1);
+      framed[0] = e.data.gateOpen ? 1 : 0;
+      framed.set(pcm, 1);
+      ws.send(framed.buffer);
+    };
+
+    // Noise gate instellen op de worklet
+    workletNode.port.postMessage({ threshold: cfg.gateThreshold ?? 0 });
+
+    channelAudioState.set(cfg.uid, { rms: 0, gateOpen1: false, lastUpdate: 0, suspectSince: null });
+
+    let lastActivity = Date.now();
+    workletNode.port.onmessage = e => {
+      lastActivity = Date.now();
+      const { buffer: pcmData, rms, gateOpen } = e.data; // pcmData: Float32Array
+
+      const state = channelAudioState.get(cfg.uid);
+      if (state) {
+        state.rms = rms;
+        state.gateOpen1 = gateOpen;
+        state.lastUpdate = Date.now();
+      }
+      const combinedGate = state ? computeCombinedGate(cfg.uid, state) : gateOpen;
+
+      const ab = pcmData.buffer;
+      recorderWorker.postMessage({ command: "record", buffer: ab, gateOpen: combinedGate }, [ab.slice(0)]);
+    };
+
+    watchdog = setInterval(() => {
+      if (isRecording && Date.now() - lastActivity > 5000) {
+        setAsrStatus("Geen audio — controleer microfoon");
+      }
+    }, 3000);
+
+  } else {
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = e => {
+      if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) ws.send(e.data);
+    };
+    mediaRecorder.start(250);
+  }
+
+  return { audioContext, mediaStream: stream, workletNode, recorderWorker, mediaRecorder, watchdog };
+}
+
+function cleanupChannelConnection(uid) {
+  const conn = activeConnections.get(uid);
+  if (!conn) return;
+
+  clearInterval(conn.watchdog);
+
+  if (conn.recorderWorker) {
+    try { conn.recorderWorker.terminate(); } catch (e) {}
+  }
+  if (conn.workletNode) {
+    try { conn.workletNode.port.onmessage = null; conn.workletNode.disconnect(); } catch (e) {}
+  }
+  if (conn.mediaRecorder && conn.mediaRecorder.state !== "inactive") {
+    try { conn.mediaRecorder.stop(); } catch (e) {}
+  }
+  if (conn.mediaStream) {
+    try { conn.mediaStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  }
+  if (conn.audioContext) {
+    try { conn.audioContext.close(); } catch (e) {}
+  }
+
+  activeConnections.delete(uid);
+  channelAudioState.delete(uid);
+  updateConnectionStatus();
+}
+
+function updateConnectionStatus() {
+  const total = channelConfigs.length;
+  const connected = activeConnections.size;
+  setConnectionStatus(connected, total);
+}
+
+async function startChannelConnection(cfg, sessionId) {
+  const channelId = getChannelId(cfg);
+  const wsUrl = buildWebSocketUrl(sessionId, channelId, cfg);
+  const ws = new WebSocket(wsUrl);
+
+  // Wacht op config-bericht van server
+  const configData = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`WebSocket timeout (${channelId})`)), 8000);
+    ws.onerror = () => { clearTimeout(timeout); reject(new Error(`WebSocket fout (${channelId})`)); };
+    ws.onclose = () => { clearTimeout(timeout); reject(new Error(`WebSocket gesloten (${channelId})`)); };
+    ws.onmessage = e => {
+      let data;
+      try { data = JSON.parse(e.data); } catch { return; }
+      if (data.type === "config") { clearTimeout(timeout); resolve(data); }
+    };
+  });
+
+  // Sla audio-modus op (van eerste kanaal)
+  if (activeConnections.size === 0) {
+    serverUseAudioWorklet = !!configData.useAudioWorklet;
+    setModeStatus(serverUseAudioWorklet ? "AudioWorklet (PCM)" : "MediaRecorder (WebM)");
+  }
+
+  // Transcript-messagehandler instellen
+  ws.onmessage = e => {
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+    handleChannelMessage(data, channelId);
+  };
+
+  ws.onclose = () => handleChannelClose(cfg.uid, channelId);
+
+  // Audio openen
+  const audioResources = await openAudioStream(ws, cfg, serverUseAudioWorklet);
+
+  activeConnections.set(cfg.uid, { ws, channelId, ...audioResources });
+  updateConnectionStatus();
+}
+
+function handleChannelClose(uid, channelId) {
+  cleanupChannelConnection(uid);
+  if (isRecording) {
+    setAsrStatus(`Kanaal ${channelId} verbroken`);
+  }
+}
+
+// === Opname start / stop ===
+
+async function startRecording() {
+  if (isRecording) return;
+  if (channelConfigs.length === 0) {
+    alert("Configureer eerst minstens één kanaal via het tabblad Configuratie.");
+    return;
+  }
+
+  isPlaybackMode = false;
+  currentSessionId = crypto.randomUUID();
+
+  // Reset transcript state voor alle kanalen
+  channelLines.clear();
+  channelLineById.clear();
+  channelSentenceMap.clear();
+  channelPendingUpd.clear();
+
+  if (liveTranscriptDiv) liveTranscriptDiv.innerHTML = "Verbinding maken…";
+
+  const errors = [];
+  await Promise.all(channelConfigs.map(async cfg => {
+    try {
+      await startChannelConnection(cfg, currentSessionId);
+    } catch (e) {
+      errors.push(e.message);
+      console.error("Kanaal mislukt:", cfg.roleId, e);
+    }
+  }));
+
+  if (activeConnections.size === 0) {
+    alert("Geen enkel kanaal kon verbinden:\n" + errors.join("\n"));
+    setConnectionStatus(0, channelConfigs.length);
+    return;
+  }
+
+  if (errors.length > 0) {
+    setAsrStatus(`${errors.length} kanaal/kanalen niet verbonden`);
+  }
+
+  isRecording = true;
+  updateRecordButtonUI();
+  updateHint();
+  startTimer();
+  setAsrStatus("Live transcriptie actief");
+}
+
+async function stopRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+
+  resetTimer();
+  updateRecordButtonUI();
+  updateHint();
+  setAsrStatus("Opname gestopt. Server rondt af…");
+
+  for (const [uid, conn] of activeConnections.entries()) {
+    if (conn.ws?.readyState === WebSocket.OPEN) {
+      try {
+        const emptyBlob = new Blob([], { type: "audio/webm" });
+        conn.ws.send(emptyBlob);
+      } catch (e) {}
+    }
+    cleanupChannelConnection(uid);
+  }
+
+  setConnectionStatus(0, channelConfigs.length);
+}
+
+function toggleRecording() {
+  if (isRecording) stopRecording(); else startRecording();
+}
+
+// === Per-kanaal berichtverwerking ===
+
+function handleChannelMessage(data, channelId) {
+  if (data.type === "segment_update") {
+    handleSegmentUpdate(data, channelId);
+  } else if (data.type === "front_data" || data.lines) {
+    handleFrontData(data, channelId);
+  }
+}
+
+function ensureChannelMaps(channelId) {
+  if (!channelLines.has(channelId))       channelLines.set(channelId, []);
+  if (!channelLineById.has(channelId))    channelLineById.set(channelId, new Map());
+  if (!channelSentenceMap.has(channelId)) channelSentenceMap.set(channelId, new Map());
+  if (!channelPendingUpd.has(channelId))  channelPendingUpd.set(channelId, new Map());
+}
+
+function handleFrontData(data, channelId) {
+  const { lines = [], buffer_transcription = "", buffer_translation = "", status = "active_transcription" } = data;
+
+  ensureChannelMaps(channelId);
+  channelLines.set(channelId, lines);
+
+  const lbid = new Map();
+  for (const l of lines) { if (l?.id) lbid.set(l.id, l); }
+  channelLineById.set(channelId, lbid);
+
+  // Verwerk uitgestelde segment_updates
+  const pending = channelPendingUpd.get(channelId);
+  for (const [pid, upd] of pending.entries()) {
+    const l = lbid.get(pid);
+    if (!l) continue;
+    if (upd.text_batch  !== undefined) l.text_batch = upd.text_batch;
+    if (upd.text_final  !== undefined) l.text = upd.text_final;
+    if (upd.state       !== undefined) l.state = upd.state;
+    pending.delete(pid);
+  }
+
+  lastBufferTranscription = buffer_transcription;
+  lastBufferTranslation   = buffer_translation;
+  lastStatus              = status;
+
+  renderAllChannels();
+}
+
+function handleSegmentUpdate(data, channelId) {
+  const id = data.id;
+  if (!id) return;
+
+  ensureChannelMaps(channelId);
+  const lbid    = channelLineById.get(channelId);
+  const sentMap = channelSentenceMap.get(channelId);
+  const lines   = channelLines.get(channelId);
+
+  let line = lbid.get(id);
+
+  if (!line) {
+    if (data.text_final || data.text_batch) {
+      const sentMatch = id.match(/^(.+)_s(\d+)$/);
+      if (sentMatch) {
+        const parentId = sentMatch[1];
+        if (!sentMap.has(parentId)) {
+          sentMap.set(parentId, []);
+          if (!lbid.has(parentId)) {
+            const parent = { id: parentId, text: "", text_batch: null, state: "FINAL", start_ms: data.start_ms || 0, end_ms: data.end_ms || 0, speaker: -1, channelId };
+            lines.push(parent);
+            lbid.set(parentId, parent);
+          }
+        }
+        sentMap.get(parentId).push({ id, text: data.text_final || data.text_batch || "", text_batch: data.text_batch || null, state: data.state || "FINAL", start_ms: data.start_ms || 0, end_ms: data.end_ms || 0, speaker: -1, channelId });
+      } else {
+        const newLine = { id, text: data.text_final || data.text_batch || "", text_batch: data.text_batch || null, state: data.state || "FINAL", start_ms: data.start_ms || 0, end_ms: data.end_ms || 0, speaker: -1, channelId };
+        lines.push(newLine);
+        lbid.set(id, newLine);
+      }
+      renderAllChannels();
+    } else {
+      channelPendingUpd.get(channelId).set(id, data);
+    }
+    return;
+  }
+
+  if (data.text_batch  !== undefined) line.text_batch = data.text_batch;
+  if (data.text_final  !== undefined) line.text = data.text_final;
+  if (data.state       !== undefined) {
+    if (data.start_ms != null) line.start_ms = data.start_ms;
+    if (data.end_ms   != null) line.end_ms   = data.end_ms;
+    line.state = data.state;
+  }
+
+  renderAllChannels();
+}
+
+// === Gecombineerde transcript render ===
+
+function getAllRenderLines() {
+  const all = [];
+  for (const [channelId, lines] of channelLines.entries()) {
+    const sentMap = channelSentenceMap.get(channelId) || new Map();
+    const expanded = lines.map(l => {
+      const sents = sentMap.get(l.id);
+      return sents ? sents : [l];
+    }).flat();
+    for (const l of expanded) all.push({ ...l, channelId });
+  }
+  return all;
+}
+
+function renderAllChannels() {
+  if (isPlaybackMode) return;
+  renderTranscript(getAllRenderLines(), lastBufferTranscription, lastBufferTranslation, lastStatus);
+}
+
+// === Transcript render (zowel live als terugluister) ===
 
 function escapeHtml(s) {
   return String(s || "")
@@ -519,408 +783,268 @@ function escapeHtml(s) {
 
 function getStartMs(item) {
   if (Number.isFinite(item?.start_ms)) return item.start_ms;
-  if (Number.isFinite(item?.start)) return Math.round(item.start * 1000);
-  return Number.MAX_SAFE_INTEGER; // live/buffer always last
+  if (Number.isFinite(item?.start))    return Math.round(item.start * 1000);
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function formatMs(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return h > 0
+    ? `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+    : `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
 }
 
 function renderTranscript(lines, bufferTranscription, bufferTranslation, status) {
   if (!liveTranscriptDiv) return;
 
   const scrollParent = liveTranscriptDiv;
-  const isAtBottom = (scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 80);
+  const isAtBottom = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 80;
 
   if (status === "no_audio_detected") {
-      liveTranscriptDiv.innerHTML =
-      "<em>Geen audio gedetecteerd. Probeer iets dichter bij de microfoon te spreken.</em>";
-      return;
+    liveTranscriptDiv.innerHTML = "<em>Geen audio gedetecteerd. Probeer dichter bij de microfoon.</em>";
+    return;
   }
 
-  const safeLines = (lines || []).filter((item) => {
+  const safeLines = (lines || []).filter(item => {
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
-    // -2 = silence segment → niet tonen
     return sp !== -2;
   });
 
-  const htmlParts = [];
-
   safeLines.sort((a, b) => getStartMs(a) - getStartMs(b));
 
-  for (const item of safeLines) {
+  const htmlParts = [];
 
-    console.log("[RENDER]", item.id, item.state, "text:", item.text, "text_batch:", item.text_batch);
-    const rawTxt = (item?.text_batch || item?.text || "").trim();
+  for (const item of safeLines) {
+    const rawTxt = (item?.text_batch || item?.text || item?.text_live || "").trim();
     if (!rawTxt) continue;
-    // Alleen tonen als batch de tekst heeft goedgekeurd
-    if (!item?.text_batch) continue;
 
     const sp = item?.speaker ?? item?.speaker_id ?? item?.spk;
     const st = (item?.state || "FINAL").toUpperCase();
 
     let cls = "seg";
-
+    const isBatchConfirmed = st !== "LIVE" && !!item.text_batch;
     if (st === "LIVE") {
       cls += " seg-live";
-    } else if (item.text_batch) {
-      cls += " seg-batch";   // batch-goedgekeurde tekst
+    } else if (isBatchConfirmed) {
+      cls += " seg-batch";
     } else {
-      cls += " seg-final";   // live-final (alleen zichtbaar als text_batch null is)
+      cls += " seg-final";
     }
 
-    const prefix =
-      sp === undefined || sp === null || sp === "" || sp === -1
-        ? ""
-        : `[${escapeHtml(sp)}] `;
+    const prefix = (sp === undefined || sp === null || sp === "" || sp === -1)
+      ? "" : `[${escapeHtml(sp)}] `;
 
-    const idAttr = item?.id ? ` data-id="${escapeHtml(item.id)}"` : "";
+    const idAttr    = item?.id ? ` data-id="${escapeHtml(item.id)}"` : "";
+    const startMs   = getStartMs(item);
+    const endMs     = Number.isFinite(item?.end_ms) ? item.end_ms : Number.isFinite(item?.end) ? Math.round(item.end * 1000) : 0;
 
-    const startMs = getStartMs(item);
-    const endMs = Number.isFinite(item?.end_ms) ? item.end_ms 
-                  : Number.isFinite(item?.end) ? Math.round(item.end * 1000) 
-                  : 0;
+    // channelId: uit line zelf (multi-channel live) of uit playback context
+    const channelId = item.channelId || playbackChannelId || "default";
     const sessionId = currentSessionId || "";
-    const channelId = currentChannelId || "default";
-    
-    const audioAttr = startMs >= 0 
-      ? ` data-start-ms="${startMs}" data-end-ms="${endMs}" data-session="${escapeHtml(sessionId)}" data-channel="${escapeHtml(channelId)}"` 
+
+    const audioAttr = startMs >= 0
+      ? ` data-start-ms="${startMs}" data-end-ms="${endMs}" data-session="${escapeHtml(sessionId)}" data-channel="${escapeHtml(channelId)}"`
       : "";
 
+    const timeLabel = (startMs > 0 || item?.start_ms === 0)
+      ? `<span class="seg-time">[${formatMs(startMs)}]</span> ` : "";
 
-    const timeLabel = startMs > 0 || item?.start_ms === 0
-      ? `<span class="seg-time">[${formatMs(startMs)}]</span> `
-      : "";
-    const roleLabel = `<span class="seg-role">${escapeHtml(getRoleLabel(currentChannelId))}</span> `;
+    const roleId    = channelIdToRoleId(channelId);
+    const roleColor = getRoleColor(roleId);
+    const roleLabel = `<span class="seg-role" style="color:${roleColor}">${escapeHtml(getRoleLabel(roleId))}</span> `;
 
-    htmlParts.push(
-      `<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}</div>`
-    );
+    // Wit vs. groen oogde voor klanten als "werkt niet goed" -- FINAL en batch-bevestigde
+    // tekst zien er nu identiek uit; alleen een klein vinkje geeft aan dat de batch-pass
+    // dit segment heeft bevestigd. Het onderscheid blijft intact in de data (text_batch),
+    // alleen de live-weergave is verzacht.
+    const confirmedBadge = isBatchConfirmed ? ` <span class="seg-confirmed" title="Bevestigd door batch-pass">✓</span>` : "";
+
+    htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}${confirmedBadge}</div>`);
   }
 
-  // Pulserende indicator als er live segmenten zijn zonder batch
-  const hasLiveContent = (lines || []).some(
-    item => item?.text && !item?.text_batch && item?.speaker !== -2
-  );
-  if (hasLiveContent || (bufferTranscription && bufferTranscription.trim().length > 0)) {
-    htmlParts.push(`<div class="live-indicator"><span class="live-dot"></span> Spreekt...</div>`);
+  const hasLiveContent = (lines || []).some(item => (item?.text || item?.text_live) && !item?.text_batch && item?.speaker !== -2);
+  if (hasLiveContent || (bufferTranscription && bufferTranscription.trim())) {
+    htmlParts.push(`<div class="live-indicator"><span class="live-dot"></span> Spreekt…</div>`);
   }
 
-  liveTranscriptDiv.innerHTML =
-    htmlParts.join("") || "Nog geen tekst ontvangen";
+  liveTranscriptDiv.innerHTML = htmlParts.join("") || "Nog geen tekst ontvangen";
 
-  if (isAtBottom) {
-    scrollParent.scrollTop = scrollParent.scrollHeight;
-  }
+  if (isAtBottom) scrollParent.scrollTop = scrollParent.scrollHeight;
 
   setAsrStatus("Live transcriptie actief");
 }
 
+// === Sessie browser ===
 
-// NEW: microfoonlijst ophalen en dropdown vullen (met dedupe)
-async function refreshMicrophoneList() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
-
+async function loadSessionsList() {
+  if (!sessionsList) return;
+  sessionsList.innerHTML = '<p class="sessions-loading">Laden…</p>';
   try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
+    const resp = await fetch("/sessions/list");
+    const data = await resp.json();
+    if (!data.sessions || data.sessions.length === 0) {
+      sessionsList.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
+      return;
+    }
+    sessionsList.innerHTML = "";
+    for (const s of data.sessions) {
+      const date = s.created_at
+        ? s.created_at.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, "$3-$2-$1 $4:$5")
+        : "onbekend";
+      const item = document.createElement("div");
+      item.className = "session-item";
+      item.innerHTML = `
+        <div class="session-item-meta">
+          <span class="session-item-id">${s.session_id.substring(0, 18)}…</span>
+          <span class="session-item-date">📅 ${date} · 🎙 ${s.channels.join(", ")} · ${s.wav_size_mb} MB</span>
+        </div>
+        <span class="session-item-badge ${s.has_transcript ? "" : "no-transcript"}">
+          ${s.has_transcript ? "transcript ✓" : "geen transcript"}
+        </span>`;
+      if (s.has_transcript) {
+        item.addEventListener("click", () => loadSessionTranscript(s.session_id, s.channels[0] || "default"));
+      }
+      sessionsList.appendChild(item);
+    }
+  } catch (e) {
+    sessionsList.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
+  }
+}
 
-    // Alleen audioinput
-    const audioInputs = devices.filter((d) => d.kind === "audioinput");
+async function loadSessionTranscript(sessionId, channelId) {
+  try {
+    const resp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/transcript?channel_id=${encodeURIComponent(channelId)}`);
+    if (!resp.ok) { alert("Transcript niet gevonden."); return; }
+    const data = await resp.json();
 
-    // Helper om label op te schonen
-    const baseLabel = (label) =>
-      (label || "")
-        .replace(/^Standaard\s*-\s*/i, "")
-        .replace(/^Communicatie\s*-\s*/i, "")
-        .trim();
+    sessionsModal.classList.add("hidden");
 
-    // Dedupe: 1 per groupId / baselabel
-    const byKey = new Map();
-    for (const dev of audioInputs) {
-      const key = dev.groupId || baseLabel(dev.label) || dev.deviceId;
-      if (!byKey.has(key)) {
-        byKey.set(key, dev);
+    currentSessionId   = data.session_id;
+    playbackChannelId  = data.channel_id || channelId;
+    isPlaybackMode     = true;
+
+    playbackLines       = [];
+    playbackLineById    = new Map();
+    playbackSentenceMap = new Map();
+
+    for (const seg of (data.segments || [])) {
+      const id = seg.id;
+      if (!id) continue;
+      const sentMatch = id.match(/^(.+)_s(\d+)$/);
+      if (sentMatch) {
+        const parentId = sentMatch[1];
+        if (!playbackSentenceMap.has(parentId)) {
+          playbackSentenceMap.set(parentId, []);
+          if (!playbackLineById.has(parentId)) {
+            const parent = { id: parentId, text: "", text_batch: null, state: "FINAL", start_ms: seg.start_ms || 0, end_ms: seg.end_ms || 0, speaker: -1 };
+            playbackLines.push(parent);
+            playbackLineById.set(parentId, parent);
+          }
+        }
+        playbackSentenceMap.get(parentId).push({
+          id, text: seg.text_final || seg.text_batch || "", text_batch: seg.text_batch || null,
+          state: "FINAL", start_ms: seg.start_ms || 0, end_ms: seg.end_ms || 0, speaker: -1,
+        });
+      } else {
+        const line = { id, text: seg.text_final || seg.text_batch || "", text_batch: seg.text_batch || null, state: "FINAL", start_ms: seg.start_ms || 0, end_ms: seg.end_ms || 0, speaker: -1 };
+        playbackLines.push(line);
+        playbackLineById.set(id, line);
       }
     }
-    availableMics = Array.from(byKey.values());
 
-    if (!micSelect) return;
-
-    const previous = micSelect.value;
-    micSelect.innerHTML = "";
-
-    const defaultOption = document.createElement("option");
-    defaultOption.value = "";
-    defaultOption.textContent = "Systeemstandaard";
-    micSelect.appendChild(defaultOption);
-
-    let idx = 1;
-    for (const mic of availableMics) {
-      const opt = document.createElement("option");
-      opt.value = mic.deviceId;
-      opt.textContent = baseLabel(mic.label) || `Microfoon ${idx++}`;
-      micSelect.appendChild(opt);
+    for (const [pid, sents] of playbackSentenceMap.entries()) {
+      sents.sort((a, b) => a.start_ms - b.start_ms);
     }
 
-    if (previous && [...micSelect.options].some((o) => o.value === previous)) {
-      micSelect.value = previous;
-      selectedDeviceId = previous || null;
-    } else {
-      selectedDeviceId = micSelect.value || null;
-    }
+    const renderLines = playbackLines.map(l => {
+      const sents = playbackSentenceMap.get(l.id);
+      return sents ? sents : [l];
+    }).flat();
+
+    if (liveTranscriptDiv) renderTranscript(renderLines, "", "", "active_transcription");
+    setAsrStatus(`Sessie geladen: ${sessionId.substring(0, 12)}…`);
   } catch (e) {
-    console.warn("Cannot enumerate audio devices:", e);
+    alert("Fout bij laden transcript: " + e.message);
   }
 }
 
+// === Klik op segment → terugluisteren ===
 
-async function startRecording() {
-  if (isRecording) return;
+if (liveTranscriptDiv) {
+  liveTranscriptDiv.addEventListener("click", async e => {
+    const seg = e.target.closest(".seg-clickable");
+    if (!seg) return;
+    const startMs = parseInt(seg.dataset.startMs || "0", 10);
+    const endMs   = parseInt(seg.dataset.endMs   || "0", 10);
+    const session = seg.dataset.session;
+    const channel = seg.dataset.channel;
+    if (!session) return;
 
-  try {
-    await ensureWebSocket();
-  } catch (e) {
-    console.error("Cannot start recording, WebSocket not ready:", e);
-    return;
-  }
-
-  try {
-    const audioConstraints = selectedDeviceId
-      ? { deviceId: { exact: selectedDeviceId } }
-      : true;
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: audioConstraints,
-    });
-    mediaStream = stream;
-    setMicStatus("Toegang verleend");
-
-    // Na succesvolle toegang: devices verversen (labels worden nu zichtbaar)
-    refreshMicrophoneList();
-
-    if (!audioContext) {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-
-    const useWorklet = serverUseAudioWorklet && !!audioContext.audioWorklet;
-
-    if (useWorklet) {
-      await audioContext.audioWorklet.addModule("/web/pcm_worklet.js");
-      const source = audioContext.createMediaStreamSource(stream);
-      workletNode = new AudioWorkletNode(
-        audioContext,
-        "pcm-worklet-processor",
-        {
-          numberOfInputs: 1,
-          numberOfOutputs: 0,
-          channelCount: 1,
-        }
-      );
-      source.connect(workletNode);
-
-      recorderWorker = new Worker("/web/recorder_worker.js");
-      recorderWorker.postMessage({
-        command: "init",
-        config: { sampleRate: audioContext.sampleRate },
-      });
-
-      recorderWorker.onmessage = (e) => {
-        if (websocket && websocket.readyState === WebSocket.OPEN) {
-          websocket.send(e.data.buffer);
-        }
-      };
-
-      let lastAudioActivityMs = Date.now();
-      const AUDIO_WATCHDOG_INTERVAL_MS = 3000;  // check elke 3s
-      const AUDIO_SILENCE_WARN_MS = 5000;       // waarschuw na 5s geen audio
-
-      workletNode.port.onmessage = (e) => {
-          lastAudioActivityMs = Date.now();
-          const data = e.data;
-          const ab = data instanceof ArrayBuffer ? data : data.buffer;
-          recorderWorker.postMessage(
-              { command: "record", buffer: ab },
-              [ab]
-          );
-      };
-
-      // Watchdog: detecteer als worklet stopt met sturen
-      const audioWatchdog = setInterval(() => {
-          if (!isRecording) {
-              clearInterval(audioWatchdog);
-              return;
-          }
-          const silenceDuration = Date.now() - lastAudioActivityMs;
-          if (silenceDuration > AUDIO_SILENCE_WARN_MS) {
-              console.warn(`[WATCHDOG] Geen audio van worklet sinds ${silenceDuration}ms`);
-              setAsrStatus(`⚠️ Geen audio ontvangen sinds ${Math.round(silenceDuration/1000)}s — controleer microfoon`);
-          }
-      }, AUDIO_WATCHDOG_INTERVAL_MS);
-
-      setModeStatus("AudioWorklet (PCM)");
-    } else {
-      mediaRecorder = new MediaRecorder(stream);
-      mediaRecorder.ondataavailable = (e) => {
-        if (websocket && websocket.readyState === WebSocket.OPEN) {
-          if (e.data && e.data.size > 0) {
-            websocket.send(e.data);
-          }
-        }
-      };
-      mediaRecorder.start(250);
-      setModeStatus("MediaRecorder (WebM)");
-    }
-
-    if (liveTranscriptDiv) {
-      liveTranscriptDiv.textContent = "Luisteren spreek nu.";
-    }
-    setAsrStatus("Opname bezig");
-    isRecording = true;
-    userClosing = false;
-    waitingForStop = false;
-    updateRecordButtonUI();
-    updateHint();
-    startTimer();
-  } catch (err) {
-    console.error("Error starting recording:", err);
-    setMicStatus("Toegang geweigerd of fout");
-    setAsrStatus("Kon microfoon niet gebruiken. Controleer permissies of apparaat.");
-  }
+    const prev = document.getElementById("trivias-audio-player");
+    if (prev) prev.remove();
+    const audio = document.createElement("audio");
+    audio.id = "trivias-audio-player";
+    audio.controls = true;
+    audio.autoplay = true;
+    audio.src = `/audio/${encodeURIComponent(session)}/${encodeURIComponent(channel)}?start_ms=${startMs}&end_ms=${endMs}`;
+    audio.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:9999;background:#1e293b;border-radius:8px;";
+    document.body.appendChild(audio);
+  });
 }
 
-function cleanupAudio() {
-  if (mediaRecorder) {
-    try {
-      mediaRecorder.stop();
-    } catch (e) {}
-    mediaRecorder = null;
-  }
+// === Event wiring ===
 
-  if (recorderWorker) {
-    try {
-      recorderWorker.terminate();
-    } catch (e) {}
-    recorderWorker = null;
-  }
+if (recordButton) recordButton.addEventListener("click", toggleRecording);
 
-  if (workletNode) {
-    try {
-      workletNode.port.onmessage = null;
-    } catch (e) {}
-    try {
-      workletNode.disconnect();
-    } catch (e) {}
-    workletNode = null;
-  }
+if (sessionsBtn) sessionsBtn.addEventListener("click", () => {
+  sessionsModal.classList.remove("hidden");
+  loadSessionsList();
+});
+if (sessionsModalClose) sessionsModalClose.addEventListener("click", () => sessionsModal.classList.add("hidden"));
+if (sessionsModal) sessionsModal.addEventListener("click", e => { if (e.target === sessionsModal) sessionsModal.classList.add("hidden"); });
 
-  if (mediaStream) {
-    try {
-      mediaStream.getTracks().forEach((t) => t.stop());
-    } catch (e) {}
-    mediaStream = null;
-  }
+const addChannelBtn = document.getElementById("addChannelBtn");
+if (addChannelBtn) addChannelBtn.addEventListener("click", addChannelConfig);
+
+const crossGateToggle = document.getElementById("crossGateToggle");
+if (crossGateToggle) {
+  crossGateToggle.addEventListener("change", () => {
+    crossGateEnabled = crossGateToggle.checked;
+    saveCrossGateEnabled();
+  });
 }
 
-function stopRecording() {
-  if (!isRecording) return;
-  isRecording = false;
-  userClosing = true;
-  waitingForStop = true;
+// === Init ===
 
-  cleanupAudio();
-  resetTimer();
-  updateRecordButtonUI();
-  updateHint();
-
-  if (websocket && websocket.readyState === WebSocket.OPEN) {
-    const emptyBlob = new Blob([], { type: "audio/webm" });
-    websocket.send(emptyBlob);
-    setAsrStatus("Opname gestopt. Server is audio aan het afronden");
-  } else {
-    setAsrStatus("Opname gestopt.");
-  }
+function initWebsocketUrl() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${location.host || "localhost:8000"}/ws`;
 }
 
-function toggleRecording() {
-  if (isRecording) {
-    stopRecording();
-  } else {
-    startRecording();
-  }
-}
-
-// Permissions & device handling
 async function checkMicPermission() {
-  if (!navigator.permissions || !navigator.permissions.query) {
-    // Geen fancy permissions-API  toch devices proberen te halen
+  if (!navigator.permissions?.query) {
     refreshMicrophoneList();
     return;
   }
   try {
     const perm = await navigator.permissions.query({ name: "microphone" });
-    setMicStatus(perm.state.toUpperCase());
-
-    if (perm.state === "granted") {
-      refreshMicrophoneList();
-    }
-
-    perm.onchange = () => {
-      setMicStatus(perm.state.toUpperCase());
-      if (perm.state === "granted") {
-        refreshMicrophoneList();
-      }
-    };
+    if (perm.state === "granted") refreshMicrophoneList();
+    perm.onchange = () => { if (perm.state === "granted") refreshMicrophoneList(); };
   } catch {
-    // Fallback: gewoon proberen
     refreshMicrophoneList();
   }
 }
 
-// Event wiring
-if (recordButton) {
-  recordButton.addEventListener("click", () => {
-    toggleRecording();
-  });
-}
-
-// NEW: change handler voor micSelect
-if (micSelect) {
-  micSelect.addEventListener("change", () => {
-    selectedDeviceId = micSelect.value || null;
-    if (isRecording) {
-      setAsrStatus(
-        "Nieuwe microfoon wordt gebruikt na stoppen en opnieuw starten."
-      );
-    }
-  });
-}
-
-// Klik op segment → terugluisteren
-liveTranscriptDiv.addEventListener("click", async (e) => {
-  const seg = e.target.closest(".seg-clickable");
-  if (!seg) return;
-
-  const startMs = parseInt(seg.dataset.startMs || "0", 10);
-  const endMs = parseInt(seg.dataset.endMs || "0", 10);
-  const session = seg.dataset.session;
-  const channel = seg.dataset.channel;
-
-  if (!session) return;
-
-  const url = `/audio/${encodeURIComponent(session)}/${encodeURIComponent(channel)}?start_ms=${startMs}&end_ms=${endMs}`;
-
-  // Verwijder vorige audio player
-  const prev = document.getElementById("trivias-audio-player");
-  if (prev) prev.remove();
-
-  const audio = document.createElement("audio");
-  audio.id = "trivias-audio-player";
-  audio.controls = true;
-  audio.autoplay = true;
-  audio.src = url;
-  audio.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:9999;background:#1e293b;border-radius:8px;";
-  document.body.appendChild(audio);
-});
-
+loadChannelConfigs();
+loadCrossGateEnabled();
+if (crossGateToggle) crossGateToggle.checked = crossGateEnabled;
+initTabs();
+renderChannelConfigs();
 checkMicPermission();
 updateRecordButtonUI();
 updateHint();
-setConnectionStatus(false);
+setConnectionStatus(0, channelConfigs.length);
 setAsrStatus("Wachten op opname");

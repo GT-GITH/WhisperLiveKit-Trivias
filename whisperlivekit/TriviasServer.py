@@ -462,9 +462,17 @@ async def websocket_endpoint(
     case_ref: Optional[str] = Query(default=None),
     person_ref: Optional[str] = Query(default=None),
     user_id: Optional[str] = Query(default=None),
-    channel_id: Optional[str] = Query(default=None),  
+    channel_id: Optional[str] = Query(default=None),
+    lang: Optional[str] = Query(default=None),
+    lang2: Optional[str] = Query(default=None),
+    gate_framed: bool = Query(default=False),
 ):
-    """Hoofdstream voor audio ÔåÆ ASR (exactzelfde kern als basic_server, maar met session-metadata)."""
+    """Hoofdstream voor audio ÔåÆ ASR (exactzelfde kern als basic_server, maar met session-metadata).
+
+    gate_framed=1: elk binair audio-bericht begint met 1 vlag-byte (0x00/0x01) dat aangeeft
+    of dit fragment naar ASR mag (cross-kanaal anti-lek, alleen gebruikt door web_trivias/app.js).
+    De WAV-opname krijgt altijd de volledige audio, ongeacht deze vlag. Zie docs/API.md.
+    """
     global transcription_engine
     if transcription_engine is None:
         logger.error("TranscriptionEngine is not initialized.")
@@ -485,6 +493,9 @@ async def websocket_endpoint(
         transcription_engine=transcription_engine,
         session_id=sid,
         channel_id=channel_id or "default",
+        language=lang,
+        language2=lang2,
+        gate_framed=gate_framed,
     )
 
     await websocket.accept()
@@ -549,12 +560,12 @@ async def websocket_ws(
     case_ref: Optional[str] = Query(default=None),
     person_ref: Optional[str] = Query(default=None),
     user_id: Optional[str] = Query(default=None),
-    channel_id: Optional[str] = Query(default=None),  # NIEUW
+    channel_id: Optional[str] = Query(default=None),
+    lang: Optional[str] = Query(default=None),
+    lang2: Optional[str] = Query(default=None),
+    gate_framed: bool = Query(default=False),
 ):
-    """
-    Compat-endpoint voor clients die nog /ws gebruiken.
-    Roept intern dezelfde logica aan als /asr.
-    """
+    """Compat-endpoint voor clients die nog /ws gebruiken."""
     return await websocket_endpoint(
         websocket=websocket,
         session_id=session_id,
@@ -562,7 +573,10 @@ async def websocket_ws(
         case_ref=case_ref,
         person_ref=person_ref,
         user_id=user_id,
-        channel_id=channel_id,  # NIEUW
+        channel_id=channel_id,
+        lang=lang,
+        lang2=lang2,
+        gate_framed=gate_framed,
     )
 
 def main():

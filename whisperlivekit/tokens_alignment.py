@@ -1,3 +1,4 @@
+import re
 from time import time
 from typing import Any, List, Optional, Tuple, Union
 
@@ -12,6 +13,11 @@ logger = logging.getLogger("whisperlivekit.tokens_alignment")
 
 _PRUNE_MAX_DURATION_S: float = 600.0  # maximaal 10 minuten tokens in memory
 _PRUNE_TRIGGER_COUNT: int = 13_000    # alleen uitvoeren als de lijst deze grens overschrijdt
+
+# Live-decoder placeholder voor "onzeker/geen duidelijke spraak" (bv. "..."). Nooit
+# opnemen in de live-tekst -- defensieve backstop naast de eow_detection.py-fix die
+# voorkomt dat dit soort tokens permanent in de live-context vastgezet wordt.
+_ELLIPSIS_ONLY_RE = re.compile(r'^[\s.]*$')
 
 class TokensAlignment:
 
@@ -414,6 +420,8 @@ class TokensAlignment:
                             start=token.start,
                             end=end_silence
                         ))
+                elif _ELLIPSIS_ONLY_RE.match(token.text or ""):
+                    continue
                 else:
                     self.current_line_tokens.append(token)
 
