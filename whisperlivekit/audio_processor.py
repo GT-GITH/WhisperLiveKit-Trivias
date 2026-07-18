@@ -1411,11 +1411,17 @@ class AudioProcessor:
                             f"hallucination_pattern={has_hallucination_pattern} "
                             f"text='{batch_txt[:80]}'"
                         )
-                # Fail-safe: als batch niet mag, gebruik live (als die er is), anders batch
+                # Als batch niet vertrouwd wordt, val terug op live -- maar NOOIT op de
+                # net-afgewezen batch_txt zelf. "Afgewezen" moet ook echt niets betekenen:
+                # als er dan ook geen live-tekst is (bv. omdat de cross-kanaal anti-lek-gate
+                # dit venster grotendeels onderdrukte), is er simpelweg niets betrouwbaars
+                # om te tonen. De oude "anders batch"-fallback liet precies het net
+                # afgewezen, gehallucineerde venster alsnog zien -- het tegenovergestelde
+                # van wat een confidence-gate hoort te doen.
                 if use_batch_as_final:
                     final_txt = batch_txt
                 else:
-                    final_txt = live_text if live_text else batch_txt
+                    final_txt = live_text
 
                 logger.info(
                     f"[BATCH][GATE][DBG] job={job['job_id']} "
