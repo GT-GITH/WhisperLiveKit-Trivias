@@ -655,6 +655,27 @@ class AudioProcessor:
                 await self._end_silence()
             except Exception as e:
                 logger.warning(f"[PAUSE][FLUSH] ending current silence failed: {e}")
+
+        # Wacht tot transcription_processor() alle reeds ingeklede audio daadwerkelijk
+        # heeft verwerkt, vóórdat we hieronder state.end_buffer/state.tokens lezen.
+        # transcription_processor draait als losstaande achtergrondtaak en kan
+        # achterlopen (geobserveerd: 40+ seconden vertraging na meerdere resets in
+        # één sessie) -- zonder deze wachtstap lazen _flush_final_batch_tail en de
+        # tijdstempel-correctie in _hard_reset_live_decoder een verouderde positie,
+        # met als gevolg dat er geen batch-venster meer tussentijds sloot (pas de
+        # eind-flush bij Stop ving het op). task_done() wordt al correct
+        # bijgehouden in get_all_from_queue(), dus join() werkt hier zonder verdere
+        # wijzigingen elders. Timeout als noodrem: liever doorgaan met een
+        # mogelijk-verouderde waarde dan de sessie laten vastlopen.
+        try:
+            if self.transcription_queue:
+                await asyncio.wait_for(self.transcription_queue.join(), timeout=20.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[PAUSE][FLUSH] channel={self.channel_id} transcription_queue.join() "
+                f"timed out na 20s, ga door met mogelijk verouderde state"
+            )
+
         await self._flush_final_batch_tail(reason="pause")
         try:
             self._hard_reset_live_decoder(reason="pause")
