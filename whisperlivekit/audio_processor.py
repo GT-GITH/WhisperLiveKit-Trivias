@@ -3,6 +3,8 @@ import logging
 import traceback
 import weakref
 
+from collections import deque
+
 import uuid
 
 import os
@@ -173,6 +175,12 @@ class AudioProcessor:
         self.bytes_per_sec = self.samples_per_sec * self.bytes_per_sample
         self.max_bytes_per_sec = 32000 * 5  # 5 seconds of audio at 32 kHz
         self.is_pcm_input = self.args.pcm_input
+
+        # Cross-kanaal anti-lek: client stuurt per bericht 1 vlag-byte (open/dicht voor ASR).
+        # De WAV-opname is hier nooit van afhankelijk (zie handle_pcm_data). Zie docs/API.md.
+        self._gate_framed: bool = bool(kwargs.get("gate_framed", False))
+        # deque van (n_samples, is_open)-segmenten, in lockstep met self.pcm_buffer gevuld
+        self._gate_segments: "deque" = deque()
 
         # State management
         self.is_stopping: bool = False
@@ -1504,7 +1512,18 @@ class AudioProcessor:
             return
 
         if self.is_pcm_input:
-            self.pcm_buffer.extend(message)
+            if self._gate_framed:
+                # Frame: [1 byte gate-vlag][s16le PCM]. De vlag bepaalt alleen of dit
+                # fragment straks naar VAD/ASR mag (zie handle_pcm_data) — de audio zelf
+                # wordt hieronder altijd volledig in pcm_buffer gezet en dus altijd opgenomen.
+                gate_open = message[0] != 0
+                payload = message[1:]
+                n_samples = len(payload) // self.bytes_per_sample
+                if n_samples > 0:
+                    self._gate_segments.append((n_samples, gate_open))
+                self.pcm_buffer.extend(payload)
+            else:
+                self.pcm_buffer.extend(message)
             await self.handle_pcm_data()
         else:
             if not self.ffmpeg_manager:
@@ -1517,6 +1536,29 @@ class AudioProcessor:
                     logger.error("FFmpeg is in FAILED state, cannot process audio")
                 else:
                     logger.warning("Failed to write audio data to FFmpeg")
+
+    def _consume_gate_mask(self, n_samples: int) -> Optional[np.ndarray]:
+        """Bouwt een boolean-mask (True = naar ASR mag) voor de eerstvolgende n_samples,
+        door self._gate_segments te consumeren (evt. splitsen van het kopsegment).
+        Retourneert None als er geen framing actief is -> huidig gedrag (alles open)."""
+        if not self._gate_framed:
+            return None
+        mask = np.ones(n_samples, dtype=bool)
+        filled = 0
+        while filled < n_samples and self._gate_segments:
+            seg_samples, seg_open = self._gate_segments[0]
+            take = min(seg_samples, n_samples - filled)
+            if not seg_open:
+                mask[filled:filled + take] = False
+            filled += take
+            remaining = seg_samples - take
+            if remaining > 0:
+                self._gate_segments[0] = (remaining, seg_open)
+            else:
+                self._gate_segments.popleft()
+        # Als segmenten opraken (bv. eerste chunk vóór het eerste bericht verwerkt is),
+        # blijft de rest van de mask True: fail-open, nooit fail-closed.
+        return mask
 
     async def handle_pcm_data(self) -> None:
         # Process when enough data
@@ -1549,24 +1591,39 @@ class AudioProcessor:
         chunk_sample_start = self.total_pcm_samples
         chunk_sample_end = chunk_sample_start + num_samples
 
+        # Cross-kanaal anti-lek: alleen de kopie die naar VAD/ASR gaat wordt voor
+        # dicht-gemarkeerde samples op nul gezet. pcm_array zelf (en dus de WAV, hierboven
+        # al weggeschreven) blijft altijd de volledige, ongewijzigde audio.
+        gate_mask = self._consume_gate_mask(num_samples)
+        if gate_mask is not None and not gate_mask.all():
+            n_closed = int((~gate_mask).sum())
+            logger.debug(
+                f"[GATE] channel={self.channel_id} suppressed {n_closed}/{num_samples} "
+                f"samples for ASR (cross-channel anti-leak, WAV unaffected)"
+            )
+            asr_pcm_array = pcm_array.copy()
+            asr_pcm_array[~gate_mask] = 0.0
+        else:
+            asr_pcm_array = pcm_array
+
         res = None
         if self.args.vac:
-            res = self.vac(pcm_array)
+            res = self.vac(asr_pcm_array)
 
         if res is not None:
             if "start" in res and self.current_silence:
                 await self._end_silence()
-            
+
             if "end" in res and not self.current_silence:
                 pre_silence_chunk = self._slice_before_silence(
-                    pcm_array, chunk_sample_start, res.get("end")
+                    asr_pcm_array, chunk_sample_start, res.get("end")
                 )
                 if pre_silence_chunk is not None and pre_silence_chunk.size > 0:
                     await self._enqueue_active_audio(pre_silence_chunk)
                 await self._begin_silence()
 
         if not self.current_silence:
-            await self._enqueue_active_audio(pcm_array)
+            await self._enqueue_active_audio(asr_pcm_array)
 
 
         self.total_pcm_samples = chunk_sample_end

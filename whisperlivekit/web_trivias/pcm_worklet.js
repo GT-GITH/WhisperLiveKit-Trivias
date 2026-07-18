@@ -19,14 +19,14 @@ class PCMForwarder extends AudioWorkletProcessor {
 
     const channelData = input[0];
 
-    if (this._threshold > 0) {
-      // RMS berekenen over dit frame
-      let sum = 0;
-      for (let i = 0; i < channelData.length; i++) {
-        sum += channelData[i] * channelData[i];
-      }
-      const rms = Math.sqrt(sum / channelData.length);
+    // RMS altijd berekenen (ook bij threshold=0), nodig voor cross-kanaal arbitrage
+    let sum = 0;
+    for (let i = 0; i < channelData.length; i++) {
+      sum += channelData[i] * channelData[i];
+    }
+    const rms = Math.sqrt(sum / channelData.length);
 
+    if (this._threshold > 0) {
       if (rms >= this._threshold) {
         // Stem gedetecteerd: gate openen en hold-teller resetten
         this._gateOpen = true;
@@ -38,13 +38,15 @@ class PCMForwarder extends AudioWorkletProcessor {
         // Onder drempel en hold voorbij: gate sluiten
         this._gateOpen = false;
       }
-
-      if (!this._gateOpen) return true; // stille periode: niets versturen
+    } else {
+      this._gateOpen = true;
     }
 
+    // Altijd versturen: audio is leidend (WAV-opname), gateOpen bepaalt alleen of
+    // dit fragment naar ASR mag — nooit of het wordt opgenomen.
     const copy = new Float32Array(channelData.length);
     copy.set(channelData);
-    this.port.postMessage(copy, [copy.buffer]);
+    this.port.postMessage({ buffer: copy, rms, gateOpen: this._gateOpen }, [copy.buffer]);
     return true;
   }
 }

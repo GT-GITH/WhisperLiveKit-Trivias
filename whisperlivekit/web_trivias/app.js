@@ -60,6 +60,59 @@ const GATE_PRESETS = [
   { label: "Streng", value: 0.03  },
 ];
 
+// === Cross-kanaal anti-lek arbitrage ===
+// Onderdrukt ASR op een kanaal wanneer een ander kanaal duidelijk luider is
+// (waarschijnlijk akoestisch lek van diens spreker in deze microfoon).
+// Raakt nooit de WAV-opname — die krijgt altijd de volledige, ongewijzigde audio.
+
+const CROSS_GATE_STORAGE_KEY = "trivias_cross_gate_enabled";
+const ARBITRATION_MARGIN = 0.4;  // eigen RMS moet >= 40% van de luidste andere kanaal zijn
+const CLOSE_HOLD_MS      = 250;  // verdenking moet dit lang aanhouden vóór ASR-onderdrukking
+const STALE_MS           = 200;  // negeer peers waarvan we >200ms niets meer hoorden
+
+let crossGateEnabled = true;
+
+// uid → { rms, gateOpen1, lastUpdate, suspectSince }
+const channelAudioState = new Map();
+
+function loadCrossGateEnabled() {
+  try {
+    const saved = localStorage.getItem(CROSS_GATE_STORAGE_KEY);
+    if (saved !== null) { crossGateEnabled = saved === "1"; return; }
+  } catch (e) { /* ignore */ }
+  crossGateEnabled = true;
+}
+
+function saveCrossGateEnabled() {
+  localStorage.setItem(CROSS_GATE_STORAGE_KEY, crossGateEnabled ? "1" : "0");
+}
+
+// Combineert de eigen stilte-gate (stage 1) met cross-kanaal arbitrage (stage 2).
+// Bij twijfel (geen duidelijk dominant ander kanaal) blijft dit kanaal altijd open.
+function computeCombinedGate(uid, state) {
+  if (!state.gateOpen1) return false; // eigen stilte-gate heeft altijd voorrang
+  if (!crossGateEnabled) return true;
+
+  const now = Date.now();
+  let maxPeerRms = 0;
+  for (const [otherUid, peer] of channelAudioState.entries()) {
+    if (otherUid === uid) continue;
+    if (!peer.gateOpen1) continue;
+    if (now - peer.lastUpdate > STALE_MS) continue;
+    if (peer.rms > maxPeerRms) maxPeerRms = peer.rms;
+  }
+
+  const suspected = maxPeerRms > 0 && state.rms < maxPeerRms * ARBITRATION_MARGIN;
+
+  if (!suspected) {
+    state.suspectSince = null;
+    return true;
+  }
+
+  if (state.suspectSince == null) state.suspectSince = now;
+  return (now - state.suspectSince) < CLOSE_HOLD_MS; // pas sluiten na de hold-periode
+}
+
 // === Channel config management ===
 
 const STORAGE_KEY = "trivias_channel_config";
@@ -366,7 +419,7 @@ async function refreshMicrophoneList() {
 
 function buildWebSocketUrl(sessionId, channelId, cfg) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const params = new URLSearchParams({ session_id: sessionId, channel_id: channelId, lang: cfg.language || "nl" });
+  const params = new URLSearchParams({ session_id: sessionId, channel_id: channelId, lang: cfg.language || "nl", gate_framed: "1" });
   if (cfg.language2) params.set("lang2", cfg.language2);
   return `${proto}//${location.host}/ws?${params}`;
 }
@@ -396,17 +449,37 @@ async function openAudioStream(ws, cfg, useWorklet) {
     recorderWorker = new Worker("/web/recorder_worker.js");
     recorderWorker.postMessage({ command: "init", config: { sampleRate: audioContext.sampleRate } });
     recorderWorker.onmessage = e => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(e.data.buffer);
+      if (ws.readyState !== WebSocket.OPEN) return;
+      // Frame: [1 byte gate-vlag][s16le PCM]. Audio wordt altijd verstuurd —
+      // de vlag bepaalt alleen of de server dit fragment naar ASR doorlaat,
+      // nooit of het wordt opgenomen (WAV blijft altijd compleet).
+      const pcm = new Uint8Array(e.data.buffer);
+      const framed = new Uint8Array(pcm.length + 1);
+      framed[0] = e.data.gateOpen ? 1 : 0;
+      framed.set(pcm, 1);
+      ws.send(framed.buffer);
     };
 
     // Noise gate instellen op de worklet
     workletNode.port.postMessage({ threshold: cfg.gateThreshold ?? 0 });
 
+    channelAudioState.set(cfg.uid, { rms: 0, gateOpen1: false, lastUpdate: 0, suspectSince: null });
+
     let lastActivity = Date.now();
     workletNode.port.onmessage = e => {
       lastActivity = Date.now();
-      const ab = e.data instanceof ArrayBuffer ? e.data : e.data.buffer;
-      recorderWorker.postMessage({ command: "record", buffer: ab }, [ab.slice(0)]);
+      const { buffer: pcmData, rms, gateOpen } = e.data; // pcmData: Float32Array
+
+      const state = channelAudioState.get(cfg.uid);
+      if (state) {
+        state.rms = rms;
+        state.gateOpen1 = gateOpen;
+        state.lastUpdate = Date.now();
+      }
+      const combinedGate = state ? computeCombinedGate(cfg.uid, state) : gateOpen;
+
+      const ab = pcmData.buffer;
+      recorderWorker.postMessage({ command: "record", buffer: ab, gateOpen: combinedGate }, [ab.slice(0)]);
     };
 
     watchdog = setInterval(() => {
@@ -449,6 +522,7 @@ function cleanupChannelConnection(uid) {
   }
 
   activeConnections.delete(uid);
+  channelAudioState.delete(uid);
   updateConnectionStatus();
 }
 
@@ -922,6 +996,14 @@ if (sessionsModal) sessionsModal.addEventListener("click", e => { if (e.target =
 const addChannelBtn = document.getElementById("addChannelBtn");
 if (addChannelBtn) addChannelBtn.addEventListener("click", addChannelConfig);
 
+const crossGateToggle = document.getElementById("crossGateToggle");
+if (crossGateToggle) {
+  crossGateToggle.addEventListener("change", () => {
+    crossGateEnabled = crossGateToggle.checked;
+    saveCrossGateEnabled();
+  });
+}
+
 // === Init ===
 
 function initWebsocketUrl() {
@@ -944,6 +1026,8 @@ async function checkMicPermission() {
 }
 
 loadChannelConfigs();
+loadCrossGateEnabled();
+if (crossGateToggle) crossGateToggle.checked = crossGateEnabled;
 initTabs();
 renderChannelConfigs();
 checkMicPermission();

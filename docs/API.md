@@ -7,6 +7,26 @@ WLK provides real-time speech transcription, speaker diarization, and translatio
 
 ---
 
+## Incoming Audio (Client → Server)
+
+### Default contract (unchanged)
+
+Binary WebSocket messages are raw audio bytes, sent as-is to the server. With `--pcm-input`, this is raw s16le PCM (16kHz, mono, no framing, no headers) — see `docs/technical_integration.md`. This is the contract used by `/asr` and by any `/ws` client that does not opt in to the framing below. **This default is never affected by anything in this section.**
+
+### Opt-in: `gate_framed=1` (cross-channel anti-leak, PCM input only)
+
+Pass `?gate_framed=1` as a query parameter on `/ws` (or `/asr`) to enable per-chunk gate framing. Each binary message becomes:
+
+```
+[1 byte: 0x00 = ASR-closed | 0x01 = ASR-open][s16le PCM payload]
+```
+
+The flag indicates whether this fragment of audio should be fed into VAD/ASR. **It never affects what gets written to the session WAV file — the server always records 100% of the received audio, regardless of the flag**, per this project's audio-is-authoritative principle (see root `CLAUDE.md`). Gate-closed samples are zeroed out only in the copy used for VAD/live/batch transcription; the WAV recording and all timestamps are computed from the untouched, full-fidelity audio.
+
+This is used by the bundled Trivias frontend (`whisperlivekit/web_trivias/`) to suppress transcription on a channel when it detects (via cross-channel RMS comparison, done client-side since all channels of a session share one browser tab) that its microphone is likely picking up acoustic leakage from another channel's speaker rather than its own. It is not part of the general-purpose WLK protocol and is safe to ignore for any other integration — omitting `gate_framed` (the default) preserves the raw, unframed contract described above.
+
+---
+
 ## Legacy API (Current)
 
 ### Message Structure
