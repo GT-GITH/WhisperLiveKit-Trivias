@@ -624,6 +624,21 @@ class AudioProcessor:
         except Exception as e:
             logger.warning(f"[BATCH][FINALFLUSH] failed: {e}")
 
+    async def _pause_flush(self) -> None:
+        """Client-side Pauze: sluit het huidige live-segment + batch-venster netjes
+        af (zelfde bouwstenen als de stop-sequentie in process_audio), maar zonder
+        is_stopping te zetten, de WAV te sluiten of de queues/ffmpeg te stoppen --
+        de sessie blijft volledig leven voor Hervatten."""
+        if self.pcm_buffer:
+            await self.handle_pcm_data()
+        if self.current_silence:
+            try:
+                await self._end_silence()
+            except Exception as e:
+                logger.warning(f"[PAUSE][FLUSH] ending current silence failed: {e}")
+        await self._flush_final_batch_tail(reason="pause")
+        logger.info(f"[PAUSE][FLUSH] channel={self.channel_id} session paused, segment/window flushed")
+
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
         cumulative_pcm_duration_stream_time = 0.0
@@ -1520,8 +1535,15 @@ class AudioProcessor:
                 # Frame: [1 byte gate-vlag][s16le PCM]. De vlag bepaalt alleen of dit
                 # fragment straks naar VAD/ASR mag (zie handle_pcm_data) — de audio zelf
                 # wordt hieronder altijd volledig in pcm_buffer gezet en dus altijd opgenomen.
-                gate_open = message[0] != 0
+                flag = message[0]
                 payload = message[1:]
+                if flag == 2 and not payload:
+                    # Pauze-flush (client-side Pauze-knop): sluit het huidige live-
+                    # segment/batch-venster netjes af, zonder de sessie/WAV te
+                    # beëindigen. Geen audio-payload voor dit bericht.
+                    await self._pause_flush()
+                    return
+                gate_open = flag != 0
                 n_samples = len(payload) // self.bytes_per_sample
                 if n_samples > 0:
                     self._gate_segments.append((n_samples, gate_open))

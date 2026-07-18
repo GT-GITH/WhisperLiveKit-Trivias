@@ -723,11 +723,18 @@ function stopKeepAlive() {
 async function pauseAllConnections() {
   for (const [, conn] of activeConnections.entries()) {
     try {
-      if (conn.audioContext && conn.audioContext.state === "running") {
-        await conn.audioContext.suspend();
+      // Audio weggooien op de bron (worklet), AudioContext blijft gewoon draaien --
+      // suspend()/resume() bleek onbetrouwbaar bij hervatten, zie pcm_worklet.js.
+      if (conn.workletNode) {
+        conn.workletNode.port.postMessage({ appPaused: true });
       }
       if (conn.mediaRecorder && conn.mediaRecorder.state === "recording") {
         conn.mediaRecorder.pause();
+      }
+      // Vraag de server om het huidige live-segment/batch-venster netjes af te
+      // sluiten (zoals Stop dat doet), zonder de sessie/WAV te beëindigen.
+      if (conn.ws?.readyState === WebSocket.OPEN && serverUseAudioWorklet) {
+        conn.ws.send(new Uint8Array([2]).buffer); // vlag=2: pauze-flush, geen payload
       }
     } catch (e) { console.warn("Pauzeren mislukt voor kanaal:", conn.channelId, e); }
   }
@@ -736,8 +743,8 @@ async function pauseAllConnections() {
 async function resumeAllConnections() {
   for (const [, conn] of activeConnections.entries()) {
     try {
-      if (conn.audioContext && conn.audioContext.state === "suspended") {
-        await conn.audioContext.resume();
+      if (conn.workletNode) {
+        conn.workletNode.port.postMessage({ appPaused: false });
       }
       if (conn.mediaRecorder && conn.mediaRecorder.state === "paused") {
         conn.mediaRecorder.resume();
@@ -988,7 +995,11 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
   if (isAtBottom) scrollParent.scrollTop = scrollParent.scrollHeight;
 
-  setAsrStatus("Live transcriptie actief");
+  // Alleen overschrijven tijdens een actieve, niet-gepauzeerde opname -- anders vecht
+  // dit met de "Gepauzeerd"/waakhond-status bij elk binnenkomend serverbericht.
+  if (isRecording && !isPaused) {
+    setAsrStatus("Live transcriptie actief");
+  }
 }
 
 // === Sessie browser ===

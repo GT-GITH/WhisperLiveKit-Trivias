@@ -5,15 +5,26 @@ class PCMForwarder extends AudioWorkletProcessor {
     this._holdFrames = 113;  // ~300ms bij 48kHz / 128 samples per frame
     this._holdCounter = 0;
     this._gateOpen = false;
+    // App-level pauze: expliciet gezet door de gebruiker (Pauze-knop), niet te
+    // verwarren met de akoestische stilte-gate hierboven. AudioContext.suspend()/
+    // resume() bleek onbetrouwbaar bij een AudioWorkletNode (audio kwam na hervatten
+    // niet altijd weer op gang) -- dit is de robuustere weg: de context blijft
+    // gewoon draaien, we gooien de audio hier gewoon weg zolang er gepauzeerd is.
+    this._appPaused = false;
 
     this.port.onmessage = (e) => {
       if (e.data.threshold !== undefined) {
         this._threshold = e.data.threshold;
       }
+      if (e.data.appPaused !== undefined) {
+        this._appPaused = e.data.appPaused;
+      }
     };
   }
 
   process(inputs) {
+    if (this._appPaused) return true;
+
     const input = inputs[0];
     if (!input || !input[0] || !input[0].length) return true;
 

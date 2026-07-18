@@ -25,6 +25,8 @@ The flag indicates whether this fragment of audio should be fed into VAD/ASR. **
 
 This is used by the bundled Trivias frontend (`whisperlivekit/web_trivias/`) to suppress transcription on a channel when it detects (via cross-channel RMS comparison, done client-side since all channels of a session share one browser tab) that its microphone is likely picking up acoustic leakage from another channel's speaker rather than its own. It is not part of the general-purpose WLK protocol and is safe to ignore for any other integration — omitting `gate_framed` (the default) preserves the raw, unframed contract described above.
 
+A third value, `0x02`, is reserved as a **pause-flush** control signal: a 1-byte message (flag byte only, no PCM payload). It tells the server to close out the current live segment and batch window immediately — the same finalization the stop sequence does — **without** closing the WAV file or ending the session. Used by the Trivias frontend when the user clicks Pause, so the last few seconds of speech before a pause get transcribed right away instead of waiting indefinitely for the next natural silence boundary. Resuming afterward continues the same session/WAV; no new `session_id` is created.
+
 ---
 
 ## Legacy API (Current)
