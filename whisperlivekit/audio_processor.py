@@ -1068,6 +1068,13 @@ class AudioProcessor:
         if self._batch_worker_task is None or self._batch_worker_task.done():
             self._batch_worker_task = asyncio.create_task(self._batch_worker())
             self.all_tasks_for_cleanup.append(self._batch_worker_task)
+            # Zonder dit blijft een onverwacht gestorven batch-worker (bv. stilzwijgend
+            # gecancelled) volledig onopgemerkt: nieuwe batch-taken stapelen zich dan op
+            # in _batch_queue zonder ooit verwerkt te worden, en zonder één regel log die
+            # dat verklaart. De waakhond bestond al voor de andere achtergrondtaken
+            # (transcriptie/diarisatie/vertaling, zie hierboven) -- de batch-worker hoorde
+            # daar ook al bij.
+            processing_tasks_for_watchdog.append(self._batch_worker_task)
 
         # Monitor overall system health
         self.watchdog_task = asyncio.create_task(self.watchdog(processing_tasks_for_watchdog))
@@ -1088,12 +1095,21 @@ class AudioProcessor:
                 
                 for i, task in enumerate(list(tasks_remaining)):
                     if task.done():
-                        exc = task.exception()
                         task_name = task.get_name() if hasattr(task, 'get_name') else f"Monitored Task {i}"
-                        if exc:
-                            logger.error(f"{task_name} unexpectedly completed with exception: {exc}")
+                        # task.exception() gooit zelf CancelledError als de taak
+                        # geannuleerd was -- dat zou hier ongevangen naar de
+                        # except asyncio.CancelledError hieronder lekken, die dan
+                        # denkt dat de WAAKHOND zelf geannuleerd is (en stopt met
+                        # alles monitoren, stilzwijgend). Eerst cancelled() checken
+                        # (nooit-gooiend) voorkomt die misattributie.
+                        if task.cancelled():
+                            logger.error(f"{task_name} was cancelled unexpectedly.")
                         else:
-                            logger.info(f"{task_name} completed normally.")
+                            exc = task.exception()
+                            if exc:
+                                logger.error(f"{task_name} unexpectedly completed with exception: {exc}")
+                            else:
+                                logger.info(f"{task_name} completed normally.")
                         tasks_remaining.remove(task)
                     
             except asyncio.CancelledError:
