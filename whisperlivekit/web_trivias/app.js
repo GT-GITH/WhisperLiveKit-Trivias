@@ -72,7 +72,7 @@ const STALE_MS           = 200;  // negeer peers waarvan we >200ms niets meer ho
 
 let crossGateEnabled = true;
 
-// uid → { rms, gateOpen1, lastUpdate, suspectSince }
+// uid → { rms, gateOpen1, lastUpdate, suspectSince, combinedGateOpen }
 const channelAudioState = new Map();
 
 function loadCrossGateEnabled() {
@@ -98,28 +98,52 @@ function saveCrossGateEnabled() {
 // voelde voor de gebruiker aan als een kanaal dat het gewoon niet meer deed.
 // Teruggezet naar direct heropenen; alleen CLOSE_HOLD_MS (sneller dicht bij
 // verdenking) blijft staan, die heeft dit risico niet.
+//
+// VEILIGHEIDSNET (2026-07-19): elk kanaal beoordeelt zijn eigen RMS tegen een
+// momentopname van de ander (tot STALE_MS oud), onafhankelijk van elkaar. Bij
+// snel fluctuerende, dicht bij elkaar liggende volumes (bv. een zin die
+// uitdooft) kunnen beide kanalen elkaar -- op net iets andere momenten,
+// tegen elkaars stale snapshot -- als "verdacht" bestempelen en allebei
+// dichtgaan. Gezien in een echte sessie: 11+ seconden lang waren BEIDE
+// kanalen tegelijk onderdrukt, waardoor een echt gesproken zin nergens meer
+// binnenkwam. Daarom hieronder een expliciete garantie: als geen enkel ander
+// actief kanaal op dit moment open staat voor ASR, mag dit kanaal ook nooit
+// dicht -- er blijft altijd minstens één kanaal open.
 function computeCombinedGate(uid, state) {
   if (!state.gateOpen1) return false; // eigen stilte-gate heeft altijd voorrang
   if (!crossGateEnabled) return true;
 
   const now = Date.now();
   let maxPeerRms = 0;
+  let anyPeerCombinedOpen = false;
   for (const [otherUid, peer] of channelAudioState.entries()) {
     if (otherUid === uid) continue;
     if (!peer.gateOpen1) continue;
     if (now - peer.lastUpdate > STALE_MS) continue;
     if (peer.rms > maxPeerRms) maxPeerRms = peer.rms;
+    if (peer.combinedGateOpen) anyPeerCombinedOpen = true;
   }
 
   const suspected = maxPeerRms > 0 && state.rms < maxPeerRms * ARBITRATION_MARGIN;
 
+  let open;
   if (!suspected) {
     state.suspectSince = null;
-    return true;
+    open = true;
+  } else {
+    if (state.suspectSince == null) state.suspectSince = now;
+    open = (now - state.suspectSince) < CLOSE_HOLD_MS;
   }
 
-  if (state.suspectSince == null) state.suspectSince = now;
-  return (now - state.suspectSince) < CLOSE_HOLD_MS;
+  if (!open && !anyPeerCombinedOpen) {
+    // Geen enkel ander kanaal staat momenteel open -- dit kanaal alsnog
+    // sluiten zou alle kanalen tegelijk laten dichtvallen. Nooit doen.
+    open = true;
+    state.suspectSince = null;
+  }
+
+  state.combinedGateOpen = open;
+  return open;
 }
 
 // === Channel config management ===
@@ -501,7 +525,7 @@ async function openAudioStream(ws, cfg, useWorklet) {
     // Noise gate instellen op de worklet
     workletNode.port.postMessage({ threshold: cfg.gateThreshold ?? 0 });
 
-    channelAudioState.set(cfg.uid, { rms: 0, gateOpen1: false, lastUpdate: 0, suspectSince: null });
+    channelAudioState.set(cfg.uid, { rms: 0, gateOpen1: false, lastUpdate: 0, suspectSince: null, combinedGateOpen: true });
 
     let lastActivity = Date.now();
     workletNode.port.onmessage = e => {
