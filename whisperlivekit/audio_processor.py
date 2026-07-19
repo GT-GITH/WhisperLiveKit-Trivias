@@ -875,6 +875,31 @@ class AudioProcessor:
 
                     new_tokens = new_tokens or []
 
+                # Tweede lek gevonden (2026-07-19, na eerste end_buffer-klem):
+                # _get_last_speech_end_ms() (gebruikt door _flush_final_batch_tail/
+                # _batch_on_silence_boundary om batch-vensters af te bakenen) leest
+                # self.state.tokens[-1].end RECHTSTREEKS, buiten end_buffer om. Een
+                # hallucinerend token met een te hoge attention-afgeleide tijdstempel
+                # (zelfde fenomeen als de end_buffer-klem verderop afvangt) kon zo
+                # alsnog een batch-venster ver voorbij de echte audio laten beginnen --
+                # bevestigd via [DIAG][WAV_DRIFT] vlak na een reeks succesvolle
+                # [DIAG][END_BUFFER_CLAMP]-regels. Klem daarom hier al, per token, vóór
+                # ze aan state.tokens worden toegevoegd -- op het gedeelde punt na beide
+                # takken (Silence en np.ndarray kunnen allebei new_tokens opleveren).
+                _token_ceiling = current_audio_processed_upto + END_BUFFER_MAX_LOOKAHEAD_S
+                for _tok in new_tokens:
+                    _tok_end = getattr(_tok, "end", None)
+                    if _tok_end is not None and _tok_end > _token_ceiling:
+                        logger.warning(
+                            f"[DIAG][TOKEN_CLAMP] channel={self.channel_id} "
+                            f"token.end {_tok_end:.2f}s geklemd naar {_token_ceiling:.2f}s "
+                            f"(text={getattr(_tok, 'text', '?')!r})"
+                        )
+                        _tok.end = _token_ceiling
+                        _tok_start = getattr(_tok, "start", None)
+                        if _tok_start is not None and _tok_start > _token_ceiling:
+                            _tok.start = _token_ceiling
+
                 _buffer_transcript = self.transcription.get_buffer()
                 buffer_text = (_buffer_transcript.text or "").strip()
 
