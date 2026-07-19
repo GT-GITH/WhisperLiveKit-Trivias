@@ -839,7 +839,7 @@ function handleFrontData(data, channelId) {
   // dit logt wat de client daadwerkelijk ONTVANGT en toepast, om te zien of/waar het
   // daarna alsnog misgaat (bv. isPlaybackMode die renderAllChannels() overslaat, of een
   // segment_update die een regel terugzet nadat front_data hem al had laten vallen).
-  console.debug("[DIAG][FRONTDATA_RECV]", channelId, "n_lines=" + lines.length,
+  console.log("[DIAG][FRONTDATA_RECV]", channelId, "n_lines=" + lines.length,
     "ids=" + JSON.stringify(lines.map(l => l && l.id)), "isPlaybackMode=" + isPlaybackMode);
 
   ensureChannelMaps(channelId);
@@ -874,7 +874,7 @@ function handleSegmentUpdate(data, channelId) {
   // [DIAG] zie [DIAG][FRONTDATA_RECV] hierboven -- dit is het ANDERE pad dat een regel
   // kan toevoegen/bijwerken buiten een volledige front_data-snapshot om. Van belang: of
   // dit pad na een correctie alsnog een reeds-ingetrokken regel terugzet.
-  console.debug("[DIAG][SEGMENT_UPDATE]", channelId, "id=" + id,
+  console.log("[DIAG][SEGMENT_UPDATE]", channelId, "id=" + id,
     "text_final=" + JSON.stringify(data.text_final), "text_batch=" + JSON.stringify(data.text_batch),
     "state=" + data.state, "isPlaybackMode=" + isPlaybackMode);
 
@@ -939,7 +939,7 @@ function getAllRenderLines() {
 
 function renderAllChannels() {
   if (isPlaybackMode) {
-    console.debug("[DIAG][RENDER_SKIPPED] isPlaybackMode=true, render overgeslagen");
+    console.log("[DIAG][RENDER_SKIPPED] isPlaybackMode=true, render overgeslagen");
     return;
   }
   renderTranscript(getAllRenderLines(), lastBufferTranscription, lastBufferTranslation, lastStatus);
