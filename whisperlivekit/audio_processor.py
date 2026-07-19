@@ -342,6 +342,15 @@ class AudioProcessor:
 
         if base_asr is not None:
             try:
+                # [DIAG] end_buffer-drift onderzoek (2026-07-19): vastleggen wat de offset
+                # was vlak vóór de reset, en wat state.end_buffer is op het moment dat het
+                # zo dadelijk als nieuwe offset gebruikt wordt -- als state.end_buffer hier
+                # al te hoog is, is de bron van de drift NIET deze restauratiestap zelf, maar
+                # iets dat eerder al end_buffer heeft opgeblazen (zie [DIAG]-logs in
+                # simul_whisper.py voor de kandidaten daar).
+                _diag_offset_before = float(
+                    getattr(getattr(base_asr, "state", None), "cumulative_time_offset", 0.0) or 0.0
+                )
                 base_asr.refresh_segment(complete=True)
                 # refresh_segment() zet cumulative_time_offset terug naar 0.0, alsof de
                 # audio opnieuw bij het begin start. Zonder correctie krijgen alle tokens
@@ -353,7 +362,13 @@ class AudioProcessor:
                 # per ongeluk goed bleef gaan). Herstel de offset naar de echte absolute
                 # positie in de sessie zodat tijdstempels doorlopend blijven.
                 if hasattr(base_asr, "state") and hasattr(base_asr.state, "cumulative_time_offset"):
-                    base_asr.state.cumulative_time_offset = float(getattr(self.state, "end_buffer", 0.0) or 0.0)
+                    _diag_restore_value = float(getattr(self.state, "end_buffer", 0.0) or 0.0)
+                    base_asr.state.cumulative_time_offset = _diag_restore_value
+                    logger.info(
+                        f"[DIAG][RESET_OFFSET] channel={self.channel_id} reason={reason} "
+                        f"cumulative_time_offset {_diag_offset_before:.2f}s -> 0.0 (refresh_segment) "
+                        f"-> {_diag_restore_value:.2f}s (hersteld uit state.end_buffer)"
+                    )
             except Exception as e:
                 logger.warning(f"[LIVE][HARD_RESET] refresh_segment failed: {e}")
         else:
@@ -853,7 +868,21 @@ class AudioProcessor:
                     candidate_end_times.append(_buffer_transcript.end)
                 
                 candidate_end_times.append(current_audio_processed_upto)
-                
+
+                # [DIAG] end_buffer-drift onderzoek (2026-07-19): end_buffer is een
+                # eenrichtings-max -- als een kandidaat hier significant hoger uitvalt dan
+                # current_audio_processed_upto (de zuivere, betrouwbare PCM-teller), is dát
+                # de kandidaat die de drift injecteert. Alleen loggen bij een echte sprong
+                # om logspam te vermijden.
+                _diag_new_end = max(candidate_end_times)
+                if _diag_new_end - self.state.end_buffer > 5.0 and _diag_new_end > current_audio_processed_upto + 5.0:
+                    logger.warning(
+                        f"[DIAG][END_BUFFER_JUMP] channel={self.channel_id} "
+                        f"end_buffer {self.state.end_buffer:.2f}s -> {_diag_new_end:.2f}s "
+                        f"(candidates={[round(c, 2) for c in candidate_end_times]}, "
+                        f"current_audio_processed_upto={current_audio_processed_upto:.2f}s)"
+                    )
+
                 async with self.lock:
                     self.state.tokens.extend(new_tokens)
                     self.state.buffer_transcription = _buffer_transcript
@@ -1188,7 +1217,21 @@ class AudioProcessor:
 
         try:
             with wave.open(str(self._wav_path), "rb") as rf:
-                rf.setpos(min(start_frame, rf.getnframes()))
+                _diag_actual_frames = rf.getnframes()
+                if start_frame > _diag_actual_frames:
+                    # [DIAG] end_buffer-drift onderzoek (2026-07-19): het gevraagde
+                    # batch-venster begint voorbij het einde van de daadwerkelijk
+                    # opgenomen WAV. Dit is het punt waarop de drift zichtbaar schade
+                    # aanricht (job wordt geskipt, [BATCH][SKIP] hieronder in de aanroeper)
+                    # -- niet de oorzaak zelf, maar de bevestiging + exacte grootte ervan.
+                    logger.warning(
+                        f"[DIAG][WAV_DRIFT] channel={self.channel_id} gevraagd venster begint "
+                        f"bij frame {start_frame} ({start_frame / self.sample_rate:.2f}s) maar "
+                        f"WAV bevat slechts {_diag_actual_frames} frames "
+                        f"({_diag_actual_frames / self.sample_rate:.2f}s) -- drift van "
+                        f"{(start_frame - _diag_actual_frames) / self.sample_rate:.2f}s"
+                    )
+                rf.setpos(min(start_frame, _diag_actual_frames))
                 raw = rf.readframes(n_frames)
             if not raw:
                 return None

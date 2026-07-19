@@ -374,6 +374,14 @@ class AlignAtt:
             self.state.last_attend_frame -= int(TOKENS_PER_SECOND * removed_len)
             self.state.cumulative_time_offset += removed_len  # Track cumulative time removed
             self.state.segments = self.state.segments[1:]
+            # [DIAG] end_buffer-drift onderzoek (2026-07-19): elke ophoging van
+            # cumulative_time_offset buiten _hard_reset_live_decoder om (audio_processor.py)
+            # loopt via dit pad -- removed_len hoort exact de duur van het verwijderde
+            # segment te zijn, nooit meer.
+            logger.info(
+                f"[DIAG][OFFSET_TRIM] cumulative_time_offset += {removed_len:.2f}s -> "
+                f"{self.state.cumulative_time_offset:.2f}s (segments resterend: {len(self.state.segments)})"
+            )
             logger.debug(f"remove segments: {len(self.state.segments)} {len(self.state.tokens)}, cumulative offset: {self.state.cumulative_time_offset:.2f}s")
             if len(self.state.tokens) > 1:
                 self.state.context.append_token_ids(self.state.tokens[1][0, :].tolist())
@@ -478,7 +486,7 @@ class AlignAtt:
                 encoder_feature = torch.as_tensor(np.array(encoder_feature_ctranslate), device=self.device)
         else:
             # mel + padding to 30s
-            mel_padded = log_mel_spectrogram(input_segments, n_mels=self.model.dims.n_mels, padding=N_SAMPLES, 
+            mel_padded = log_mel_spectrogram(input_segments, n_mels=self.model.dims.n_mels, padding=N_SAMPLES,
                                                 device=self.device).unsqueeze(0)
             # trim to 3000
             mel = pad_or_trim(mel_padded, N_FRAMES)
@@ -486,6 +494,21 @@ class AlignAtt:
             content_mel_len = int((mel_padded.shape[2] - mel.shape[2])/2)
             encoder_feature = self.model.encoder(mel)
         end_encode = time()
+        # [DIAG] end_buffer-drift onderzoek (2026-07-19): content_mel_len bepaalt tot welk
+        # encoder-frame de attention-gebaseerde tokentijdstempel mag reiken (zie
+        # _process_cross_attention hieronder). Als deze waarde negatief of groter dan
+        # segments_len()*50 (frames/s op 20ms-resolutie) is, is dat een aanwijzing dat het
+        # "echte-audio"-gedeelte van een sterk opgevulde 30s-chunk verkeerd wordt bepaald --
+        # een kandidaat-oorzaak voor tokentijdstempels die verder reiken dan er audio is.
+        _diag_segments_len_s = self.segments_len()
+        _diag_max_plausible_frames = int(_diag_segments_len_s * 50) + 5  # marge
+        if content_mel_len < 0 or content_mel_len > _diag_max_plausible_frames:
+            logger.warning(
+                f"[DIAG][CONTENT_MEL_LEN] verdachte waarde: content_mel_len={content_mel_len} "
+                f"terwijl segments_len={_diag_segments_len_s:.2f}s "
+                f"(max plausibel ~{_diag_max_plausible_frames} frames), "
+                f"cumulative_time_offset={self.state.cumulative_time_offset:.2f}s"
+            )
         # print('Encoder duration:', end_encode-beg_encode)
                 
         if self.cfg.language == "auto" and self.state.detected_language is None and self.state.first_timestamp:
@@ -604,6 +627,24 @@ class AlignAtt:
             
             logger.debug(str(most_attended_frames.tolist()) + " most att frames")
             logger.debug(f"Absolute timestamps: {absolute_timestamps} (offset: {self.state.cumulative_time_offset:.2f}s)")
+
+            # [DIAG] end_buffer-drift onderzoek (2026-07-19): een absolute tokentijdstempel
+            # kan nooit legitiem verder reiken dan cumulative_time_offset + de audio die
+            # daadwerkelijk in de sliding-window buffer zit (segments_len()). Als dat toch
+            # gebeurt, wijst een token op audio die niet bestaat -- de vermoedelijke bron van
+            # de state.end_buffer-drift na pauzes (zie audio_processor.py _hard_reset_live_decoder
+            # en _read_wav_slice_float32 voor de andere twee meetpunten in deze keten).
+            _diag_max_plausible_ts = self.state.cumulative_time_offset + self.segments_len() + 2.0
+            for _diag_ts in absolute_timestamps:
+                if _diag_ts > _diag_max_plausible_ts:
+                    logger.warning(
+                        f"[DIAG][TOKEN_TS_OVERSHOOT] absolute timestamp {_diag_ts:.2f}s "
+                        f"overschrijdt plausibel maximum {_diag_max_plausible_ts:.2f}s "
+                        f"(cumulative_time_offset={self.state.cumulative_time_offset:.2f}s + "
+                        f"segments_len={self.segments_len():.2f}s + marge) -- "
+                        f"content_mel_len={content_mel_len}, most_attended_frames={most_attended_frames.tolist()}"
+                    )
+                    break
 
             most_attended_frame = most_attended_frames[0].item()
             l_absolute_timestamps.append(absolute_timestamps[0])
