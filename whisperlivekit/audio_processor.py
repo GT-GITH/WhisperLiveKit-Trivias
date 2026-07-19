@@ -1450,6 +1450,43 @@ class AudioProcessor:
                         f"[BATCH][SKIP] job={job['job_id']} empty/invalid wav slice "
                         f"decode={decode_start_ms}..{decode_end_ms}"
                     )
+                    # Geen batch-decode mogelijk (venster wijst voorbij de daadwerkelijk
+                    # opgenomen WAV, zie [DIAG][WAV_DRIFT]). Dit venster verdween voorheen
+                    # volledig uit het opgeslagen transcript, zelfs als er wél live-tekst
+                    # voor bestond (zichtbaar in de GUI met [1], maar nooit gepersisteerd
+                    # -- de gebruiker zag het live, maar het was bij het opvragen van de
+                    # sessie later spoorloos). Val net als bij een afgewezen batch terug op
+                    # live_text -- zonder text_batch, dus zonder vinkje in de UI, maar wél
+                    # bewaard en terugluisterbaar (start_ms/end_ms verwijzen naar de altijd
+                    # volledige WAV, onafhankelijk van batch-status).
+                    if live_text:
+                        async with self.lock:
+                            group_id = self.tokens_alignment.apply_batch_group(
+                                window_start_ms=start_ms,
+                                window_end_ms=end_ms,
+                                text_final=live_text,
+                                text_batch=None,
+                                speaker=-1,
+                            )
+                        logger.info(
+                            f"[BATCH][SKIP][LIVE_FALLBACK] job={job['job_id']} "
+                            f"group_id={group_id} persisted zonder batch-bevestiging"
+                        )
+                        try:
+                            upd = SegmentUpdate(
+                                id=str(group_id),
+                                state="FINAL",
+                                start_ms=start_ms,
+                                end_ms=end_ms,
+                                text_batch=None,
+                                text_final=live_text,
+                            )
+                            await self.emit_segment_update(upd)
+                        except Exception as emit_err:
+                            logger.warning(
+                                f"[BATCH][SKIP][EMIT] live-fallback update mislukt voor "
+                                f"group={group_id} job={job['job_id']}: {emit_err}"
+                            )
                     continue
 
                 # Tolk met taalpaar → auto-detectie; overige kanalen → channel_language als hint
@@ -1729,6 +1766,17 @@ class AudioProcessor:
                     await self._end_silence()
                 except Exception as e:
                     logger.warning(f"[BATCH][FINALFLUSH] ending current silence failed: {e}")
+
+            # Sluit de lopende, nog niet gevalideerde live-regel af als eigen FINAL
+            # segment -- zelfde reden als bij _pause_flush(): zonder dit blijft de
+            # allerlaatste, nog niet door een stilte-token afgesloten live-tekst buiten
+            # live_text (die alleen al-FINAL segmenten meeneemt, zie hieronder), en dus
+            # ook buiten wat _flush_final_batch_tail() eventueel als live-fallback kan
+            # persisteren als de batch-job voor de staart skipt of wordt afgewezen.
+            try:
+                self.tokens_alignment.flush_current_line()
+            except Exception as e:
+                logger.warning(f"[BATCH][FINALFLUSH] flush_current_line failed: {e}")
 
             # Forceer nog één laatste batch-window voor de resterende tail
             await self._flush_final_batch_tail(reason="end_of_stream")
