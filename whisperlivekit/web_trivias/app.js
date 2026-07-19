@@ -626,7 +626,23 @@ async function startChannelConnection(cfg, sessionId) {
     handleChannelMessage(data, channelId);
   };
 
-  ws.onclose = () => handleChannelClose(cfg.uid, channelId);
+  ws.onclose = (event) => {
+    // [DIAG] "verdwenen helft opname"-onderzoek (2026-07-19): serverlog bewees een
+    // stille, onverklaarde 4,5-minuten-stilstand gevolgd door een gloednieuwe sessie
+    // (nieuwe session_id, WAV/vensters herbeginnen bij 0) middenin een pauzeloze
+    // opname -- zonder enige exception. Dit logt code/reason/wasClean van de
+    // onderliggende WS-close, om de volgende keer vast te stellen OF en WAAROM de
+    // verbinding zelf brak (i.p.v. alleen te zien dat de server niets meer ontving).
+    console.log(
+      "[DIAG][WS_CLOSE]", channelId,
+      "code=" + event.code, "reason=" + JSON.stringify(event.reason),
+      "wasClean=" + event.wasClean, "isRecording=" + isRecording, "isPaused=" + isPaused
+    );
+    handleChannelClose(cfg.uid, channelId);
+  };
+  ws.onerror = () => {
+    console.log("[DIAG][WS_ERROR]", channelId, "isRecording=" + isRecording, "isPaused=" + isPaused);
+  };
 
   // Audio openen
   const audioResources = await openAudioStream(ws, cfg, serverUseAudioWorklet);
@@ -651,9 +667,22 @@ async function startRecording() {
     return;
   }
 
+  // [DIAG] "verdwenen helft opname"-onderzoek (2026-07-19): als hier nog
+  // achtergebleven verbindingen van een vorige sessie openstaan, betekent dat een
+  // nieuwe sessie start bovenop een oude i.p.v. schoon te beginnen -- precies het
+  // patroon dat het serverlog liet zien (twee sessie-ids, oude nooit netjes
+  // afgesloten). Dit legt vast OF dat hier ook gebeurt, en met welke oude sessionId.
+  if (activeConnections.size > 0) {
+    console.log(
+      "[DIAG][START_RECORDING] nieuwe sessie start met nog", activeConnections.size,
+      "openstaande verbinding(en) van vorige sessie", currentSessionId
+    );
+  }
+
   isPlaybackMode = false;
   hidePlaybackChannelFilter();
   currentSessionId = crypto.randomUUID();
+  console.log("[DIAG][START_RECORDING] nieuwe sessie", currentSessionId);
 
   // Reset transcript state voor alle kanalen
   channelLines.clear();
