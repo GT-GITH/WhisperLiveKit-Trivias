@@ -1151,6 +1151,18 @@ class AudioProcessor:
                                 
                 should_push = (response != self.last_response_content)
                 if should_push:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        # [DIAG] client-side "spooklijn"-onderzoek (2026-07-19): bevestigt of een
+                        # bijgewerkte front_data-snapshot (bv. na apply_batch_group() dat een
+                        # gehallucineerde validated_segment liet vallen) daadwerkelijk de WS uit
+                        # gaat, en met welke line-ids -- zonder dit is niet te zien of een
+                        # verdwenen regel de server nooit verliet, of alsnog client-side bleef
+                        # hangen ondanks een correcte push.
+                        _diag_line_ids = [getattr(l, "id", None) for l in lines]
+                        logger.debug(
+                            f"[DIAG][FRONTDATA_PUSH] channel={self.channel_id} n_lines={len(lines)} "
+                            f"ids={_diag_line_ids}"
+                        )
                     yield response
                     self.last_response_content = response
                 
