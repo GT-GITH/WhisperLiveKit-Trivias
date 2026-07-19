@@ -58,6 +58,14 @@ BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
 _STATE_TOKENS_MAX_DURATION_S: float = 600.0  # maximaal 10 minuten tokens in state.tokens
 _STATE_TOKENS_PRUNE_TRIGGER: int = 13_000    # alleen prunen boven deze grens
 
+# state.end_buffer mag nooit verder vooruitlopen dan current_audio_processed_upto (de
+# zuivere PCM-teller) + deze marge. Voorkomt dat een incidenteel foute attention-afgeleide
+# tijdstempel (bv. van een hallucinerend " *"-token, zie [DIAG][END_BUFFER_JUMP]) de
+# gedeelde end_buffer-status vergiftigt en batch-vensters buiten de opgenomen WAV laat
+# vallen. Marge > 0 omdat legitieme tokentijdstempels soms een fractie voor de exacte
+# chunk-grens kunnen liggen (woord-uitlijning is geen exacte wetenschap).
+END_BUFFER_MAX_LOOKAHEAD_S: float = 3.0
+
 def _sha1_pcm16(audio_f32: Optional[np.ndarray]) -> str:
     if audio_f32 is None or audio_f32.size == 0:
         return ""
@@ -924,10 +932,30 @@ class AudioProcessor:
                         f"laatste_new_token=[{_diag_last_tok_info}])"
                     )
 
+                # Begrens end_buffer tot wat er daadwerkelijk aan PCM is aangeboden (+ marge).
+                # new_tokens[-1].end/buffer_transcript.end zijn attention-afgeleide tijdstempels
+                # die bij een laag-vertrouwen/hallucinerend token (bv. een los " *"-token,
+                # gezien in [DIAG][END_BUFFER_JUMP]-logs) een willekeurig verkeerd encoder-frame
+                # kunnen kiezen -- current_audio_processed_upto is een zuivere PCM-teller
+                # (letterlijk hoeveel audio is aangeboden) en kan dat per constructie niet.
+                # We proberen de hallucinatie zelf niet te voorkomen (blijft, zoals bij elk
+                # Whisper-model, incidenteel gebeuren) -- alleen te voorkomen dat zo'n
+                # incidenteel fout token de gedeelde end_buffer-status vergiftigt, wat
+                # bevestigd tot batch-vensters buiten de WAV leidde ([DIAG][WAV_DRIFT]) en
+                # daarmee tot permanent verlies van transcript-inhoud.
+                _end_buffer_ceiling = current_audio_processed_upto + END_BUFFER_MAX_LOOKAHEAD_S
+                if _diag_new_end > _end_buffer_ceiling:
+                    logger.warning(
+                        f"[DIAG][END_BUFFER_CLAMP] channel={self.channel_id} "
+                        f"{_diag_new_end:.2f}s geklemd naar {_end_buffer_ceiling:.2f}s "
+                        f"(current_audio_processed_upto={current_audio_processed_upto:.2f}s)"
+                    )
+                    _diag_new_end = _end_buffer_ceiling
+
                 async with self.lock:
                     self.state.tokens.extend(new_tokens)
                     self.state.buffer_transcription = _buffer_transcript
-                    self.state.end_buffer = max(candidate_end_times)
+                    self.state.end_buffer = _diag_new_end
                     self.state.new_tokens.extend(new_tokens)
                     self.state.new_tokens_buffer = _buffer_transcript
 
