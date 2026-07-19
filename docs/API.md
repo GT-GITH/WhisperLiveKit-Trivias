@@ -27,8 +27,6 @@ This is used by the bundled Trivias frontend (`whisperlivekit/web_trivias/`) to 
 
 A third value, `0x02`, is reserved as a **pause-flush** control signal: a 1-byte message (flag byte only, no PCM payload). It tells the server to close out the current live segment and batch window immediately — the same finalization the stop sequence does — **without** closing the WAV file or ending the session. Used by the Trivias frontend when the user clicks Pause, so the last few seconds of speech before a pause get transcribed right away instead of waiting indefinitely for the next natural silence boundary. Resuming afterward continues the same session/WAV; no new `session_id` is created.
 
-A fourth value, `0x03`, is the **resume** signal (mirror of `0x02`): a 1-byte message (flag byte only, no PCM payload), sent once when the user clicks Resume after a Pause. It tells the server to shift its internal wall-clock reference (`beg_loop`) forward by exactly how long the pause lasted, so it stays in sync with how much audio has actually been processed. Without this, that reference permanently drifts ahead by the paused duration every time Pause is used, which corrupts silence-boundary detection over a session with several pauses.
-
 ---
 
 ## Legacy API (Current)

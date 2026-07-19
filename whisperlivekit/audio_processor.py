@@ -196,11 +196,6 @@ class AudioProcessor:
 
         self.tokens_alignment: TokensAlignment = TokensAlignment(self.state, self.args, self.sep)
         self.beg_loop: Optional[float] = None
-        # Wall-clock tijdstip waarop de huidige pauze begon (None = niet gepauzeerd).
-        # Zie _pause_flush()/_resume_flush(): beg_loop wordt bij hervatten opgeschoven
-        # met de gepauzeerde duur zodat time() - beg_loop synchroon blijft met
-        # state.end_buffer (audio-positie).
-        self._paused_at: Optional[float] = None
 
         # Models and processing
         self.asr: Any = models.asr
@@ -655,9 +650,6 @@ class AudioProcessor:
         decoder-hypothese wordt gewist, en de nog niet gevalideerde live-regel
         (current_line_tokens) wordt afgesloten in validated_segments in plaats
         van losjes te blijven hangen -- zie flush_current_line()."""
-        # Moment waarop de pauze daadwerkelijk begint (mic staat vanaf hier client-
-        # side al stil) -- basis voor de beg_loop-correctie bij hervatten.
-        self._paused_at = time()
         if self.pcm_buffer:
             await self.handle_pcm_data()
         if self.current_silence:
@@ -702,29 +694,6 @@ class AudioProcessor:
         except Exception as e:
             logger.warning(f"[PAUSE][FLUSH] live decoder reset failed: {e}")
         logger.info(f"[PAUSE][FLUSH] channel={self.channel_id} session paused, segment/window flushed")
-
-    def _resume_flush(self) -> None:
-        """Spiegelbeeld van de tijdstempel in _pause_flush(): corrigeer beg_loop met
-        de zojuist verstreken pauzeduur, zodat time() - beg_loop weer synchroon loopt
-        met state.end_buffer (audio-positie).
-
-        Zonder deze correctie blijft de wall-clock-referentie (beg_loop) voorgoed een
-        stuk voorlopen op de audio-positie na elke pauze -- in een echte sessie met
-        7 pauzes gezien als een permanent, nooit herstellend gat tot 60+ seconden
-        tussen lag (audio_processor.py, transcription_processor) en state.end_buffer.
-        Diezelfde wall-clock wordt ook gebruikt voor stilte-timestamps
-        (_begin_silence/_end_silence), dus dat gat corrumpeert ook de stilte-
-        gestuurde batch-vensterlogica -- een aannemelijke verklaring voor de
-        garbage-lussen en het vastlopen van de live-tekst na herhaald pauzeren."""
-        if self._paused_at is not None and self.beg_loop is not None:
-            pause_duration = max(0.0, time() - self._paused_at)
-            self.beg_loop += pause_duration
-            self.tokens_alignment.beg_loop = self.beg_loop
-            logger.info(
-                f"[PAUSE][RESUME] channel={self.channel_id} "
-                f"pause_duration={pause_duration:.2f}s, beg_loop gecorrigeerd"
-            )
-        self._paused_at = None
 
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
@@ -1651,12 +1620,6 @@ class AudioProcessor:
                     # segment/batch-venster netjes af, zonder de sessie/WAV te
                     # beëindigen. Geen audio-payload voor dit bericht.
                     await self._pause_flush()
-                    return
-                if flag == 3 and not payload:
-                    # Hervat-signaal (client-side Hervatten-knop): spiegelbeeld van
-                    # vlag=2 hierboven. Corrigeert beg_loop voor de gepauzeerde duur.
-                    # Geen audio-payload voor dit bericht.
-                    self._resume_flush()
                     return
                 gate_open = flag != 0
                 n_samples = len(payload) // self.bytes_per_sample

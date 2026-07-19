@@ -782,13 +782,6 @@ async function resumeAllConnections() {
       if (conn.mediaRecorder && conn.mediaRecorder.state === "paused") {
         conn.mediaRecorder.resume();
       }
-      // Vraag de server om beg_loop (de wall-clock-referentie) te corrigeren voor
-      // de zojuist verstreken pauzeduur -- spiegelbeeld van vlag=2 hierboven. Zonder
-      // dit blijft de sessie-klok na elke pauze voorgoed een stuk voorlopen op de
-      // audio-positie, wat de stilte-detectie en batch-vensters corrumpeert.
-      if (conn.ws?.readyState === WebSocket.OPEN && serverUseAudioWorklet) {
-        conn.ws.send(new Uint8Array([3]).buffer); // vlag=3: hervat-signaal, geen payload
-      }
     } catch (e) { console.warn("Hervatten mislukt voor kanaal:", conn.channelId, e); }
   }
 }
