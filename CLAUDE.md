@@ -92,6 +92,10 @@ Results are merged before transmission. The tradeoff is tuned by `--frame-thresh
 
 `TriviasServer.py` tracks each connection as a session (UUID). Audio is recorded to `recordings/<session_id>/<channel>.wav` and transcripts to `recordings/<session_id>/transcript.json`. REST endpoints (`/sessions/list`, `/sessions/{id}/transcript`, `/audio/{id}/{channel}`) expose these for playback in the UI.
 
+### Refresh transcript ("Ververs Transcriptie")
+
+`POST /sessions/{id}/refresh_transcript` (`TriviasServer.py`) discards the incrementally-built transcript for every channel of a session and rebuilds it from scratch by feeding the full recorded WAV to `BatchFasterWhisperASR.transcribe_full()` (`simul_whisper/backend.py`) in one call — no live-decoder state (`state.end_buffer`, `cumulative_time_offset`, pause resets) is involved, so this path is immune to the whole class of incremental-pipeline drift bugs. Each faster-whisper segment is gated individually via the shared `evaluate_batch_segment()` (also used by the incremental `_batch_worker()`), then `<wav_stem>.json` is overwritten wholesale. Callable only once a session is stable (Stop, or Pause after sending the `flag=3` WS control frame that flushes the WAV writer). Frontend button: `#refreshButton` (Bediening panel, visible during Pause) and `#refreshPlaybackButton` (session playback view, visible after Stop).
+
 ### Model sharing
 
 Models are loaded once into `TranscriptionEngine` (singleton per server process). Each WebSocket connection gets its own `DecoderState` (session-scoped beam state, buffers, timing) but shares the underlying model weights.
