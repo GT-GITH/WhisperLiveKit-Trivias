@@ -196,6 +196,13 @@ class AudioProcessor:
 
         self.tokens_alignment: TokensAlignment = TokensAlignment(self.state, self.args, self.sep)
         self.beg_loop: Optional[float] = None
+        # True zolang process_iter() (de decode-stap, draait via asyncio.to_thread op een
+        # achtergrond-thread) bezig is. Zie _pause_flush(): queue.join() alleen garandeert
+        # dat audio-chunks zijn OPGEHAALD uit transcription_queue (get_all_from_queue roept
+        # task_done() al bij het ophalen aan, niet na verwerking) -- niet dat een lopende
+        # decode-stap ook echt klaar is vóór _hard_reset_live_decoder() de decoder-context
+        # reset.
+        self._decode_in_progress: bool = False
 
         # Models and processing
         self.asr: Any = models.asr
@@ -680,10 +687,19 @@ class AudioProcessor:
         # één sessie) -- zonder deze wachtstap lazen _flush_final_batch_tail en de
         # tijdstempel-correctie in _hard_reset_live_decoder een verouderde positie,
         # met als gevolg dat er geen batch-venster meer tussentijds sloot (pas de
-        # eind-flush bij Stop ving het op). task_done() wordt al correct
-        # bijgehouden in get_all_from_queue(), dus join() werkt hier zonder verdere
-        # wijzigingen elders. Timeout als noodrem: liever doorgaan met een
-        # mogelijk-verouderde waarde dan de sessie laten vastlopen.
+        # eind-flush bij Stop ving het op). Timeout als noodrem: liever doorgaan met
+        # een mogelijk-verouderde waarde dan de sessie laten vastlopen.
+        #
+        # LET OP: get_all_from_queue() roept task_done() al aan zodra een item van de
+        # queue is AFGEHAALD, niet nadat het daadwerkelijk verwerkt is (process_iter()
+        # loopt daarna nog, op een asyncio.to_thread-achtergrondthread) -- join() alleen
+        # garandeert dus NIET dat een lopende decode-stap al klaar is. Bevestigd via
+        # [DIAG][END_BUFFER_JUMP]-logging (2026-07-19): een tokentijdstempel kon 6+
+        # seconden hoger uitvallen dan de echte audio-positie, exact enkele seconden na
+        # een pauze-reset -- consistent met een in-flight decode-stap die nog met de OUDE
+        # cumulative_time_offset bezig was toen _hard_reset_live_decoder() hieronder al
+        # resette, en zijn resultaat er pas ná de reset kwam invallen. Vandaar de losse
+        # wachtstap op _decode_in_progress hieronder, specifiek voor deze race.
         try:
             if self.transcription_queue:
                 await asyncio.wait_for(self.transcription_queue.join(), timeout=20.0)
@@ -691,6 +707,15 @@ class AudioProcessor:
             logger.warning(
                 f"[PAUSE][FLUSH] channel={self.channel_id} transcription_queue.join() "
                 f"timed out na 20s, ga door met mogelijk verouderde state"
+            )
+
+        _decode_wait_start = time()
+        while self._decode_in_progress and (time() - _decode_wait_start) < 5.0:
+            await asyncio.sleep(0.02)
+        if self._decode_in_progress:
+            logger.warning(
+                f"[PAUSE][FLUSH] channel={self.channel_id} in-flight decode-stap na 5s "
+                f"nog niet klaar, ga door (mogelijk resterende drift)"
             )
 
         # Sluit de lopende, nog niet gevalideerde live-regel af als eigen FINAL
@@ -826,6 +851,7 @@ class AudioProcessor:
                     # ✅ ASR MAG ALLEEN HIER
                     self.transcription.insert_audio_chunk(pcm_array, stream_time_end_of_current_pcm)
 
+                    self._decode_in_progress = True
                     try:
                         new_tokens, current_audio_processed_upto = await asyncio.wait_for(
                             asyncio.to_thread(self.transcription.process_iter),
@@ -835,8 +861,10 @@ class AudioProcessor:
                         logger.warning("[LIVE][TIMEOUT] process_iter exceeded 15s — forcing decoder reset")
                         await asyncio.to_thread(self._hard_reset_live_decoder, "process_iter_timeout")
                         new_tokens = []
-                        current_audio_processed_upto = self.state.end_buffer                    
-                    
+                        current_audio_processed_upto = self.state.end_buffer
+                    finally:
+                        self._decode_in_progress = False
+
                     new_tokens = new_tokens or []
 
                 _buffer_transcript = self.transcription.get_buffer()
