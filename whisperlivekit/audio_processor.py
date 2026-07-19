@@ -318,7 +318,18 @@ class AudioProcessor:
     async def _begin_silence(self) -> None:
         if self.current_silence:
             return
-        now = time() - self.beg_loop
+        # [DIAG] spooklijn/ontbrekend-vinkje-onderzoek (2026-07-19): stond hier voorheen
+        # op `time() - self.beg_loop` (wall-clock). Bij verwerkingsachterstand (gezien:
+        # transcription_lag_s tot 49s) loopt wall-clock ver voor op wat er daadwerkelijk
+        # aan PCM ontvangen/naar WAV geschreven is -- deze silence-tijdstempel voedt via
+        # de max-ratchet uiteindelijk state.end_buffer, buiten de bestaande token-klemmen
+        # om (die zitten alleen in transcription_processor()'s decode-tak, niet hier).
+        # Reproductie: [DIAG][WAV_CLIP] ~10s afgeknipt op een silence_end-grens, en bij
+        # Stop zelfs een venster dat volledig buiten de WAV viel (nul vinkje op de laatste
+        # zin). self.total_pcm_samples is de bewezen betrouwbare grond -- puur een
+        # optelsom van daadwerkelijk ontvangen/weggeschreven PCM-bytes, nooit voor de WAV
+        # uit.
+        now = self.total_pcm_samples / self.sample_rate
         self.current_silence = Silence(
             is_starting=True, start=now
         )
@@ -327,7 +338,8 @@ class AudioProcessor:
     async def _end_silence(self) -> None:
         if not self.current_silence:
             return
-        now = time() - self.beg_loop
+        # Zie toelichting in _begin_silence() hierboven.
+        now = self.total_pcm_samples / self.sample_rate
         self.current_silence.end = now
         self.current_silence.is_starting=False
         self.current_silence.has_ended=True
