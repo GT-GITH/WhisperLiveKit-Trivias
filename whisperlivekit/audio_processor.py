@@ -1311,21 +1311,41 @@ class AudioProcessor:
 
         try:
             with wave.open(str(self._wav_path), "rb") as rf:
-                _diag_actual_frames = rf.getnframes()
-                if start_frame > _diag_actual_frames:
-                    # [DIAG] end_buffer-drift onderzoek (2026-07-19): het gevraagde
-                    # batch-venster begint voorbij het einde van de daadwerkelijk
-                    # opgenomen WAV. Dit is het punt waarop de drift zichtbaar schade
-                    # aanricht (job wordt geskipt, [BATCH][SKIP] hieronder in de aanroeper)
-                    # -- niet de oorzaak zelf, maar de bevestiging + exacte grootte ervan.
+                actual_frames = rf.getnframes()
+
+                if start_frame >= actual_frames:
+                    # Venster begint volledig voorbij wat er daadwerkelijk is opgenomen --
+                    # hier is echt niets te lezen, ongeacht welke bovenstroomse teller
+                    # (end_buffer, tokentijdstempel, wat dan ook) dit venster aanvroeg.
                     logger.warning(
                         f"[DIAG][WAV_DRIFT] channel={self.channel_id} gevraagd venster begint "
                         f"bij frame {start_frame} ({start_frame / self.sample_rate:.2f}s) maar "
-                        f"WAV bevat slechts {_diag_actual_frames} frames "
-                        f"({_diag_actual_frames / self.sample_rate:.2f}s) -- drift van "
-                        f"{(start_frame - _diag_actual_frames) / self.sample_rate:.2f}s"
+                        f"WAV bevat slechts {actual_frames} frames "
+                        f"({actual_frames / self.sample_rate:.2f}s) -- drift van "
+                        f"{(start_frame - actual_frames) / self.sample_rate:.2f}s, niets te lezen"
                     )
-                rf.setpos(min(start_frame, _diag_actual_frames))
+                    return None
+
+                if end_frame > actual_frames:
+                    # De kraan structureel dicht i.p.v. dweilen per bovenstroomse teller
+                    # (end_buffer-klem, token-klem, ...): ongeacht WAAROM het gevraagde
+                    # venster verder reikt dan wat er nu op schijf staat (hallucinatie,
+                    # write-buffering-vertraging, een toekomstige, nu nog onbekende
+                    # bron), knip hier gewoon af op de daadwerkelijke bestandslengte --
+                    # de enige plek die nooit kan liegen, want die leest de rauwe bytes.
+                    # Resultaat: een iets korter venster i.p.v. de hele batch-job
+                    # verliezen (voorheen: [BATCH][SKIP], job volledig overgeslagen).
+                    logger.warning(
+                        f"[DIAG][WAV_CLIP] channel={self.channel_id} venster-einde "
+                        f"{end_frame} ({end_frame / self.sample_rate:.2f}s) afgeknipt naar "
+                        f"WAV-einde {actual_frames} ({actual_frames / self.sample_rate:.2f}s)"
+                    )
+                    end_frame = actual_frames
+                    n_frames = max(0, end_frame - start_frame)
+                    if n_frames <= 0:
+                        return None
+
+                rf.setpos(start_frame)
                 raw = rf.readframes(n_frames)
             if not raw:
                 return None
