@@ -1355,6 +1355,10 @@ class AudioProcessor:
                     "Subtitles by",
                     "Subscribe",
                     "subscribe",
+                    "Altyazı",
+                    "altyazı",
+                    "Altyazi",
+                    "altyazi",
                 ]
                 if sentence_segments:
                     clean_sentences = [

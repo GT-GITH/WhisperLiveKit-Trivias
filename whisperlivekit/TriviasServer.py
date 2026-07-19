@@ -325,10 +325,18 @@ async def list_sessions_from_disk():
         if len(parts) < 4:
             continue
         # Formaat: session_{uuid}_{channel}_{timestamp}
-        # uuid kan underscores bevatten → timestamp is altijd laatste, channel is voorlaatste
+        # De UUID zelf bevat NOOIT underscores (alleen hyphens), dus parts[1] is altijd
+        # exact de UUID. De channel-naam kan wél underscores bevatten (bv. "foreign_tr",
+        # "foreign_ar") -- dat is alles tussen de UUID en de timestamp, ongeacht hoeveel
+        # underscores erin zitten. Voorheen werd channel = parts[-2] aangenomen (altijd
+        # precies één segment), wat "foreign_tr" fout naar "tr" knipte en de UUID
+        # daardoor ook nog eens fout naar "{uuid}_foreign" verlengde -- resultaat: een
+        # kapotte, dubbel-geregistreerde sessie-entry en bij het terugkijken een
+        # onherkende channel_id die terugvalt op het generieke "Spreker"-label i.p.v.
+        # de echte rol (bv. "Vreemdeling").
         timestamp_part = parts[-1]  # bijv 20260607T104051Z
-        channel_part = parts[-2]    # bijv default
-        session_uuid = "_".join(parts[1:-2])  # alles tussen session_ en channel
+        session_uuid = parts[1]
+        channel_part = "_".join(parts[2:-1])  # alles tussen UUID en timestamp
         
         key = session_uuid
         if key not in sessions:
