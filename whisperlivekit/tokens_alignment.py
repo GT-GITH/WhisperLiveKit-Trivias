@@ -118,6 +118,21 @@ class TokensAlignment:
                 kept.append(s)
                 continue
 
+            # [DIAG] "spooklijn"-onderzoek (2026-07-19): een segment met end < start
+            # (bv. current_line_tokens die per ongeluk tokens van vóór EN na een
+            # decoder-reset combineerde) glipte hier ongemerkt door de overlap-check
+            # heen -- s_end_ms lag dan VOOR window_start_ms, ook al viel s_start_ms er
+            # middenin, dus "overlap" werd nooit True en het segment bleef voor altijd
+            # in validated_segments hangen (nooit door een batch-groep ingetrokken).
+            # Genormaliseerd met min/max zodat een omgekeerd segment alsnog als zijn
+            # eigen (mini-)interval wordt behandeld, ongeacht welke kant corrupt is.
+            if s_end_ms < s_start_ms:
+                logger.warning(
+                    f"[DIAG][INVERTED_SEGMENT] id={getattr(s, 'id', None)} "
+                    f"start={s_start_ms}ms end={s_end_ms}ms (end < start) -- genormaliseerd"
+                )
+                s_start_ms, s_end_ms = min(s_start_ms, s_end_ms), max(s_start_ms, s_end_ms)
+
             # overlap?
             if s_end_ms >= window_start_ms and s_start_ms < window_end_ms:
                 # drop it (including silence segments) → BatchGroup becomes canonical truth
@@ -174,7 +189,20 @@ class TokensAlignment:
         expliciet afgesloten worden, exact zoals een stilte-token dat normaal doet
         (zie get_lines(), silence-tak hierboven)."""
         if self.current_line_tokens:
-            self.validated_segments.append(Segment().from_tokens(self.current_line_tokens))
+            seg = Segment().from_tokens(self.current_line_tokens)
+            # [DIAG] "spooklijn"-onderzoek (2026-07-19): reproductie liet een
+            # validated_segment zien met end < start (bv. start=99.77s, end=24.57s) --
+            # dit kan alleen als current_line_tokens tokens van vóór EN na een
+            # decoder-offset-reset bevatte op het moment van flushen. Deze log legt de
+            # exacte token-timestamps vast zodra het opnieuw gebeurt, om de ware bron
+            # te vinden (i.p.v. alleen het symptoom in apply_batch_group() af te vangen).
+            if seg is not None and seg.end is not None and seg.start is not None and seg.end < seg.start:
+                logger.warning(
+                    f"[DIAG][INVERTED_FLUSH] current_line_tokens gaf een omgekeerd segment "
+                    f"(start={seg.start:.2f}s end={seg.end:.2f}s) -- token starts/ends: "
+                    f"{[(getattr(t, 'start', None), getattr(t, 'end', None)) for t in self.current_line_tokens]}"
+                )
+            self.validated_segments.append(seg)
             self.current_line_tokens = []
 
     def update(self) -> None:
