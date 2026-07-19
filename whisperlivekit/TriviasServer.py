@@ -378,8 +378,14 @@ def rebuild_channel_transcript(
     for seg in segments:
         start_ms = int(round(seg["start"] * 1000.0))
         end_ms = int(round(seg["end"] * 1000.0))
+        # no_speech_threshold=None: zie evaluate_batch_segment() -- faster-whisper's
+        # no_speech_prob is per intern ~30s-decodeerblok, niet per zin, en kan een
+        # heel blok vol prima zinnen onterecht laten afkeuren als een blokgrens
+        # toevallig net na een korte pauze valt. avg_logprob/compression_ratio/
+        # HALLUCINATION_PATTERNS zijn hier de betrouwbare signalen.
         accepted, reason = evaluate_batch_segment(
             seg["avg_logprob"], seg["compression_ratio"], seg["no_speech_prob"], seg["text"],
+            no_speech_threshold=None,
         )
         if accepted:
             n_accepted += 1

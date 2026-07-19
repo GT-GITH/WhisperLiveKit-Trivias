@@ -193,16 +193,31 @@ def evaluate_batch_segment(
     compression_ratio: float | None,
     no_speech_prob: float | None,
     text: str,
-    no_speech_threshold: float = 0.6,
+    no_speech_threshold: float | None = 0.6,
 ) -> tuple[bool, str]:
     """Kernbeslissing: is dit batch-resultaat betrouwbaar genoeg om als bevestigd
-    (met vinkje) te tonen? Retourneert (geaccepteerd, reden-voor-logging)."""
+    (met vinkje) te tonen? Retourneert (geaccepteerd, reden-voor-logging).
+
+    no_speech_threshold=None schakelt de no_speech_prob-check helemaal uit. Nodig
+    voor "Ververs Transcriptie" (2026-07-19): faster-whisper berekent no_speech_prob
+    ÉÉN keer per intern decodeer-blok (~30s), niet per zin -- als zo'n blok later in
+    meerdere tekstzinnen wordt opgesplitst, erven ze allemaal diezelfde waarde.
+    Bevestigd via reproductie: 19 zinnen in twee blokken kregen elk exact dezelfde
+    no_speech_prob (0.921875 resp. 0.9306640625) ondanks compleet verschillende,
+    prima tekst -- en in alle 19 gevallen was avg_logprob/compression_ratio wél
+    goed. De incrementele batch-worker heeft dit lek niet: zijn vensters starten
+    altijd op een stilte-grens (daar worden ze juist door getriggerd), dus hun
+    no_speech_prob is al van nature representatief. transcribe_full()'s eigen
+    interne 30s-hakking is niet stilte-uitgelijnd, dus een blokgrens kan toevallig
+    net na een korte pauze vallen en een heel blok vol prima zinnen onterecht
+    afkeuren op deze ene metriek."""
     if not text:
         return False, "empty_text"
 
     ok_logprob = (avg_logprob is None) or (avg_logprob > -1.3)
     ok_compr = (compression_ratio is None) or (compression_ratio < 2.4)
     ok_no_speech = (
+        no_speech_threshold is None or
         no_speech_prob is None or
         no_speech_prob < no_speech_threshold or
         # zie _batch_worker(): hoge-kwaliteit audio (bv. Turks materiaal) scoort
