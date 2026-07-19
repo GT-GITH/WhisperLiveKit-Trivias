@@ -122,31 +122,109 @@ class BatchFasterWhisperASR:
             "sentence_segments": sentence_segments,  # alleen gevuld als word_timestamps=True
         }
 
-        texts = []
-        avg_logprobs = []
-        compression_ratios = []
-        no_speech_probs = []
+    def transcribe_full(self, audio_f32: np.ndarray, language_override: str | None = None) -> list[dict]:
+        """Transcribeer een heel bestand in één keer en geef PER SEGMENT het eigen
+        vertrouwen terug, i.p.v. het over het hele venster gemiddelde `transcribe()`
+        hierboven levert.
 
+        Gebouwd voor "Ververs Transcriptie" (2026-07-19): de incrementele
+        pauze/stilte-getriggerde batch-vensters wijzen één vertrouwensoordeel toe aan
+        een heel venster (tot 40s) -- één laag-vertrouwen fragment daarin kan zo een
+        verder prima venster laten afkeuren (gezien: een 42s-blok volledig onbevestigd
+        door één zwak stukje). faster-whisper's eigen VAD hakt een lang bestand al
+        intern op in natuurlijke segmenten, elk met een EIGEN avg_logprob/
+        compression_ratio/no_speech_prob -- die per-segment waarden hier gewoon
+        doorgeven (i.p.v. ze te middelen) maakt een latere gate-beslissing per zin
+        mogelijk, preciezer dan de huidige per-venster aanpak."""
+        lang = language_override if language_override is not None else self.language
+        segments, _info = self.model.transcribe(
+            audio_f32,
+            language=lang if lang and lang != "auto" else None,
+            beam_size=self.beam_size,
+            condition_on_previous_text=self.condition_on_previous_text,
+            temperature=self.temperature,
+            initial_prompt=self.initial_prompt,
+            vad_filter=True,
+            word_timestamps=True,
+            no_speech_threshold=0.9,
+        )
+
+        result = []
         for s in segments:
-            if not getattr(s, "text", None):
+            text = (getattr(s, "text", None) or "").strip()
+            if not text:
                 continue
-            texts.append(s.text.strip())
-            if hasattr(s, "avg_logprob"):
-                avg_logprobs.append(s.avg_logprob)
-            if hasattr(s, "compression_ratio"):
-                compression_ratios.append(s.compression_ratio)
-            if hasattr(s, "no_speech_prob"):
-                no_speech_probs.append(s.no_speech_prob)
+            result.append({
+                "text": text,
+                "start": s.start,
+                "end": s.end,
+                "avg_logprob": getattr(s, "avg_logprob", None),
+                "compression_ratio": getattr(s, "compression_ratio", None),
+                "no_speech_prob": getattr(s, "no_speech_prob", None),
+            })
+        return result
 
-        full_text = " ".join([t for t in texts if t]).strip()
 
-        return {
-            "text": full_text,
-            "avg_logprob": float(np.mean(avg_logprobs)) if avg_logprobs else None,
-            "compression_ratio": float(np.mean(compression_ratios)) if compression_ratios else None,
-            "no_speech_prob": float(np.mean(no_speech_probs)) if no_speech_probs else None,
-            "num_segments": len(texts),
-        }
+# Kernlogica van de confidence-gate, gedeeld tussen de incrementele batch-worker
+# (audio_processor.py, _batch_worker()) en "Ververs Transcriptie" (TriviasServer.py) --
+# zodat de drempelwaarden nooit uiteen kunnen lopen tussen de twee paden.
+HALLUCINATION_PATTERNS = [
+    "***",
+    "Ondertiteling",
+    "ondertiteling",
+    "Ondertitels",
+    "ondertitels",
+    "www.",
+    ".com",
+    "Abonneer",
+    "abonneer",
+    "Subtitles by",
+    "Subscribe",
+    "subscribe",
+    "Altyazı",
+    "altyazı",
+    "Altyazi",
+    "altyazi",
+]
+
+
+def evaluate_batch_segment(
+    avg_logprob: float | None,
+    compression_ratio: float | None,
+    no_speech_prob: float | None,
+    text: str,
+    no_speech_threshold: float = 0.6,
+) -> tuple[bool, str]:
+    """Kernbeslissing: is dit batch-resultaat betrouwbaar genoeg om als bevestigd
+    (met vinkje) te tonen? Retourneert (geaccepteerd, reden-voor-logging)."""
+    if not text:
+        return False, "empty_text"
+
+    ok_logprob = (avg_logprob is None) or (avg_logprob > -1.3)
+    ok_compr = (compression_ratio is None) or (compression_ratio < 2.4)
+    ok_no_speech = (
+        no_speech_prob is None or
+        no_speech_prob < no_speech_threshold or
+        # zie _batch_worker(): hoge-kwaliteit audio (bv. Turks materiaal) scoort
+        # structureel hoger op no_speech_prob ondanks uitstekende logprob.
+        (no_speech_prob < 0.92 and avg_logprob is not None and avg_logprob > -0.3)
+    )
+    has_hallucination_pattern = any(p in text for p in HALLUCINATION_PATTERNS)
+
+    if ok_logprob and ok_compr and ok_no_speech and not has_hallucination_pattern:
+        return True, "accepted"
+
+    reasons = []
+    if not ok_logprob:
+        reasons.append(f"logprob={avg_logprob}")
+    if not ok_compr:
+        reasons.append(f"compr={compression_ratio}")
+    if not ok_no_speech:
+        reasons.append(f"no_speech_prob={no_speech_prob}")
+    if has_hallucination_pattern:
+        reasons.append("hallucination_pattern")
+    return False, ",".join(reasons)
+
 
 class SimulStreamingOnlineProcessor:
     """Online processor for SimulStreaming ASR."""

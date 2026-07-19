@@ -364,6 +364,8 @@ const KEEP_ALIVE_SILENT_PCM  = new Uint8Array(1600 * 2); // all-zero = digitale 
 const recordButton       = document.getElementById("recordButton");
 const pauseButton        = document.getElementById("pauseButton");
 const stopButton         = document.getElementById("stopButton");
+const refreshButton      = document.getElementById("refreshButton");
+const refreshPlaybackButton = document.getElementById("refreshPlaybackButton");
 const liveTranscriptDiv  = document.getElementById("liveTranscript");
 if (liveTranscriptDiv) liveTranscriptDiv.style.whiteSpace = "pre-wrap";
 const connectionStatusSpan = document.getElementById("connectionStatus");
@@ -409,6 +411,7 @@ function updateRecordButtonUI() {
     recordButton.classList.remove("recording");
     if (pauseButton) pauseButton.classList.add("hidden");
     if (stopButton) stopButton.classList.add("hidden");
+    if (refreshButton) refreshButton.classList.add("hidden");
   } else {
     recordButton.classList.add("hidden");
     if (pauseButton) {
@@ -420,6 +423,9 @@ function updateRecordButtonUI() {
       stopButton.classList.remove("hidden");
       stopButton.classList.add("recording");
     }
+    // Alleen klikbaar tijdens Pauze -- tijdens actief opnemen zijn er nog geen
+    // stabiele WAV-grenzen om vanaf te herbouwen (zie audio_processor.py flag=3).
+    if (refreshButton) refreshButton.classList.toggle("hidden", !isPaused);
   }
 }
 
@@ -681,6 +687,7 @@ async function startRecording() {
 
   isPlaybackMode = false;
   hidePlaybackChannelFilter();
+  updateRefreshPlaybackButtonUI();
   currentSessionId = crypto.randomUUID();
   console.log("[DIAG][START_RECORDING] nieuwe sessie", currentSessionId);
 
@@ -832,6 +839,14 @@ async function resumeRecording() {
   if (!isRecording || !isPaused) return;
   isPaused = false;
   stopKeepAlive();
+  // Als "Ververs Transcriptie" tijdens deze pauze de weergave in playback-mode
+  // zette (een statische snapshot, zie loadSessionTranscript()), moet Hervatten
+  // altijd terug naar de live-weergave -- anders blijft renderAllChannels() nieuwe
+  // front_data stilzwijgend overslaan (isPlaybackMode-check) en lijkt de opname
+  // "vast" te zitten na hervatten.
+  isPlaybackMode = false;
+  hidePlaybackChannelFilter();
+  updateRefreshPlaybackButtonUI();
   await resumeAllConnections();
   updateRecordButtonUI();
   updateHint();
@@ -841,6 +856,63 @@ async function resumeRecording() {
 function togglePause() {
   if (!isRecording) return;
   if (isPaused) resumeRecording(); else pauseRecording();
+}
+
+// === Ververs Transcriptie ===
+// Vervangt het transcript van de huidige sessie volledig door een verse batch-
+// herbouw vanaf de tot-nu-toe opgenomen WAV, los van de incrementele live-decoder-
+// boekhouding (zie POST /sessions/{id}/refresh_transcript). Klikbaar vanuit twee
+// plekken -- de Bediening-knop (tijdens Pauze) en de knop boven het transcript
+// (bij het bekijken van een gestopte/eerdere sessie) -- met identiek gedrag: is de
+// sessie nog live (activeConnections niet leeg), stuur eerst een flush-signaal
+// zodat de WAV op schijf actueel is; is de sessie al gestopt, dan is dat een no-op
+// (activeConnections is dan al leeg) en is de WAV toch al gesloten/compleet.
+async function refreshTranscript() {
+  if (!currentSessionId) return;
+  const ok = confirm(
+    "Dit vervangt het huidige transcript door een verse batchtranscriptie van de " +
+    "opname tot nu toe. Dit kan enkele minuten duren bij een lange opname.\n\n" +
+    "Doorgaan?"
+  );
+  if (!ok) return;
+
+  const wasBusy = refreshButton?.disabled || refreshPlaybackButton?.disabled;
+  if (wasBusy) return;
+  if (refreshButton) refreshButton.disabled = true;
+  if (refreshPlaybackButton) refreshPlaybackButton.disabled = true;
+  setAsrStatus("Transcript wordt ververst… dit kan even duren.");
+
+  try {
+    if (activeConnections.size > 0) {
+      for (const [, conn] of activeConnections.entries()) {
+        if (conn.ws?.readyState === WebSocket.OPEN && serverUseAudioWorklet) {
+          try { conn.ws.send(new Uint8Array([3]).buffer); } catch (e) {}
+        }
+      }
+      // Geen echte ack-ronde (zie audio_processor.py flag=3) -- een korte vaste
+      // wachttijd is voldoende, want _flush_wav() zelf is vrijwel instant.
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    const resp = await fetch(`/sessions/${encodeURIComponent(currentSessionId)}/refresh_transcript`, {
+      method: "POST",
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert("Verversen mislukt: " + (err.error || resp.statusText));
+      setAsrStatus(isPaused ? "Gepauzeerd" : "Live transcriptie actief");
+      return;
+    }
+
+    await loadSessionTranscript(currentSessionId);
+    setAsrStatus("Transcript ververst.");
+  } catch (e) {
+    alert("Verversen mislukt: " + e.message);
+    setAsrStatus(isPaused ? "Gepauzeerd" : "Live transcriptie actief");
+  } finally {
+    if (refreshButton) refreshButton.disabled = false;
+    if (refreshPlaybackButton) refreshPlaybackButton.disabled = false;
+  }
 }
 
 // === Per-kanaal berichtverwerking ===
@@ -1175,6 +1247,7 @@ async function loadSessionTranscript(sessionId) {
 
     renderPlaybackChannelFilter();
     renderPlaybackFiltered();
+    updateRefreshPlaybackButtonUI();
     setAsrStatus(`Sessie geladen: ${sessionId.substring(0, 12)}…`);
   } catch (e) {
     alert("Fout bij laden transcript: " + e.message);
@@ -1222,6 +1295,14 @@ function hidePlaybackChannelFilter() {
   if (el) { el.classList.add("hidden"); el.innerHTML = ""; }
 }
 
+// Toont de "Ververs Transcriptie"-knop boven het transcript alleen wanneer we
+// daadwerkelijk een specifieke (net gestopte of eerder opgenomen) sessie bekijken --
+// currentSessionId moet dan bekend zijn.
+function updateRefreshPlaybackButtonUI() {
+  if (!refreshPlaybackButton) return;
+  refreshPlaybackButton.classList.toggle("hidden", !(isPlaybackMode && currentSessionId));
+}
+
 // Rendert playbackLines, gefilterd op de momenteel aangevinkte kanalen.
 function renderPlaybackFiltered() {
   const renderLines = playbackLines
@@ -1264,6 +1345,8 @@ if (liveTranscriptDiv) {
 if (recordButton) recordButton.addEventListener("click", startRecording);
 if (pauseButton) pauseButton.addEventListener("click", togglePause);
 if (stopButton) stopButton.addEventListener("click", confirmAndStop);
+if (refreshButton) refreshButton.addEventListener("click", refreshTranscript);
+if (refreshPlaybackButton) refreshPlaybackButton.addEventListener("click", refreshTranscript);
 
 if (sessionsBtn) sessionsBtn.addEventListener("click", () => {
   sessionsModal.classList.remove("hidden");

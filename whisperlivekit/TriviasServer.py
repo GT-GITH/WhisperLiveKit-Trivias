@@ -2,18 +2,23 @@ import asyncio
 import logging
 import uuid
 import json
+import wave
+
+import numpy as np
 
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, Any, Optional, Iterable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
- 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query 
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
+from whisperlivekit.simul_whisper.backend import evaluate_batch_segment
+from whisperlivekit.simul_whisper.config import get_channel_config
 
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
 
@@ -332,6 +337,78 @@ def _parse_session_wav_name(stem: str) -> Optional[tuple[str, str, str]]:
     return session_uuid, channel_part, timestamp_part
 
 
+def _resolve_channel_language(channel_id: str) -> str:
+    """Bepaal de taal voor een kanaal zonder levende sessie nodig te hebben.
+
+    De live WS-verbinding krijgt zijn taal via een los `lang=`-queryparam (zie
+    websocket_endpoint) -- die waarde wordt nergens gepersisteerd, dus "Ververs
+    Transcriptie" (draait achteraf, buiten elke levende verbinding om) kan er niet
+    bij. Voor het "foreign"-kanaal codeert de client de taal echter al in de
+    channel_id zelf (bv. "foreign_tr", zie getChannelId() in app.js) -- dat IS wel
+    persistent (staat letterlijk in de WAV-bestandsnaam). Voor overige kanalen is de
+    taal een vast rol-preset, dus get_channel_config() volstaat daar."""
+    if channel_id and channel_id.startswith("foreign_"):
+        return channel_id[len("foreign_"):] or "nl"
+    return get_channel_config(channel_id).language
+
+
+def rebuild_channel_transcript(
+    session_id: str, channel_id: str, wav_path: Path, engine: TranscriptionEngine
+) -> list[dict]:
+    """"Ververs Transcriptie": herbouw het transcript van één kanaal helemaal
+    opnieuw, rechtstreeks vanaf de opgenomen WAV -- los van elke incrementele
+    live-decoder-boekhouding (geen state.end_buffer, geen cumulative_time_offset,
+    geen pauze-resets). Dat sluit de hele klasse aan drift-/spooklijn-bugs van
+    vandaag uit door constructie, en gate elk faster-whisper-segment individueel
+    i.p.v. per (tot 40s) venster zoals de incrementele batch-worker doet -- fijner
+    en dus preciezer.
+
+    Vervangt <wav_stem>.json volledig (gebruiker bevestigd: transcript-bestand is
+    altijd vervangbaar, de WAV blijft de enige bron van waarheid)."""
+    with wave.open(str(wav_path), "rb") as wf:
+        n_frames = wf.getnframes()
+        raw = wf.readframes(n_frames)
+    audio_f32 = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+    lang = _resolve_channel_language(channel_id)
+    segments = engine.batch_asr.transcribe_full(audio_f32, language_override=lang)
+
+    entries: list[dict] = []
+    n_accepted = 0
+    for seg in segments:
+        start_ms = int(round(seg["start"] * 1000.0))
+        end_ms = int(round(seg["end"] * 1000.0))
+        accepted, reason = evaluate_batch_segment(
+            seg["avg_logprob"], seg["compression_ratio"], seg["no_speech_prob"], seg["text"],
+        )
+        if accepted:
+            n_accepted += 1
+        else:
+            logger.info(
+                f"[REFRESH][REJECTED] session={session_id} channel={channel_id} "
+                f"ms={start_ms}..{end_ms} reason={reason} text='{seg['text'][:80]}'"
+            )
+        entries.append({
+            "type": "segment_update",
+            "id": f"refresh_{start_ms}",
+            "text_batch": seg["text"] if accepted else None,
+            "text_final": seg["text"],
+            "state": "FINAL",
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+        })
+
+    json_path = wav_path.with_suffix(".json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False)
+
+    logger.info(
+        f"[REFRESH] session={session_id} channel={channel_id} lang={lang} "
+        f"herbouwd: {len(entries)} segmenten, {n_accepted} bevestigd -> {json_path}"
+    )
+    return entries
+
+
 @app.get("/sessions/list")
 async def list_sessions_from_disk():
     """Lijst van alle sessies op basis van WAV bestanden op disk."""
@@ -430,6 +507,67 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+
+@app.post("/sessions/{session_id}/refresh_transcript")
+async def refresh_transcript(session_id: str):
+    """"Ververs Transcriptie": vervang het transcript van elk kanaal in deze sessie
+    door een verse batch-herbouw vanaf de tot-nu-toe opgenomen WAV.
+
+    Gaat ervan uit dat de WAV-bestanden actueel zijn: bij een gestopte sessie is dat
+    altijd zo (WAV al gesloten), bij een gepauzeerde sessie moet de client eerst een
+    flag=3 flush-frame over de levende WebSocket sturen (zie audio_processor.py) voor
+    hij dit endpoint aanroept."""
+    recordings_dir = Path("recordings")
+    wav_files: Dict[str, Path] = {}
+    for wav_file in recordings_dir.glob(f"session_{session_id}_*.wav"):
+        parsed = _parse_session_wav_name(wav_file.stem)
+        if parsed is None:
+            continue
+        uuid_part, channel_part, _ts = parsed
+        if uuid_part != session_id:
+            continue
+        if channel_part not in wav_files or wav_file.stat().st_mtime > wav_files[channel_part].stat().st_mtime:
+            wav_files[channel_part] = wav_file
+
+    if not wav_files:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+
+    if transcription_engine is None or not getattr(transcription_engine, "batch_asr", None):
+        return JSONResponse({"error": "batch model not available"}, status_code=503)
+
+    # Sequentieel (niet parallel): batch_asr deelt één GPU-model-instance, en de
+    # incrementele batch-worker verwerkt zijn jobs ook al sequentieel vanuit een
+    # queue -- concurrent aanroepen op dezelfde WhisperModel is niet iets waar dit
+    # project op vertrouwt.
+    merged_segments = []
+    channels_done = []
+    for channel_id, wav_file in wav_files.items():
+        try:
+            entries = await asyncio.to_thread(
+                rebuild_channel_transcript, session_id, channel_id, wav_file, transcription_engine
+            )
+        except Exception as e:
+            logger.warning(f"[REFRESH] channel={channel_id} mislukt: {e}")
+            continue
+        for entry in entries:
+            entry = dict(entry)
+            entry["channel_id"] = channel_id
+            merged_segments.append(entry)
+        channels_done.append(channel_id)
+
+    if not channels_done:
+        return JSONResponse({"error": "refresh failed for all channels"}, status_code=500)
+
+    merged_segments.sort(key=lambda s: s.get("start_ms") or 0)
+
+    return JSONResponse({
+        "session_id": session_id,
+        "channel_id": "all",
+        "channels": channels_done,
+        "segments": merged_segments,
+    })
+
+
 @app.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     meta = session_manager.get(session_id)
@@ -438,7 +576,6 @@ async def get_session(session_id: str):
     return JSONResponse(meta)
 
 from fastapi.responses import StreamingResponse
-import wave
 import io
 
 @app.get("/audio/{session_id}/{channel_id}")

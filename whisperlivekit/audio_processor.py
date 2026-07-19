@@ -25,6 +25,7 @@ from whisperlivekit.core import (TranscriptionEngine,
                                  online_translation_factory)
 from whisperlivekit.ffmpeg_manager import FFmpegManager, FFmpegState
 from whisperlivekit.silero_vad_iterator import FixedVADIterator, OnnxWrapper, load_jit_vad
+from whisperlivekit.simul_whisper.backend import HALLUCINATION_PATTERNS, evaluate_batch_segment
 from whisperlivekit.timed_objects import (ASRToken, ChangeSpeaker, FrontData,
                                           Segment, Silence, State, Transcript)
 from whisperlivekit.tokens_alignment import TokensAlignment
@@ -1560,24 +1561,9 @@ class AudioProcessor:
 
                 # --- Fix 1: filter hallucination-zinnen per sentence, niet op de volledige tekst ---
                 # Een enkel ***-artefact aan de stilte-grens mag niet het hele venster afkeuren.
-                HALLUCINATION_PATTERNS = [
-                    "***",
-                    "Ondertiteling",
-                    "ondertiteling",
-                    "Ondertitels",
-                    "ondertitels",
-                    "www.",
-                    ".com",
-                    "Abonneer",
-                    "abonneer",
-                    "Subtitles by",
-                    "Subscribe",
-                    "subscribe",
-                    "Altyazı",
-                    "altyazı",
-                    "Altyazi",
-                    "altyazi",
-                ]
+                # HALLUCINATION_PATTERNS komt uit simul_whisper.backend -- gedeeld met
+                # evaluate_batch_segment() hieronder en met "Ververs Transcriptie", zodat
+                # deze lijst nooit tussen de twee paden uiteen kan lopen.
                 if sentence_segments:
                     clean_sentences = [
                         s for s in sentence_segments
@@ -1598,51 +1584,33 @@ class AudioProcessor:
                     f"len_live={len(live_text)} len_batch={len(batch_txt)}"
                 )
 
-                # 3) CONFIDENCE-based accept policy
+                # 3) CONFIDENCE-based accept policy -- kernbeslissing gedeeld via
+                # evaluate_batch_segment() (simul_whisper/backend.py), zodat dit pad en
+                # "Ververs Transcriptie" nooit uiteenlopende drempels kunnen krijgen.
                 use_batch_as_final = False
 
                 if batch_txt:
-                    ok_logprob = (batch_avg_logprob is None) or (batch_avg_logprob > -1.3)
-                    ok_compr = (batch_compression is None) or (batch_compression < 2.4)
-
                     # --- Fix 2: ruimere no_speech_prob-drempel voor korte end-of-stream fragmenten ---
                     # FasterWhisper rapporteert structureel hoge no_speech_prob (0.85+) voor
-                    # korte clips aan het einde van een sessie, ook bij echte spraak.
+                    # korte clips aan het einde van een sessie, ook bij echte spraak. Dit is
+                    # een eigenaardigheid van het venster-getriggerde (incrementele) pad --
+                    # geen onderdeel van de gedeelde kernfunctie.
                     audio_duration_s = (end_ms - start_ms) / 1000.0
                     no_speech_threshold = (
                         0.95 if (reason == "end_of_stream" and audio_duration_s < 8.0) else 0.6
                     )
-                    _nsp = result.get("no_speech_prob")
-                    ok_no_speech = (
-                        _nsp is None or
-                        _nsp < no_speech_threshold or
-                        # Hoge kwaliteit audio met licht verhoogde no_speech_prob:
-                        # YouTube-video's en niet-Europese talen (bijv. Turks) scoren
-                        # structureel hoger op no_speech_prob ondanks uitstekende logprob.
-                        # Drempel bewust ruim (0.92) omdat logprob > -0.3 hier al de echte
-                        # kwaliteitspoort is -- een net-niet-geval (bv. nsp=0.8507 bij
-                        # logprob=-0.094, geobserveerd bij Turks materiaal) werd anders
-                        # ten onrechte permanent onbevestigd (wit) gelaten.
-                        (_nsp < 0.92 and batch_avg_logprob is not None and batch_avg_logprob > -0.3)
+                    use_batch_as_final, _reject_reason = evaluate_batch_segment(
+                        batch_avg_logprob, batch_compression, result.get("no_speech_prob"),
+                        batch_txt, no_speech_threshold=no_speech_threshold,
                     )
-
-                    # Na per-sentence filtering is de volledige batch_txt al schoon;
-                    # een tweede check is alleen nog nodig voor batch_txt zonder sentence_segments.
-                    has_hallucination_pattern = (
-                        not sentence_segments and
-                        any(p in batch_txt for p in HALLUCINATION_PATTERNS)
-                    )
-
-                    if ok_logprob and ok_compr and ok_no_speech and not has_hallucination_pattern:
-                        use_batch_as_final = True
-                    else:
+                    if not use_batch_as_final:
                         logger.warning(
                             f"[BATCH][REJECTED] job={job['job_id']} "
                             f"logprob={batch_avg_logprob} "
                             f"compr={batch_compression} "
                             f"no_speech_prob={result.get('no_speech_prob')} "
                             f"threshold={no_speech_threshold} "
-                            f"hallucination_pattern={has_hallucination_pattern} "
+                            f"reason={_reject_reason} "
                             f"text='{batch_txt[:80]}'"
                         )
                 # Als batch niet vertrouwd wordt, val terug op live -- maar NOOIT op de
@@ -1853,6 +1821,15 @@ class AudioProcessor:
                     # segment/batch-venster netjes af, zonder de sessie/WAV te
                     # beëindigen. Geen audio-payload voor dit bericht.
                     await self._pause_flush()
+                    return
+                if flag == 3 and not payload:
+                    # "Ververs Transcriptie" tijdens Pauze: zorg dat wat op schijf
+                    # staat actueel is vóórdat de client het REST-endpoint
+                    # /sessions/{id}/refresh_transcript aanroept (die leest de WAV
+                    # rechtstreeks, buiten deze levende AudioProcessor om, en heeft
+                    # dus geen andere manier om een pending write-buffer te zien).
+                    # Geen transcriptielogica hier -- puur de bestaande WAV-flush.
+                    self._flush_wav()
                     return
                 gate_open = flag != 0
                 n_samples = len(payload) // self.bytes_per_sample
