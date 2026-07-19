@@ -328,12 +328,14 @@ const channelLineById     = new Map(); // channelId → Map(id → line)
 const channelSentenceMap  = new Map(); // channelId → Map(parentId → sentence[])
 const channelPendingUpd   = new Map(); // channelId → Map(id → update)
 
-// Voor sessie-terugluister (single-channel pad)
+// Voor sessie-terugluister (gemergd, alle kanalen -- met per-kanaal filter)
 let playbackLines = [];
 let playbackLineById = new Map();
 let playbackSentenceMap = new Map();
 let playbackChannelId = "default";
 let isPlaybackMode = false;
+let playbackChannels = [];        // alle channel_id's aanwezig in deze sessie
+let playbackActiveChannels = new Set(); // welke channel_id's momenteel getoond worden
 
 // === Opname state ===
 
@@ -650,6 +652,7 @@ async function startRecording() {
   }
 
   isPlaybackMode = false;
+  hidePlaybackChannelFilter();
   currentSessionId = crypto.randomUUID();
 
   // Reset transcript state voor alle kanalen
@@ -1063,7 +1066,7 @@ async function loadSessionsList() {
           ${s.has_transcript ? "transcript ✓" : "geen transcript"}
         </span>`;
       if (s.has_transcript) {
-        item.addEventListener("click", () => loadSessionTranscript(s.session_id, s.channels[0] || "default"));
+        item.addEventListener("click", () => loadSessionTranscript(s.session_id));
       }
       sessionsList.appendChild(item);
     }
@@ -1072,17 +1075,22 @@ async function loadSessionsList() {
   }
 }
 
-async function loadSessionTranscript(sessionId, channelId) {
+// Haalt altijd het gemergde transcript van ALLE kanalen van een sessie op
+// (chronologisch door elkaar, zoals de live-weergave al deed) -- per-kanaal
+// bekijken kan achteraf via de filter-chips, i.p.v. vooraf te moeten kiezen
+// en de andere kanalen helemaal niet te zien.
+async function loadSessionTranscript(sessionId) {
   try {
-    const resp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/transcript?channel_id=${encodeURIComponent(channelId)}`);
+    const resp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/transcript?channel_id=all`);
     if (!resp.ok) { alert("Transcript niet gevonden."); return; }
     const data = await resp.json();
 
     sessionsModal.classList.add("hidden");
 
     currentSessionId   = data.session_id;
-    playbackChannelId  = data.channel_id || channelId;
     isPlaybackMode     = true;
+    playbackChannels   = data.channels || [];
+    playbackActiveChannels = new Set(playbackChannels);
 
     playbackLines       = [];
     playbackLineById    = new Map();
@@ -1091,23 +1099,24 @@ async function loadSessionTranscript(sessionId, channelId) {
     for (const seg of (data.segments || [])) {
       const id = seg.id;
       if (!id) continue;
+      const channelId = seg.channel_id || "default";
       const sentMatch = id.match(/^(.+)_s(\d+)$/);
       if (sentMatch) {
         const parentId = sentMatch[1];
         if (!playbackSentenceMap.has(parentId)) {
           playbackSentenceMap.set(parentId, []);
           if (!playbackLineById.has(parentId)) {
-            const parent = { id: parentId, text: "", text_batch: null, state: "FINAL", start_ms: seg.start_ms || 0, end_ms: seg.end_ms || 0, speaker: -1 };
+            const parent = { id: parentId, text: "", text_batch: null, state: "FINAL", start_ms: seg.start_ms || 0, end_ms: seg.end_ms || 0, speaker: -1, channelId };
             playbackLines.push(parent);
             playbackLineById.set(parentId, parent);
           }
         }
         playbackSentenceMap.get(parentId).push({
           id, text: seg.text_final || seg.text_batch || "", text_batch: seg.text_batch || null,
-          state: "FINAL", start_ms: seg.start_ms || 0, end_ms: seg.end_ms || 0, speaker: -1,
+          state: "FINAL", start_ms: seg.start_ms || 0, end_ms: seg.end_ms || 0, speaker: -1, channelId,
         });
       } else {
-        const line = { id, text: seg.text_final || seg.text_batch || "", text_batch: seg.text_batch || null, state: "FINAL", start_ms: seg.start_ms || 0, end_ms: seg.end_ms || 0, speaker: -1 };
+        const line = { id, text: seg.text_final || seg.text_batch || "", text_batch: seg.text_batch || null, state: "FINAL", start_ms: seg.start_ms || 0, end_ms: seg.end_ms || 0, speaker: -1, channelId };
         playbackLines.push(line);
         playbackLineById.set(id, line);
       }
@@ -1117,16 +1126,66 @@ async function loadSessionTranscript(sessionId, channelId) {
       sents.sort((a, b) => a.start_ms - b.start_ms);
     }
 
-    const renderLines = playbackLines.map(l => {
-      const sents = playbackSentenceMap.get(l.id);
-      return sents ? sents : [l];
-    }).flat();
-
-    if (liveTranscriptDiv) renderTranscript(renderLines, "", "", "active_transcription");
+    renderPlaybackChannelFilter();
+    renderPlaybackFiltered();
     setAsrStatus(`Sessie geladen: ${sessionId.substring(0, 12)}…`);
   } catch (e) {
     alert("Fout bij laden transcript: " + e.message);
   }
+}
+
+// Bouwt de per-kanaal filter-chips boven het gemergde sessie-transcript.
+// Bij één kanaal (geen echte multi-channel sessie) toont het geen filter --
+// niets om te filteren.
+function renderPlaybackChannelFilter() {
+  const el = document.getElementById("playbackChannelFilter");
+  if (!el) return;
+  if (!isPlaybackMode || playbackChannels.length <= 1) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+
+  const chips = playbackChannels.map(ch => {
+    const roleId = channelIdToRoleId(ch);
+    const label = getRoleLabel(roleId);
+    const color = getRoleColor(roleId);
+    const checked = playbackActiveChannels.has(ch) ? "checked" : "";
+    return `<label class="channel-filter-chip" style="border-color:${color}66">
+      <input type="checkbox" data-channel="${escapeHtml(ch)}" ${checked} />
+      <span style="color:${color}">${escapeHtml(label)}</span>
+    </label>`;
+  }).join("");
+
+  el.innerHTML = `<span class="channel-filter-label">Toon:</span>${chips}`;
+  el.classList.remove("hidden");
+
+  el.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const ch = cb.dataset.channel;
+      if (cb.checked) playbackActiveChannels.add(ch);
+      else playbackActiveChannels.delete(ch);
+      renderPlaybackFiltered();
+    });
+  });
+}
+
+function hidePlaybackChannelFilter() {
+  const el = document.getElementById("playbackChannelFilter");
+  if (el) { el.classList.add("hidden"); el.innerHTML = ""; }
+}
+
+// Rendert playbackLines, gefilterd op de momenteel aangevinkte kanalen.
+function renderPlaybackFiltered() {
+  const renderLines = playbackLines
+    .filter(l => playbackActiveChannels.has(l.channelId))
+    .map(l => {
+      const sents = playbackSentenceMap.get(l.id);
+      return sents ? sents : [l];
+    })
+    .flat();
+
+  if (liveTranscriptDiv) renderTranscript(renderLines, "", "", "active_transcription");
 }
 
 // === Klik op segment → terugluisteren ===

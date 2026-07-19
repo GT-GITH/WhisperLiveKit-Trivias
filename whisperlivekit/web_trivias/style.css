@@ -705,6 +705,38 @@ body {
   display: none !important;
 }
 
+/* === Gemergd sessie-transcript: per-kanaal filter === */
+
+.channel-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 4px;
+}
+
+.channel-filter-label {
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+.channel-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.85);
+  cursor: pointer;
+  user-select: none;
+}
+
+.channel-filter-chip input {
+  cursor: pointer;
+}
+
 /* === Configuratie tab: channel rows === */
 
 .channel-config-list {

@@ -310,34 +310,43 @@ async def root():
     """Serve de inline Trivias STT webinterface."""
     return HTMLResponse(get_inline_ui_html())
 
+def _parse_session_wav_name(stem: str) -> Optional[tuple[str, str, str]]:
+    """Parse 'session_{uuid}_{channel}_{timestamp}' -> (uuid, channel, timestamp).
+
+    De UUID zelf bevat NOOIT underscores (alleen hyphens), dus parts[1] is altijd
+    exact de UUID. De channel-naam kan wél underscores bevatten (bv. "foreign_tr",
+    "foreign_ar") -- dat is alles tussen de UUID en de timestamp, ongeacht hoeveel
+    underscores erin zitten. Voorheen werd channel = parts[-2] aangenomen (altijd
+    precies één segment), wat "foreign_tr" fout naar "tr" knipte en de UUID
+    daardoor ook nog eens fout naar "{uuid}_foreign" verlengde -- resultaat: een
+    kapotte, dubbel-geregistreerde sessie-entry en bij het terugkijken een
+    onherkende channel_id die terugvalt op het generieke "Spreker"-label i.p.v.
+    de echte rol (bv. "Vreemdeling"). Gedeeld door /sessions/list en
+    /sessions/{id}/transcript zodat deze aanname maar op één plek staat."""
+    parts = stem.split("_")
+    if len(parts) < 4:
+        return None
+    timestamp_part = parts[-1]
+    session_uuid = parts[1]
+    channel_part = "_".join(parts[2:-1])
+    return session_uuid, channel_part, timestamp_part
+
+
 @app.get("/sessions/list")
 async def list_sessions_from_disk():
     """Lijst van alle sessies op basis van WAV bestanden op disk."""
     recordings_dir = Path("recordings")
     if not recordings_dir.exists():
         return JSONResponse({"sessions": []})
-    
+
     sessions = {}
-    for wav_file in sorted(recordings_dir.glob("session_*.wav"), 
+    for wav_file in sorted(recordings_dir.glob("session_*.wav"),
                            key=lambda f: f.stat().st_mtime, reverse=True):
-        name = wav_file.stem  # session_{uuid}_{channel}_{ts}
-        parts = name.split("_")
-        if len(parts) < 4:
+        parsed = _parse_session_wav_name(wav_file.stem)
+        if parsed is None:
             continue
-        # Formaat: session_{uuid}_{channel}_{timestamp}
-        # De UUID zelf bevat NOOIT underscores (alleen hyphens), dus parts[1] is altijd
-        # exact de UUID. De channel-naam kan wél underscores bevatten (bv. "foreign_tr",
-        # "foreign_ar") -- dat is alles tussen de UUID en de timestamp, ongeacht hoeveel
-        # underscores erin zitten. Voorheen werd channel = parts[-2] aangenomen (altijd
-        # precies één segment), wat "foreign_tr" fout naar "tr" knipte en de UUID
-        # daardoor ook nog eens fout naar "{uuid}_foreign" verlengde -- resultaat: een
-        # kapotte, dubbel-geregistreerde sessie-entry en bij het terugkijken een
-        # onherkende channel_id die terugvalt op het generieke "Spreker"-label i.p.v.
-        # de echte rol (bv. "Vreemdeling").
-        timestamp_part = parts[-1]  # bijv 20260607T104051Z
-        session_uuid = parts[1]
-        channel_part = "_".join(parts[2:-1])  # alles tussen UUID en timestamp
-        
+        session_uuid, channel_part, timestamp_part = parsed
+
         key = session_uuid
         if key not in sessions:
             sessions[key] = {
@@ -348,27 +357,70 @@ async def list_sessions_from_disk():
                 "has_transcript": wav_file.with_suffix(".json").exists(),
             }
         sessions[key]["channels"].append(channel_part)
-    
+
     return JSONResponse({"sessions": list(sessions.values())})
 
 
 @app.get("/sessions/{session_id}/transcript")
 async def get_session_transcript(session_id: str, channel_id: str = Query(default="default")):
-    """Haal het opgeslagen transcript op voor een sessie."""
+    """Haal het opgeslagen transcript op voor een sessie.
+
+    channel_id="all" -> gemergd transcript van alle kanalen van deze sessie,
+    chronologisch gesorteerd en elk segment getagd met channel_id, zodat de
+    frontend kan tonen wie wat zei (en achteraf per kanaal kan filteren) --
+    net zoals de live-weergave kanalen al door elkaar toont."""
     recordings_dir = Path("recordings")
+
+    if channel_id == "all":
+        by_channel: Dict[str, Path] = {}
+        for json_path in recordings_dir.glob(f"session_{session_id}_*.json"):
+            parsed = _parse_session_wav_name(json_path.stem)
+            if parsed is None:
+                continue
+            uuid_part, ch, _ = parsed
+            if uuid_part != session_id:
+                continue
+            if ch not in by_channel or json_path.stat().st_mtime > by_channel[ch].stat().st_mtime:
+                by_channel[ch] = json_path
+
+        if not by_channel:
+            return JSONResponse({"error": "transcript not found"}, status_code=404)
+
+        merged_segments = []
+        for ch, json_path in by_channel.items():
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    segs = json.load(f)
+            except Exception:
+                continue
+            for seg in segs:
+                seg = dict(seg)
+                seg["channel_id"] = ch
+                merged_segments.append(seg)
+        merged_segments.sort(key=lambda s: s.get("start_ms") or 0)
+
+        return JSONResponse({
+            "session_id": session_id,
+            "channel_id": "all",
+            "channels": sorted(by_channel.keys()),
+            "segments": merged_segments,
+        })
+
     # Zoek JSON bestand voor deze sessie + channel
     pattern = f"session_{session_id}_{channel_id}_*.json"
     matches = list(recordings_dir.glob(pattern))
     if not matches:
         return JSONResponse({"error": "transcript not found"}, status_code=404)
-    
+
     # Nieuwste bestand
     json_path = sorted(matches, key=lambda f: f.stat().st_mtime)[-1]
     wav_path = json_path.with_suffix(".wav")
-    
+
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             segments = json.load(f)
+        for seg in segments:
+            seg["channel_id"] = channel_id
         return JSONResponse({
             "session_id": session_id,
             "channel_id": channel_id,
