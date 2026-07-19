@@ -161,6 +161,22 @@ class TokensAlignment:
 
         return group_id
 
+    def flush_current_line(self) -> None:
+        """Sluit de huidige, nog niet gevalideerde live-regel (current_line_tokens)
+        direct af als FINAL validated_segment, zonder te wachten op een stilte-token.
+
+        current_line_tokens overleeft normaal een hard reset van de decoder (die
+        raakt alleen de in-flight hypothese in state.buffer_transcription, zie
+        AudioProcessor._hard_reset_live_decoder) -- bij een Pauze midden in een zin
+        blijft de halve zin dus in current_line_tokens hangen en plakken tokens van
+        na het hervatten er zonder afsluiting achteraan, sessie na sessie verder
+        groeiend. Bij een echte discontinuïteit (Pauze) moet deze regel daarom
+        expliciet afgesloten worden, exact zoals een stilte-token dat normaal doet
+        (zie get_lines(), silence-tak hierboven)."""
+        if self.current_line_tokens:
+            self.validated_segments.append(Segment().from_tokens(self.current_line_tokens))
+            self.current_line_tokens = []
+
     def update(self) -> None:
         """Drain state buffers into the running alignment context."""
         self.new_tokens, self.state.new_tokens = self.state.new_tokens, []

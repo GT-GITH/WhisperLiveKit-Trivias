@@ -645,9 +645,11 @@ class AudioProcessor:
         audio (de microfoon staat écht stil), en zonder reset probeert de decoder
         na hervatten door te decoderen met verouderde interne context alsof de
         audio doorlopend was -- geobserveerd als een woordherhaling-lus ("Evet
-        Evet Evet...") die kort na hervatten begint. validated_segments/
-        batch_groups (de al opgebouwde transcript-historie) blijven ongemoeid;
-        alleen de in-flight decoder-hypothese wordt gewist."""
+        Evet Evet...") die kort na hervatten begint. batch_groups (de al
+        opgebouwde transcript-historie) blijven ongemoeid; de in-flight
+        decoder-hypothese wordt gewist, en de nog niet gevalideerde live-regel
+        (current_line_tokens) wordt afgesloten in validated_segments in plaats
+        van losjes te blijven hangen -- zie flush_current_line()."""
         if self.pcm_buffer:
             await self.handle_pcm_data()
         if self.current_silence:
@@ -675,6 +677,16 @@ class AudioProcessor:
                 f"[PAUSE][FLUSH] channel={self.channel_id} transcription_queue.join() "
                 f"timed out na 20s, ga door met mogelijk verouderde state"
             )
+
+        # Sluit de lopende, nog niet gevalideerde live-regel af als eigen FINAL
+        # segment -- anders overleeft current_line_tokens de hard reset hieronder
+        # (die raakt alleen state.buffer_transcription) en plakken tokens van na
+        # het hervatten er zonder afsluiting achteraan, sessie na sessie verder
+        # groeiend. Zie flush_current_line() in tokens_alignment.py.
+        try:
+            self.tokens_alignment.flush_current_line()
+        except Exception as e:
+            logger.warning(f"[PAUSE][FLUSH] flush_current_line failed: {e}")
 
         await self._flush_final_batch_tail(reason="pause")
         try:
