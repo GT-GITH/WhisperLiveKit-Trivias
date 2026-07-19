@@ -887,28 +887,41 @@ class AudioProcessor:
                         _buffer_transcript.start = None
                         _buffer_transcript.end = None
 
-                candidate_end_times = [self.state.end_buffer]
-
+                # [DIAG] end_buffer-drift onderzoek (2026-07-19): kandidaten gelabeld
+                # opbouwen (i.p.v. een kale lijst waarden) zodat bij een sprong meteen
+                # zichtbaar is WELKE bron 'm veroorzaakte -- new_tokens[-1].end (net
+                # gecommit token) en _buffer_transcript.end (nog-lopende live-hypothese,
+                # via get_buffer()) zijn twee wezenlijk andere routes naar een tijdstempel.
+                _diag_labeled_candidates = [("state.end_buffer", self.state.end_buffer)]
                 if new_tokens:
-                    candidate_end_times.append(new_tokens[-1].end)
-                
+                    _diag_labeled_candidates.append(("new_tokens[-1].end", new_tokens[-1].end))
                 if _buffer_transcript.end is not None:
-                    candidate_end_times.append(_buffer_transcript.end)
-                
-                candidate_end_times.append(current_audio_processed_upto)
+                    _diag_labeled_candidates.append(("buffer_transcript.end", _buffer_transcript.end))
+                _diag_labeled_candidates.append(("current_audio_processed_upto", current_audio_processed_upto))
 
-                # [DIAG] end_buffer-drift onderzoek (2026-07-19): end_buffer is een
-                # eenrichtings-max -- als een kandidaat hier significant hoger uitvalt dan
-                # current_audio_processed_upto (de zuivere, betrouwbare PCM-teller), is dát
-                # de kandidaat die de drift injecteert. Alleen loggen bij een echte sprong
-                # om logspam te vermijden.
+                candidate_end_times = [v for _, v in _diag_labeled_candidates]
+
+                # end_buffer is een eenrichtings-max -- als een kandidaat hier significant
+                # hoger uitvalt dan current_audio_processed_upto (de zuivere, betrouwbare
+                # PCM-teller), is dát de kandidaat die de drift injecteert. Alleen loggen
+                # bij een echte sprong om logspam te vermijden.
                 _diag_new_end = max(candidate_end_times)
                 if _diag_new_end - self.state.end_buffer > 5.0 and _diag_new_end > current_audio_processed_upto + 5.0:
+                    _diag_winner_name, _diag_winner_val = max(_diag_labeled_candidates, key=lambda kv: kv[1])
+                    _diag_last_tok_info = "n/a"
+                    if new_tokens:
+                        _lt = new_tokens[-1]
+                        _diag_last_tok_info = (
+                            f"start={getattr(_lt, 'start', '?')} end={getattr(_lt, 'end', '?')} "
+                            f"text={getattr(_lt, 'text', '?')!r}"
+                        )
                     logger.warning(
                         f"[DIAG][END_BUFFER_JUMP] channel={self.channel_id} "
                         f"end_buffer {self.state.end_buffer:.2f}s -> {_diag_new_end:.2f}s "
-                        f"(candidates={[round(c, 2) for c in candidate_end_times]}, "
-                        f"current_audio_processed_upto={current_audio_processed_upto:.2f}s)"
+                        f"BRON={_diag_winner_name}={_diag_winner_val:.2f}s "
+                        f"(alle kandidaten={[(n, round(v, 2)) for n, v in _diag_labeled_candidates]}, "
+                        f"buffer_text={buffer_text[:60]!r}, new_tokens_count={len(new_tokens)}, "
+                        f"laatste_new_token=[{_diag_last_tok_info}])"
                     )
 
                 async with self.lock:
