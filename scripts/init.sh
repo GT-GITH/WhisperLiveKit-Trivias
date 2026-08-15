@@ -62,6 +62,11 @@ DIARIZATION_BACKEND="${DIARIZATION_BACKEND:-sortformer}"
 LLM_ENABLED="${LLM_ENABLED:-1}"
 LLM_MODEL="${LLM_MODEL:-llama3.1:8b}"
 LLM_BACKEND_URL="${LLM_BACKEND_URL:-http://localhost:11434/v1}"
+# Ollama's default modellocatie is /root/.ollama/models, op de kleine
+# root-schijf van de pod (niet de grote /workspace-volume waar de rest van
+# dit project al staat) -- expliciet naar /workspace verplaatst, anders loopt
+# een model van een paar GB de root-schijf vol.
+OLLAMA_MODELS="${OLLAMA_MODELS:-$WORKSPACE/.ollama-models}"
 
 
 # --- ensure bash ---
@@ -86,6 +91,10 @@ install_deps() {
   apt-get update -y >/dev/null
   apt-get install -y git curl ffmpeg python3-venv >/dev/null
   apt-get install -y python3.11 python3.11-venv >/dev/null
+  # pciutils (lspci) -- de Ollama-installer gebruikt dit om de NVIDIA-GPU te
+  # detecteren en de CUDA-runtime te installeren. Zonder lspci installeert
+  # Ollama stilzwijgend CPU-only, ook als nvidia-smi prima werkt.
+  apt-get install -y pciutils >/dev/null
 
   touch "$marker"
 }
@@ -193,11 +202,12 @@ install_ollama() {
     log "LLM_ENABLED=0 → Ollama-install skip"
     return 0
   fi
-  if command -v ollama >/dev/null 2>&1; then
-    log "Ollama al geïnstalleerd → skip install"
-    return 0
-  fi
-  log "Install Ollama (auto-detecteert de NVIDIA-GPU voor CUDA-versnelling)..."
+  # BEWUST geen "al geïnstalleerd → skip": het installer-script is zelf al
+  # idempotent (veilig opnieuw te draaien, dat is ook hoe Ollama zelf updaten
+  # wil dat je het doet) en moet hier altijd draaien zodat een eerdere
+  # installatie zonder lspci (dus zonder GPU-detectie, CPU-only) alsnog de
+  # ontbrekende CUDA-ondersteuning krijgt zodra pciutils/lspci beschikbaar is.
+  log "Install/update Ollama (detecteert de NVIDIA-GPU via lspci voor CUDA-versnelling)..."
   curl -fsSL https://ollama.com/install.sh | sh
 }
 
@@ -271,7 +281,9 @@ ensure_ollama_running() {
     return 0
   fi
   command -v ollama >/dev/null 2>&1 || die "LLM_ENABLED=1 maar 'ollama' niet gevonden. Run eerst: bash scripts/init.sh --setup"
-  log "Start Ollama-service (achtergrond, logt naar $WORKSPACE/ollama.log)..."
+  mkdir -p "$OLLAMA_MODELS"
+  export OLLAMA_MODELS
+  log "Start Ollama-service (achtergrond, modellen in $OLLAMA_MODELS, logt naar $WORKSPACE/ollama.log)..."
   nohup ollama serve > "$WORKSPACE/ollama.log" 2>&1 &
   disown
   for _ in $(seq 1 30); do
