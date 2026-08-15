@@ -503,18 +503,28 @@ def _load_merged_transcript(session_id: str) -> Optional[Dict[str, Any]]:
     brontekst uitgaan. Retourneert None als er geen transcript-bestanden zijn."""
     recordings_dir = Path("recordings")
     by_channel: Dict[str, Path] = {}
+    earliest_ts: Optional[str] = None
     for json_path in recordings_dir.glob(f"session_{session_id}_*.json"):
         parsed = _parse_session_wav_name(json_path.stem)
         if parsed is None:
             continue
-        uuid_part, ch, _ = parsed
+        uuid_part, ch, ts = parsed
         if uuid_part != session_id:
             continue
         if ch not in by_channel or json_path.stat().st_mtime > by_channel[ch].stat().st_mtime:
             by_channel[ch] = json_path
+        if earliest_ts is None or ts < earliest_ts:
+            earliest_ts = ts
 
     if not by_channel:
         return None
+
+    date_str: Optional[str] = None
+    if earliest_ts:
+        try:
+            date_str = datetime.strptime(earliest_ts, "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%d %H:%M UTC")
+        except ValueError:
+            date_str = None
 
     merged_segments = []
     for ch, json_path in by_channel.items():
@@ -529,7 +539,7 @@ def _load_merged_transcript(session_id: str) -> Optional[Dict[str, Any]]:
             merged_segments.append(seg)
     merged_segments.sort(key=lambda s: s.get("start_ms") or 0)
 
-    return {"channels": sorted(by_channel.keys()), "segments": merged_segments}
+    return {"channels": sorted(by_channel.keys()), "segments": merged_segments, "date": date_str}
 
 
 @app.get("/sessions/{session_id}/transcript")
@@ -759,8 +769,12 @@ async def generate_gehoorverslag(session_id: str):
     if merged is None:
         return JSONResponse({"error": "transcript not found"}, status_code=404)
 
+    session_meta = {
+        "date": merged.get("date"),
+        "languages": {ch: _resolve_channel_language(ch) for ch in merged["channels"]},
+    }
     try:
-        document = build_gehoorverslag_docx(session_id, merged["segments"])
+        document = build_gehoorverslag_docx(session_id, merged["segments"], session_meta)
         buf = io.BytesIO()
         document.save(buf)
         buf.seek(0)
