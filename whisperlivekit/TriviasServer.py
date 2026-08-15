@@ -436,6 +436,14 @@ def rebuild_channel_transcript(
                 f"[REFRESH][REJECTED] session={session_id} channel={channel_id} "
                 f"ms={start_ms}..{end_ms} reason={reason} text='{seg['text'][:80]}'"
             )
+            if reason == "hallucination_pattern":
+                # Net als _batch_worker()'s [BATCH][FILTER] (audio_processor.py): een
+                # bekend hallucinatiepatroon is per definitie geen spraak, dus -- anders
+                # dan bij een laag-confidence maar wél mogelijk echte zin (80c6a09) --
+                # helemaal overslaan i.p.v. onbevestigd te bewaren. Zonder deze skip
+                # bleef de hallucinatietekst (zonder vinkje) toch zichtbaar in het
+                # ververste transcript, terwijl live 'm nooit liet zien.
+                continue
         entries.append({
             "type": "segment_update",
             "id": f"refresh_{start_ms}",
