@@ -26,6 +26,7 @@ _spec.loader.exec_module(_ccg)
 align_all_channels = _ccg.align_all_channels
 arbitrate = _ccg.arbitrate
 compute_cross_channel_gate_masks = _ccg.compute_cross_channel_gate_masks
+compute_own_channel_gate_mask = _ccg.compute_own_channel_gate_mask
 compute_rms_envelope = _ccg.compute_rms_envelope
 estimate_alignment = _ccg.estimate_alignment
 
@@ -105,16 +106,56 @@ def test_failsafe_on_unrelated_signals():
     print("OK test_failsafe_on_unrelated_signals")
 
 
-def test_failsafe_on_silent_channel():
+def test_silent_channel_suppressed_by_own_gate_not_by_crosstalk_failure():
+    """Een volledig stil kanaal krijgt geen betrouwbare cross-kanaal-uitlijning
+    (fail-safe, stage 2 doet niets) -- maar wordt WEL onderdrukt door de eigen-
+    kanaal-ruisdrempel (stage 1, precies zoals live's gateOpen1 een stil kanaal
+    altijd sluit, los van enig ander kanaal). Het luide kanaal blijft intact."""
     rng = np.random.default_rng(2)
     ch_a = _make_tone_burst(rng, SAMPLE_RATE * 10)
     ch_b = np.zeros(SAMPLE_RATE * 10, dtype=np.float32)  # volledig stil
 
     masks = compute_cross_channel_gate_masks({"a": ch_a, "b": ch_b}, SAMPLE_RATE, session_id="test")
 
-    assert masks["a"].all()
-    assert masks["b"].all()
-    print("OK test_failsafe_on_silent_channel")
+    assert masks["a"].all(), "het luide kanaal mag niet geraakt worden door de stilte van het andere"
+    # Niet exact 0 (not .any()): binary_opening/closing's randgedrag laat een
+    # handvol frames aan de ware randen van de array soms net niet onderdrukt --
+    # cosmetisch, zie ook de vergelijkbare marge in test_arbitrate_suppresses_...
+    b_suppressed_frac = 1.0 - masks["b"].mean()
+    assert b_suppressed_frac > 0.95, (
+        f"een volledig stil kanaal moet vrijwel volledig onderdrukt worden door de "
+        f"eigen ruisdrempel, maar slechts {b_suppressed_frac:.1%} was dat"
+    )
+    print("OK test_silent_channel_suppressed_by_own_gate_not_by_crosstalk_failure")
+
+
+def test_own_gate_suppresses_quiet_far_mic_leak():
+    """Rechtstreekse test van compute_own_channel_gate_mask() (stage 1): een
+    kanaal dat overwegend heel zacht is (een ver-weg-microfoon-lek, RMS ruim
+    onder de default-drempel van 0.015) moet grotendeels onderdrukt worden --
+    dit is exact het scenario dat live al ving en Ververs Transcriptie miste
+    vóór deze stage werd toegevoegd."""
+    rng = np.random.default_rng(5)
+    n = SAMPLE_RATE * 10
+    quiet_leak = (rng.standard_normal(n) * 0.003).astype(np.float32)  # ruim < 0.015
+
+    mask = compute_own_channel_gate_mask(quiet_leak, SAMPLE_RATE)
+    suppressed_frac = 1.0 - mask.mean()
+    assert suppressed_frac > 0.9, (
+        f"een doorlopend zacht signaal (RMS 0.003 << drempel 0.015) moet grotendeels "
+        f"onderdrukt worden, maar slechts {suppressed_frac:.1%} was dat"
+    )
+    print(f"OK test_own_gate_suppresses_quiet_far_mic_leak (suppressed={suppressed_frac:.1%})")
+
+
+def test_own_gate_leaves_loud_speech_untouched():
+    rng = np.random.default_rng(6)
+    n = SAMPLE_RATE * 10
+    real_speech = (rng.standard_normal(n) * 0.2).astype(np.float32)  # ruim > 0.015
+
+    mask = compute_own_channel_gate_mask(real_speech, SAMPLE_RATE)
+    assert mask.all(), "duidelijk luide, eigen spraak mag nooit door de ruisdrempel geraakt worden"
+    print("OK test_own_gate_leaves_loud_speech_untouched")
 
 
 def test_single_channel_skips_entirely():
@@ -214,7 +255,9 @@ if __name__ == "__main__":
         test_lag_negative_when_other_is_delayed_copy,
         test_lag_positive_when_other_is_truncated_copy,
         test_failsafe_on_unrelated_signals,
-        test_failsafe_on_silent_channel,
+        test_silent_channel_suppressed_by_own_gate_not_by_crosstalk_failure,
+        test_own_gate_suppresses_quiet_far_mic_leak,
+        test_own_gate_leaves_loud_speech_untouched,
         test_single_channel_skips_entirely,
         test_arbitrate_suppresses_the_quieter_side_of_a_swap,
         test_arbitrate_never_suppresses_both_equal_channels,

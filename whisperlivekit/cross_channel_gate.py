@@ -38,8 +38,23 @@ DEFAULT_MIN_ALIGN_CONFIDENCE = 0.3   # Pearson-r op het beste-lag-overlapvenster
                                       # wordt het kanaalpaar als onuitlijnbaar beschouwd --
                                       # fail-safe, geen onderdrukking
 DEFAULT_ARBITRATION_MARGIN = 0.4     # gespiegeld van app.js ARBITRATION_MARGIN
-DEFAULT_SILENCE_FLOOR = 0.005        # RMS onder deze waarde is nooit een verdenkingskandidaat
-                                      # (eigen stilte-gate-equivalent van app.js's gateOpen1)
+DEFAULT_SILENCE_FLOOR = 0.005        # RMS onder deze waarde telt nooit mee als PEER in de
+                                      # cross-kanaal-arbitrage hieronder (voorkomt dat een
+                                      # praktisch stil kanaal toch als "luidste peer" geldt).
+                                      # Dit is UITDRUKKELIJK NIET hetzelfde als app.js's
+                                      # gateOpen1 (eigen-kanaal-ruisdrempel, standaard 0.015,
+                                      # drie keer zo hoog) -- zie DEFAULT_OWN_GATE_THRESHOLD.
+DEFAULT_OWN_GATE_THRESHOLD = 0.015   # = app.js's gateThreshold-default ("Normaal"-preset).
+                                      # Niet-causale tegenhanger van app.js's PCMForwarder-
+                                      # ruisdrempel (stage 1, pcm_worklet.js): puur per kanaal,
+                                      # geen ander kanaal of uitlijning nodig. Dit is wat een
+                                      # ver-weg-microfoon-lek in live al onderdrukt vóórdat
+                                      # cross-kanaal-arbitrage (stage 2, hieronder) er ooit aan
+                                      # te pas komt -- ontbrak hier volledig totdat een test
+                                      # liet zien dat live wél onderdrukte en refresh niet.
+                                      # Server kent de per-kanaal geconfigureerde drempel niet
+                                      # (client-side instelling, nooit naar de server gestuurd);
+                                      # deze default is de beste beschikbare benadering.
 DEFAULT_MIN_SUPPRESS_RUN_MS = 150.0  # niet-causale tegenhanger van CLOSE_HOLD_MS (100ms);
                                       # iets ruimer omdat offline smoothing minder risico op
                                       # valse positieven heeft dan een causale hold
@@ -87,6 +102,58 @@ def compute_rms_envelope(
     strided = windows[::hop_samples]
     envelope = np.sqrt(np.mean(strided.astype(np.float64) ** 2, axis=1))
     return envelope, hop_samples
+
+
+def _expand_frames_to_samples(keep_frames: np.ndarray, hop_samples: int, total_len: int) -> np.ndarray:
+    """Frame-niveau boolean-array (compute_rms_envelope-hop-resolutie) uitvouwen
+    naar sample-niveau, bijgeknipt/opgevuld (met True/open, fail-safe) op de
+    exacte originele array-lengte."""
+    keep_samples = np.repeat(keep_frames, hop_samples)
+    if len(keep_samples) < total_len:
+        pad = np.ones(total_len - len(keep_samples), dtype=bool)
+        keep_samples = np.concatenate([keep_samples, pad])
+    else:
+        keep_samples = keep_samples[:total_len]
+    return keep_samples
+
+
+def compute_own_channel_gate_mask(
+    audio_f32: np.ndarray,
+    sample_rate: int,
+    threshold: float = DEFAULT_OWN_GATE_THRESHOLD,
+    window_ms: float = DEFAULT_WINDOW_MS,
+    hop_ms: float = DEFAULT_HOP_MS,
+    min_suppress_run_ms: float = DEFAULT_MIN_SUPPRESS_RUN_MS,
+    bridge_gap_ms: float = DEFAULT_BRIDGE_GAP_MS,
+) -> np.ndarray:
+    """Niet-causale tegenhanger van app.js's PCMForwarder-ruisdrempel (stage 1,
+    pcm_worklet.js `_gateOpen`/`gateOpen1`): PUUR per kanaal, geen ander kanaal
+    of uitlijning nodig. Frames waarvan de eigen RMS onder `threshold` zit
+    worden onderdrukt, ongeacht wat er op een ander kanaal gebeurt -- dit is
+    wat een ver-weg-microfoon-lek in live al wegfiltert vóórdat cross-kanaal-
+    arbitrage (arbitrate(), stage 2) er ooit aan te pas komt. Zelfde opening/
+    closing-smoothing als arbitrate() (isolated blips weg, korte gaten
+    overbrugd), niet-causaal dus symmetrisch i.p.v. live's causale hold.
+
+    Retourneert een boolean keep-mask, exact zo lang als audio_f32."""
+    envelope, hop_samples = compute_rms_envelope(audio_f32, sample_rate, window_ms, hop_ms)
+    if len(envelope) == 0:
+        return np.ones(len(audio_f32), dtype=bool)
+
+    suppress_frames = envelope < threshold
+    if suppress_frames.any() and not suppress_frames.all():
+        ms_per_frame = hop_samples / sample_rate * 1000.0
+        min_run_frames = max(1, int(round(min_suppress_run_ms / ms_per_frame)))
+        bridge_frames = max(1, int(round(bridge_gap_ms / ms_per_frame)))
+        suppress_frames = scipy_ndimage.binary_opening(
+            suppress_frames, structure=np.ones(min_run_frames, dtype=bool)
+        )
+        suppress_frames = scipy_ndimage.binary_closing(
+            suppress_frames, structure=np.ones(bridge_frames, dtype=bool)
+        )
+
+    keep_frames = ~suppress_frames
+    return _expand_frames_to_samples(keep_frames, hop_samples, len(audio_f32))
 
 
 def _detrend_envelope(env: np.ndarray, window_frames: int) -> np.ndarray:
@@ -383,6 +450,7 @@ def compute_cross_channel_gate_masks(
     min_suppress_run_ms: float = DEFAULT_MIN_SUPPRESS_RUN_MS,
     bridge_gap_ms: float = DEFAULT_BRIDGE_GAP_MS,
     silence_floor: float = DEFAULT_SILENCE_FLOOR,
+    own_gate_threshold: float = DEFAULT_OWN_GATE_THRESHOLD,
     session_id: str = "",
 ) -> Dict[str, np.ndarray]:
     """Enige entrypoint die TriviasServer.py aanroept.
@@ -392,23 +460,44 @@ def compute_cross_channel_gate_masks(
     momenten starten/stoppen. Wijzigt NOOIT de input-arrays.
 
     Output: {channel_id: boolean keep-mask}, elk EXACT zo lang als het
-    bijbehorende input-array (True = naar ASR voeden, False = onderdrukken). Een
-    kanaal dat niet uitgelijnd kon worden (confidence te laag, bv. een volledig
-    stil kanaal of écht ongerelateerde audio) krijgt een all-True mask --
-    fail-safe, geen onderdrukking i.p.v. het risico van misalignering en het
-    wegvagen van echte spraak.
+    bijbehorende input-array (True = naar ASR voeden, False = onderdrukken).
 
-    len(audio_by_channel) <= 1 geeft direct all-True masks terug (geen peer om
-    tegen te arbitreren).
+    Twee lagen, gecombineerd met AND (een sample blijft alleen open als BEIDE
+    lagen 'm open laten) -- zelfde tweelaags-ontwerp als de live gate (app.js):
+    1. **Eigen-kanaal-ruisdrempel** (compute_own_channel_gate_mask, stage 1):
+       altijd toegepast, per kanaal, geen uitlijning nodig. Vangt een zwak/
+       ver-weg-microfoon-lek dat gewoon te stil is om nuttig te zijn.
+    2. **Cross-kanaal-arbitrage** (align_all_channels + arbitrate, stage 2):
+       alleen bij 2+ kanalen EN een betrouwbare uitlijning (anders fail-safe:
+       geen onderdrukking op deze laag i.p.v. het risico van misalignering en
+       het wegvagen van echte spraak).
+
+    len(audio_by_channel) <= 1 past nog wel stage 1 toe (net als live, dat ook
+    zonder ander kanaal een eigen ruisdrempel hanteert), slaat alleen stage 2 over.
     """
     channel_ids = list(audio_by_channel.keys())
+
+    own_gate_masks: Dict[str, np.ndarray] = {}
+    for ch, audio in audio_by_channel.items():
+        own_gate_masks[ch] = compute_own_channel_gate_mask(
+            audio, sample_rate, own_gate_threshold, window_ms, hop_ms,
+            min_suppress_run_ms, bridge_gap_ms,
+        )
+        n_own_suppressed = int((~own_gate_masks[ch]).sum())
+        if n_own_suppressed > 0:
+            pct = 100.0 * n_own_suppressed / len(audio)
+            logger.info(
+                f"[REFRESH][XGATE][OWNGATE] session={session_id} channel={ch} suppressed "
+                f"{n_own_suppressed}/{len(audio)} samples ({pct:.1f}%) onder eigen "
+                f"ruisdrempel {own_gate_threshold}"
+            )
 
     if len(channel_ids) <= 1:
         logger.info(
             f"[REFRESH][XGATE] session={session_id} {len(channel_ids)} kanaal/kanalen, "
-            f"cross-channel onderdrukking overgeslagen"
+            f"cross-channel arbitrage (stage 2) overgeslagen -- alleen eigen-ruisdrempel toegepast"
         )
-        return {ch: np.ones(len(audio), dtype=bool) for ch, audio in audio_by_channel.items()}
+        return own_gate_masks
 
     envelopes: Dict[str, np.ndarray] = {}
     hop_samples = None
@@ -423,7 +512,7 @@ def compute_cross_channel_gate_masks(
     included_offsets: Dict[str, int] = {ch: off for ch, off in offsets.items() if off is not None}
     excluded = [ch for ch in channel_ids if ch not in included_offsets]
 
-    masks: Dict[str, np.ndarray] = {
+    cross_gate_masks: Dict[str, np.ndarray] = {
         ch: np.ones(len(audio_by_channel[ch]), dtype=bool) for ch in excluded
     }
 
@@ -441,29 +530,28 @@ def compute_cross_channel_gate_masks(
             session_id,
         )
         for ch in included_offsets:
-            suppress_local = suppress_by_channel[ch]
-            keep_frames = ~suppress_local
-            keep_samples = np.repeat(keep_frames, hop_samples)
-            total_len = len(audio_by_channel[ch])
-            if len(keep_samples) < total_len:
-                pad = np.ones(total_len - len(keep_samples), dtype=bool)
-                keep_samples = np.concatenate([keep_samples, pad])
-            else:
-                keep_samples = keep_samples[:total_len]
-            masks[ch] = keep_samples
-
-            n_suppressed = int((~keep_samples).sum())
-            if n_suppressed > 0:
-                n_runs = _count_true_runs(~keep_samples)
-                pct = 100.0 * n_suppressed / total_len
-                logger.info(
-                    f"[REFRESH][XGATE] session={session_id} channel={ch} suppressed "
-                    f"{n_suppressed}/{total_len} samples ({pct:.1f}%) across {n_runs} run(s)"
-                )
+            keep_frames = ~suppress_by_channel[ch]
+            cross_gate_masks[ch] = _expand_frames_to_samples(
+                keep_frames, hop_samples, len(audio_by_channel[ch])
+            )
     else:
         # Alleen het referentiekanaal (of niemand anders) kon uitgelijnd worden --
-        # geen peer om tegen te arbitreren, dus geen onderdrukking mogelijk.
+        # geen peer om tegen te arbitreren, dus geen onderdrukking op deze laag.
         for ch in included_offsets:
-            masks.setdefault(ch, np.ones(len(audio_by_channel[ch]), dtype=bool))
+            cross_gate_masks.setdefault(ch, np.ones(len(audio_by_channel[ch]), dtype=bool))
 
-    return masks
+    final_masks: Dict[str, np.ndarray] = {}
+    for ch in channel_ids:
+        final_masks[ch] = own_gate_masks[ch] & cross_gate_masks[ch]
+        total_len = len(audio_by_channel[ch])
+        n_suppressed = int((~final_masks[ch]).sum())
+        if n_suppressed > 0:
+            n_runs = _count_true_runs(~final_masks[ch])
+            pct = 100.0 * n_suppressed / total_len
+            logger.info(
+                f"[REFRESH][XGATE] session={session_id} channel={ch} totaal onderdrukt "
+                f"{n_suppressed}/{total_len} samples ({pct:.1f}%) across {n_runs} run(s) "
+                f"(eigen-ruisdrempel + cross-kanaal-arbitrage gecombineerd)"
+            )
+
+    return final_masks

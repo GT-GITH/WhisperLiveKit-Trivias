@@ -591,44 +591,40 @@ async def refresh_transcript(session_id: str):
     if transcription_engine is None or not getattr(transcription_engine, "batch_asr", None):
         return JSONResponse({"error": "batch model not available"}, status_code=503)
 
-    # Cross-kanaal anti-lek: laad ALLE kanalen vooraf (arbitrage is inherent
-    # cross-kanaal, kan dus niet per kanaal los bepaald worden) en bereken de
-    # gate-masks, VOORDAT de sequentiële decode-loop hieronder start. Alleen
-    # zinvol bij 2+ kanalen -- 1 kanaal heeft geen peer om tegen te arbitreren.
-    # Elke fout hier valt terug op het bestaande, ongewijzigde gedrag (de hele
-    # refresh faalt hier nooit door) -- consistent fail-safe.
+    # Anti-lek-gate: laad ALLE kanalen vooraf (cross-kanaal-arbitrage kan niet
+    # per kanaal los bepaald worden) en bereken de gate-masks, VOORDAT de
+    # sequentiële decode-loop hieronder start. Ook bij een sessie met maar 1
+    # kanaal de moeite waard: compute_cross_channel_gate_masks() past dan nog
+    # wel de eigen-kanaal-ruisdrempel toe (net als live altijd doet), slaat
+    # alleen de cross-kanaal-arbitrage over. Elke fout hier valt terug op het
+    # bestaande, ongewijzigde gedrag (de hele refresh faalt hier nooit door)
+    # -- consistent fail-safe.
     audio_by_channel: Dict[str, np.ndarray] = {}
     gate_masks: Dict[str, np.ndarray] = {}
-    if len(wav_files) > 1:
-        for channel_id, wav_file in wav_files.items():
-            try:
-                audio_by_channel[channel_id] = await asyncio.to_thread(_load_wav_f32, wav_file)
-            except Exception as e:
-                logger.warning(
-                    f"[REFRESH][XGATE] session={session_id} channel={channel_id} "
-                    f"kon WAV niet laden voor cross-channel analyse: {e}"
-                )
-        if len(audio_by_channel) > 1:
-            try:
-                t0 = time.monotonic()
-                gate_masks = await asyncio.to_thread(
-                    compute_cross_channel_gate_masks, audio_by_channel, 16000, session_id=session_id,
-                )
-                logger.info(
-                    f"[REFRESH][XGATE] session={session_id} channels={sorted(audio_by_channel)} "
-                    f"alignment+arbitration complete in {(time.monotonic() - t0) * 1000:.0f}ms"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[REFRESH][XGATE] session={session_id} cross-channel gate mislukt, "
-                    f"ga verder zonder onderdrukking: {e}"
-                )
-                gate_masks = {}
-        else:
+    for channel_id, wav_file in wav_files.items():
+        try:
+            audio_by_channel[channel_id] = await asyncio.to_thread(_load_wav_f32, wav_file)
+        except Exception as e:
             logger.warning(
-                f"[REFRESH][XGATE] session={session_id} kon minder dan 2 kanalen laden, "
-                f"cross-channel suppression overgeslagen"
+                f"[REFRESH][XGATE] session={session_id} channel={channel_id} "
+                f"kon WAV niet laden voor anti-lek-gate: {e}"
             )
+    if audio_by_channel:
+        try:
+            t0 = time.monotonic()
+            gate_masks = await asyncio.to_thread(
+                compute_cross_channel_gate_masks, audio_by_channel, 16000, session_id=session_id,
+            )
+            logger.info(
+                f"[REFRESH][XGATE] session={session_id} channels={sorted(audio_by_channel)} "
+                f"gate-berekening compleet in {(time.monotonic() - t0) * 1000:.0f}ms"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[REFRESH][XGATE] session={session_id} anti-lek-gate mislukt, "
+                f"ga verder zonder onderdrukking: {e}"
+            )
+            gate_masks = {}
 
     # Sequentieel (niet parallel): batch_asr deelt één GPU-model-instance, en de
     # incrementele batch-worker verwerkt zijn jobs ook al sequentieel vanuit een
