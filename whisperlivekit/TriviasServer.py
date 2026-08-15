@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import uuid
 import json
 import wave
@@ -19,6 +20,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 from whisperlivekit.simul_whisper.backend import evaluate_batch_segment
 from whisperlivekit.simul_whisper.config import get_channel_config
+from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
 
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
 
@@ -352,8 +354,21 @@ def _resolve_channel_language(channel_id: str) -> str:
     return get_channel_config(channel_id).language
 
 
+def _load_wav_f32(wav_path: Path) -> np.ndarray:
+    """Lees een s16le-mono WAV volledig in als float32 in [-1, 1]. Gedeeld door
+    rebuild_channel_transcript() (single-channel pad) en refresh_transcript()
+    (multi-channel upfront-load voor compute_cross_channel_gate_masks), zodat
+    de int16->float32-conversielogica maar op één plek staat."""
+    with wave.open(str(wav_path), "rb") as wf:
+        n_frames = wf.getnframes()
+        raw = wf.readframes(n_frames)
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 def rebuild_channel_transcript(
-    session_id: str, channel_id: str, wav_path: Path, engine: TranscriptionEngine
+    session_id: str, channel_id: str, wav_path: Path, engine: TranscriptionEngine,
+    audio_f32: Optional[np.ndarray] = None,
+    gate_mask: Optional[np.ndarray] = None,
 ) -> list[dict]:
     """"Ververs Transcriptie": herbouw het transcript van één kanaal helemaal
     opnieuw, rechtstreeks vanaf de opgenomen WAV -- los van elke incrementele
@@ -363,15 +378,42 @@ def rebuild_channel_transcript(
     i.p.v. per (tot 40s) venster zoals de incrementele batch-worker doet -- fijner
     en dus preciezer.
 
+    audio_f32: optioneel al-ingeladen audio (het multi-channel refresh-pad laadt
+    alle kanalen van de sessie al vooraf voor compute_cross_channel_gate_masks()
+    en geeft ze hier door om een dubbele disk-read + conversie te vermijden).
+    None -> laad zelf via _load_wav_f32(wav_path) (single-channel pad, ongewijzigd).
+
+    gate_mask: optionele boolean keep-mask van compute_cross_channel_gate_masks()
+    (cross-kanaal akoestisch-lek-onderdrukking), zelfde lengte als audio_f32.
+    Exact dezelfde kopieer-en-nul-aanpak als de live gate
+    (audio_processor.py _consume_gate_mask() + de zero-ing rond ~1908-1921): de
+    WAV is hier sowieso alleen leesend geopend, dus dit raakt het bronbestand
+    nooit -- de mask beïnvloedt alleen wat naar transcribe_full() gaat.
+
     Vervangt <wav_stem>.json volledig (gebruiker bevestigd: transcript-bestand is
     altijd vervangbaar, de WAV blijft de enige bron van waarheid)."""
-    with wave.open(str(wav_path), "rb") as wf:
-        n_frames = wf.getnframes()
-        raw = wf.readframes(n_frames)
-    audio_f32 = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    if audio_f32 is None:
+        audio_f32 = _load_wav_f32(wav_path)
+
+    if gate_mask is not None and len(gate_mask) == len(audio_f32) and not gate_mask.all():
+        n_suppressed = int((~gate_mask).sum())
+        logger.info(
+            f"[REFRESH][XGATE] session={session_id} channel={channel_id} suppressed "
+            f"{n_suppressed}/{len(audio_f32)} samples ({100.0 * n_suppressed / len(audio_f32):.1f}%) "
+            f"before decode (cross-channel anti-leak, WAV unaffected)"
+        )
+        asr_audio_f32 = audio_f32.copy()
+        asr_audio_f32[~gate_mask] = 0.0
+    else:
+        if gate_mask is not None and len(gate_mask) != len(audio_f32):
+            logger.warning(
+                f"[REFRESH][XGATE] session={session_id} channel={channel_id} mask length "
+                f"{len(gate_mask)} != audio length {len(audio_f32)}, ignoring mask (fail-safe, no suppression)"
+            )
+        asr_audio_f32 = audio_f32
 
     lang = _resolve_channel_language(channel_id)
-    segments = engine.batch_asr.transcribe_full(audio_f32, language_override=lang)
+    segments = engine.batch_asr.transcribe_full(asr_audio_f32, language_override=lang)
 
     entries: list[dict] = []
     n_accepted = 0
@@ -541,6 +583,45 @@ async def refresh_transcript(session_id: str):
     if transcription_engine is None or not getattr(transcription_engine, "batch_asr", None):
         return JSONResponse({"error": "batch model not available"}, status_code=503)
 
+    # Cross-kanaal anti-lek: laad ALLE kanalen vooraf (arbitrage is inherent
+    # cross-kanaal, kan dus niet per kanaal los bepaald worden) en bereken de
+    # gate-masks, VOORDAT de sequentiële decode-loop hieronder start. Alleen
+    # zinvol bij 2+ kanalen -- 1 kanaal heeft geen peer om tegen te arbitreren.
+    # Elke fout hier valt terug op het bestaande, ongewijzigde gedrag (de hele
+    # refresh faalt hier nooit door) -- consistent fail-safe.
+    audio_by_channel: Dict[str, np.ndarray] = {}
+    gate_masks: Dict[str, np.ndarray] = {}
+    if len(wav_files) > 1:
+        for channel_id, wav_file in wav_files.items():
+            try:
+                audio_by_channel[channel_id] = await asyncio.to_thread(_load_wav_f32, wav_file)
+            except Exception as e:
+                logger.warning(
+                    f"[REFRESH][XGATE] session={session_id} channel={channel_id} "
+                    f"kon WAV niet laden voor cross-channel analyse: {e}"
+                )
+        if len(audio_by_channel) > 1:
+            try:
+                t0 = time.monotonic()
+                gate_masks = await asyncio.to_thread(
+                    compute_cross_channel_gate_masks, audio_by_channel, 16000, session_id=session_id,
+                )
+                logger.info(
+                    f"[REFRESH][XGATE] session={session_id} channels={sorted(audio_by_channel)} "
+                    f"alignment+arbitration complete in {(time.monotonic() - t0) * 1000:.0f}ms"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[REFRESH][XGATE] session={session_id} cross-channel gate mislukt, "
+                    f"ga verder zonder onderdrukking: {e}"
+                )
+                gate_masks = {}
+        else:
+            logger.warning(
+                f"[REFRESH][XGATE] session={session_id} kon minder dan 2 kanalen laden, "
+                f"cross-channel suppression overgeslagen"
+            )
+
     # Sequentieel (niet parallel): batch_asr deelt één GPU-model-instance, en de
     # incrementele batch-worker verwerkt zijn jobs ook al sequentieel vanuit een
     # queue -- concurrent aanroepen op dezelfde WhisperModel is niet iets waar dit
@@ -550,7 +631,8 @@ async def refresh_transcript(session_id: str):
     for channel_id, wav_file in wav_files.items():
         try:
             entries = await asyncio.to_thread(
-                rebuild_channel_transcript, session_id, channel_id, wav_file, transcription_engine
+                rebuild_channel_transcript, session_id, channel_id, wav_file, transcription_engine,
+                audio_by_channel.get(channel_id), gate_masks.get(channel_id),
             )
         except Exception as e:
             logger.warning(f"[REFRESH] channel={channel_id} mislukt: {e}")
