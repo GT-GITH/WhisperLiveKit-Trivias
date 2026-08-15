@@ -117,6 +117,9 @@ Models are loaded once into `TranscriptionEngine` (singleton per server process)
 | `--diarization-backend` | `sortformer` | `sortformer` (2025) or `diart` (legacy) |
 | `--pcm-input` | off | Raw PCM (s16le) instead of WebM |
 | `--no-vad` / `--no-vac` | off | Disable voice detection / controller |
+| `--llm-backend-url` | none | Base URL of an on-prem OpenAI-compatible LLM endpoint (e.g. Ollama at `http://localhost:11434/v1`), used for gehoorverslag section classification. Never a cloud endpoint. Unset = feature runs in fail-safe fallback (no classification). |
+| `--llm-model` | none | Model name as known to the LLM endpoint (e.g. `llama3.1:8b`). |
+| `--llm-api-key` | none | API key for the LLM endpoint, if required (most local runtimes don't need one). |
 
 ## Docs
 

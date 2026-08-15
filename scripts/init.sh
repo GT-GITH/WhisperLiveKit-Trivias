@@ -7,6 +7,9 @@ set -euo pipefail
 # Defaults:
 #   REMOTE_BRANCH=main
 #   LOCAL_BRANCH=main
+#   LLM_ENABLED=1 LLM_MODEL=llama3.1:8b LLM_BACKEND_URL=http://localhost:11434/v1
+#     -> on-prem Ollama voor gehoorverslag-sectieclassificatie, altijd lokaal
+#        op de pod zelf (nooit een cloud-endpoint). LLM_ENABLED=0 om uit te zetten.
 #
 # Usage:
 #   bash scripts/init.sh --setup         # deps + git + venv + pip
@@ -49,6 +52,16 @@ BEAMS="${BEAMS:-1}"
 DIARIZATION="${DIARIZATION:-0}"
 PCM_INPUT="${PCM_INPUT:-1}"  # altijd PCM voor multi-channel stabiliteit
 DIARIZATION_BACKEND="${DIARIZATION_BACKEND:-sortformer}"
+
+# On-prem LLM (gehoorverslag-sectieclassificatie, zie llm_backend.py) --
+# NOOIT een cloud-endpoint, altijd lokaal op de pod zelf (localhost, geen
+# externe port-forward nodig). Default AAN: L40S 48GB heeft ~30GB vrij naast
+# Whisper large-v3, ruim genoeg voor een 8B-model. LLM_ENABLED=0 schakelt
+# dit volledig uit (Trivias werkt dan gewoon fail-safe verder zonder
+# classificatie, zoals altijd zonder --llm-backend-url).
+LLM_ENABLED="${LLM_ENABLED:-1}"
+LLM_MODEL="${LLM_MODEL:-llama3.1:8b}"
+LLM_BACKEND_URL="${LLM_BACKEND_URL:-http://localhost:11434/v1}"
 
 
 # --- ensure bash ---
@@ -172,6 +185,22 @@ print("NeMo SortFormer OK")
 PY
 }
 
+install_ollama() {
+  # Ollama = de on-prem LLM-runtime voor gehoorverslag-sectieclassificatie.
+  # OpenAI-compatibele API op localhost:11434 -- zelfde interface als lokaal
+  # getest tijdens ontwikkeling, dus geen gedragsverschil dev vs. runpod.
+  if [[ "${LLM_ENABLED}" != "1" ]]; then
+    log "LLM_ENABLED=0 → Ollama-install skip"
+    return 0
+  fi
+  if command -v ollama >/dev/null 2>&1; then
+    log "Ollama al geïnstalleerd → skip install"
+    return 0
+  fi
+  log "Install Ollama (auto-detecteert de NVIDIA-GPU voor CUDA-versnelling)..."
+  curl -fsSL https://ollama.com/install.sh | sh
+}
+
 # --- venv + pip ---
 setup_venv_pip() {
   cd "$APP_DIR"
@@ -235,6 +264,30 @@ PY
 
 
 # --- run ---
+ensure_ollama_running() {
+  [[ "${LLM_ENABLED}" == "1" ]] || return 0
+  if curl -fsS "http://localhost:11434/api/version" >/dev/null 2>&1; then
+    log "Ollama draait al"
+    return 0
+  fi
+  command -v ollama >/dev/null 2>&1 || die "LLM_ENABLED=1 maar 'ollama' niet gevonden. Run eerst: bash scripts/init.sh --setup"
+  log "Start Ollama-service (achtergrond, logt naar $WORKSPACE/ollama.log)..."
+  nohup ollama serve > "$WORKSPACE/ollama.log" 2>&1 &
+  disown
+  for _ in $(seq 1 30); do
+    curl -fsS "http://localhost:11434/api/version" >/dev/null 2>&1 && { log "Ollama draait"; return 0; }
+    sleep 1
+  done
+  die "Ollama startte niet binnen 30s -- zie $WORKSPACE/ollama.log"
+}
+
+pull_llm_model() {
+  [[ "${LLM_ENABLED}" == "1" ]] || return 0
+  # Idempotent: 'ollama pull' zelf is al een no-op als het model al aanwezig is.
+  log "Zorg dat LLM-model aanwezig is: $LLM_MODEL (eerste keer kan even duren)..."
+  ollama pull "$LLM_MODEL"
+}
+
 startlive() {
   # IMPORTANT: --start should NOT do setup. It assumes repo+venv are already ready.
   [[ -d "$APP_DIR/.git" ]] || die "Repo niet gevonden in $APP_DIR. Run eerst: bash scripts/init.sh --setup"
@@ -245,15 +298,23 @@ startlive() {
 
   fi
 
+  LLM_ARGS=()
+  if [[ "$LLM_ENABLED" == "1" ]]; then
+    ensure_ollama_running
+    pull_llm_model
+    LLM_ARGS+=(--llm-backend-url "$LLM_BACKEND_URL" --llm-model "$LLM_MODEL")
+  else
+    log "LLM_ENABLED=0 → gehoorverslag draait zonder sectieclassificatie (platte fallback)"
+  fi
 
   cd "$APP_DIR"
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
-  
+
   # HuggingFace: voorkom impliciete hf_transfer dependency op RunPod images
   export HF_HUB_ENABLE_HF_TRANSFER=0
 
-  log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE"
+  log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED"
   exec python -m whisperlivekit.TriviasServer \
     --host "$HOST" --port "$PORT" \
     --model "$MODEL" --language "$LANGUAGE" \
@@ -262,7 +323,8 @@ startlive() {
     --audio-max-len "$AUDIO_MAX_LEN" \
     --beams "$BEAMS" \
     --pcm-input \
-    "${DIAR_ARGS[@]}"
+    "${DIAR_ARGS[@]}" \
+    "${LLM_ARGS[@]}"
 }
 
 gpustat() {
@@ -275,6 +337,7 @@ do_setup() {
   install_deps
   setup_repo
   setup_venv_pip
+  install_ollama
 }
 
 do_update() {
