@@ -74,6 +74,7 @@ The pipeline flows: **Browser (WebSocket) → FastAPI Server → AudioProcessor 
 | `whisperlivekit/local_agreement/` | **LocalAgreement WhisperStreaming backend** (older SOTA, fallback) |
 | `whisperlivekit/diarization/` | `sortformer_backend.py` (recommended, SOTA 2025), `diart_backend.py` (legacy) |
 | `whisperlivekit/silero_vad_iterator.py` | Voice Activity Detection (Silero ONNX) |
+| `whisperlivekit/cross_channel_gate.py` | Non-causal, server-side cross-channel acoustic-leak suppression used by `refresh_transcript()` (see "Refresh transcript" below) — envelope cross-correlation for alignment + per-frame RMS arbitration, pure numpy/scipy |
 | `whisperlivekit/web_trivias/` | Vanilla JS frontend — `app.js` handles WebSocket, session playback, UI; `recorder_worker.js` = Web Worker for recording; `pcm_worklet.js` = AudioWorklet for raw PCM |
 
 ### Dual-pass transcription
@@ -95,6 +96,8 @@ Results are merged before transmission. The tradeoff is tuned by `--frame-thresh
 ### Refresh transcript ("Ververs Transcriptie")
 
 `POST /sessions/{id}/refresh_transcript` (`TriviasServer.py`) discards the incrementally-built transcript for every channel of a session and rebuilds it from scratch by feeding the full recorded WAV to `BatchFasterWhisperASR.transcribe_full()` (`simul_whisper/backend.py`) in one call — no live-decoder state (`state.end_buffer`, `cumulative_time_offset`, pause resets) is involved, so this path is immune to the whole class of incremental-pipeline drift bugs. Each faster-whisper segment is gated individually via the shared `evaluate_batch_segment()` (also used by the incremental `_batch_worker()`), then `<wav_stem>.json` is overwritten wholesale. Callable only once a session is stable (Stop, or Pause after sending the `flag=3` WS control frame that flushes the WAV writer). Frontend button: `#refreshButton` (Bediening panel, visible during Pause) and `#refreshPlaybackButton` (session playback view, visible after Stop).
+
+Because this path reads the raw WAVs directly, it bypasses the live client-side cross-channel anti-leak gate (per-chunk RMS arbitration in `web_trivias/app.js`, see below), which only ever suppresses samples in the ASR-facing copy during live streaming and is never persisted. For sessions with 2+ channels, `refresh_transcript()` therefore also runs a non-causal, server-side equivalent (`whisperlivekit/cross_channel_gate.py`, `compute_cross_channel_gate_masks()`): channels are aligned via envelope cross-correlation (no shared sub-second start timestamp exists on disk, so timing offset between independently-started channel WebSockets is measured from the audio itself) and arbitrated per-frame, always failing safe to no suppression when alignment confidence is too low. As with the live gate, only the in-memory copy passed to `transcribe_full()` is ever masked — the WAV on disk is untouched.
 
 ### Model sharing
 

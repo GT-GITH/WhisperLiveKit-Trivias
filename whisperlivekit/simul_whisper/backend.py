@@ -185,6 +185,13 @@ HALLUCINATION_PATTERNS = [
     "altyazı",
     "Altyazi",
     "altyazi",
+    # Turkse YouTube-outro-hallucinaties (waargenomen 2026-07-19 en herbevestigd
+    # 2026-08-15, zie CLAUDE.md/refresh transcript-context) -- specifiek genoeg
+    # om echte spraak niet te raken: "teşekkür ederim" alleen (gewoon "dankjewel")
+    # zou wél te breed zijn en legitieme bedankjes afkeuren.
+    "İzlediğiniz için",
+    "izlediğiniz için",
+    "abone olmayı",
 ]
 
 

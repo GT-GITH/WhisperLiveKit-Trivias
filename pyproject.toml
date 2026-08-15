@@ -44,6 +44,7 @@ dependencies = [
     # --- REQUIRED for your current TriviasServer startup path ---
     "faster-whisper",
     "onnxruntime",
+    "scipy",  # cross_channel_gate.py (was already a transitive dep via librosa)
 
     # --- diarization stack ---
     "pyannote.audio",
