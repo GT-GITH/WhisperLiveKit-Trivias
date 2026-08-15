@@ -45,6 +45,7 @@ dependencies = [
     "faster-whisper",
     "onnxruntime",
     "scipy",  # cross_channel_gate.py (was already a transitive dep via librosa)
+    "python-docx",  # gehoorverslag.py -- .docx-generatie voor het rapport van gehoor
 
     # --- diarization stack ---
     "pyannote.audio",

@@ -366,6 +366,7 @@ const pauseButton        = document.getElementById("pauseButton");
 const stopButton         = document.getElementById("stopButton");
 const refreshButton      = document.getElementById("refreshButton");
 const refreshPlaybackButton = document.getElementById("refreshPlaybackButton");
+const gehoorverslagButton = document.getElementById("gehoorverslagButton");
 const liveTranscriptDiv  = document.getElementById("liveTranscript");
 if (liveTranscriptDiv) liveTranscriptDiv.style.whiteSpace = "pre-wrap";
 const connectionStatusSpan = document.getElementById("connectionStatus");
@@ -1301,6 +1302,18 @@ function hidePlaybackChannelFilter() {
 function updateRefreshPlaybackButtonUI() {
   if (!refreshPlaybackButton) return;
   refreshPlaybackButton.classList.toggle("hidden", !(isPlaybackMode && currentSessionId));
+  if (gehoorverslagButton) {
+    gehoorverslagButton.classList.toggle("hidden", !(isPlaybackMode && currentSessionId));
+  }
+}
+
+// Downloadt het (v1, letterlijke) gehoorverslag als .docx voor de huidig
+// bekeken sessie. Geen fetch/blob nodig -- de browser handelt de
+// Content-Disposition: attachment-header van GET /sessions/{id}/gehoorverslag
+// vanzelf af.
+function downloadGehoorverslag() {
+  if (!currentSessionId) return;
+  window.location.href = `/sessions/${encodeURIComponent(currentSessionId)}/gehoorverslag`;
 }
 
 // Rendert playbackLines, gefilterd op de momenteel aangevinkte kanalen.
@@ -1347,6 +1360,7 @@ if (pauseButton) pauseButton.addEventListener("click", togglePause);
 if (stopButton) stopButton.addEventListener("click", confirmAndStop);
 if (refreshButton) refreshButton.addEventListener("click", refreshTranscript);
 if (refreshPlaybackButton) refreshPlaybackButton.addEventListener("click", refreshTranscript);
+if (gehoorverslagButton) gehoorverslagButton.addEventListener("click", downloadGehoorverslag);
 
 if (sessionsBtn) sessionsBtn.addEventListener("click", () => {
   sessionsModal.classList.remove("hidden");

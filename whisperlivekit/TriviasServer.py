@@ -21,6 +21,7 @@ from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 from whisperlivekit.simul_whisper.backend import evaluate_batch_segment
 from whisperlivekit.simul_whisper.config import get_channel_config
 from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
+from whisperlivekit.gehoorverslag import build_gehoorverslag_docx
 
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
 
@@ -494,6 +495,43 @@ async def list_sessions_from_disk():
     return JSONResponse({"sessions": list(sessions.values())})
 
 
+def _load_merged_transcript(session_id: str) -> Optional[Dict[str, Any]]:
+    """Laad en merge alle kanaal-transcripten van een sessie, chronologisch
+    gesorteerd en elk segment getagd met channel_id. Gedeeld tussen
+    GET /sessions/{id}/transcript?channel_id=all en
+    GET /sessions/{id}/gehoorverslag, zodat beide altijd van dezelfde
+    brontekst uitgaan. Retourneert None als er geen transcript-bestanden zijn."""
+    recordings_dir = Path("recordings")
+    by_channel: Dict[str, Path] = {}
+    for json_path in recordings_dir.glob(f"session_{session_id}_*.json"):
+        parsed = _parse_session_wav_name(json_path.stem)
+        if parsed is None:
+            continue
+        uuid_part, ch, _ = parsed
+        if uuid_part != session_id:
+            continue
+        if ch not in by_channel or json_path.stat().st_mtime > by_channel[ch].stat().st_mtime:
+            by_channel[ch] = json_path
+
+    if not by_channel:
+        return None
+
+    merged_segments = []
+    for ch, json_path in by_channel.items():
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                segs = json.load(f)
+        except Exception:
+            continue
+        for seg in segs:
+            seg = dict(seg)
+            seg["channel_id"] = ch
+            merged_segments.append(seg)
+    merged_segments.sort(key=lambda s: s.get("start_ms") or 0)
+
+    return {"channels": sorted(by_channel.keys()), "segments": merged_segments}
+
+
 @app.get("/sessions/{session_id}/transcript")
 async def get_session_transcript(session_id: str, channel_id: str = Query(default="default")):
     """Haal het opgeslagen transcript op voor een sessie.
@@ -505,38 +543,15 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
     recordings_dir = Path("recordings")
 
     if channel_id == "all":
-        by_channel: Dict[str, Path] = {}
-        for json_path in recordings_dir.glob(f"session_{session_id}_*.json"):
-            parsed = _parse_session_wav_name(json_path.stem)
-            if parsed is None:
-                continue
-            uuid_part, ch, _ = parsed
-            if uuid_part != session_id:
-                continue
-            if ch not in by_channel or json_path.stat().st_mtime > by_channel[ch].stat().st_mtime:
-                by_channel[ch] = json_path
-
-        if not by_channel:
+        merged = _load_merged_transcript(session_id)
+        if merged is None:
             return JSONResponse({"error": "transcript not found"}, status_code=404)
-
-        merged_segments = []
-        for ch, json_path in by_channel.items():
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    segs = json.load(f)
-            except Exception:
-                continue
-            for seg in segs:
-                seg = dict(seg)
-                seg["channel_id"] = ch
-                merged_segments.append(seg)
-        merged_segments.sort(key=lambda s: s.get("start_ms") or 0)
 
         return JSONResponse({
             "session_id": session_id,
             "channel_id": "all",
-            "channels": sorted(by_channel.keys()),
-            "segments": merged_segments,
+            "channels": merged["channels"],
+            "segments": merged["segments"],
         })
 
     # Zoek JSON bestand voor deze sessie + channel
@@ -723,7 +738,44 @@ async def serve_audio_slice(
     except Exception as e:
         logger.warning(f"[AUDIO SERVE] error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-    
+
+
+@app.get("/sessions/{session_id}/gehoorverslag")
+async def generate_gehoorverslag(session_id: str):
+    """Genereer het gehoorverslag (rapport van nader gehoor, v1) als .docx-
+    download. Bouwt op dezelfde gemergde, chronologische transcript-data als
+    GET /sessions/{id}/transcript?channel_id=all (_load_merged_transcript())
+    -- geen aparte databron, dus nooit inconsistent met wat in de UI te zien
+    is. Werkt op wat er nu ligt; voor het beste resultaat pas aanroepen na
+    Stop, en idealiter ná "Ververs Transcriptie" (zelfde aanbeveling als bij
+    die knop -- schoner brontranscript, minder hallucinatie-restjes).
+
+    v1-scope (zie plan feat-gehoorverslag): letterlijke, rol-geattribueerde
+    weergave + voorblad-metadata + benaderde pauze-annotaties. Geen
+    automatische IND-subsectie-indeling, geen AI-samenvatting -- beide
+    bewust uitgesteld vanwege de "geen oordeel"-eis uit IND-werkinstructie
+    WI 2021/13."""
+    merged = _load_merged_transcript(session_id)
+    if merged is None:
+        return JSONResponse({"error": "transcript not found"}, status_code=404)
+
+    try:
+        document = build_gehoorverslag_docx(session_id, merged["segments"])
+        buf = io.BytesIO()
+        document.save(buf)
+        buf.seek(0)
+    except Exception as e:
+        logger.warning(f"[GEHOORVERSLAG] session={session_id} generatie mislukt: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    logger.info(f"[GEHOORVERSLAG] session={session_id} gegenereerd, {len(merged['segments'])} segmenten in bron")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="gehoorverslag_{session_id}.docx"'},
+    )
+
+
 # ====== WebSocket result handler ======
 async def handle_websocket_results(websocket: WebSocket, results_generator):
     """Consumes results from the audio processor and sends them via WebSocket."""
