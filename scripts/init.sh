@@ -78,6 +78,32 @@ git_identity() {
   git config --global user.name "Gokhan Topcu" >/dev/null 2>&1 || true
 }
 
+# --- ~/.cache van de kleine root-schijf af ---
+redirect_home_cache_to_workspace() {
+  # ~/.cache (HuggingFace-modellen, pip-cache, torch-hub, etc. -- allemaal
+  # dezelfde XDG-conventie) staat standaard op de kleine, ephemere root-
+  # overlay van de pod (hier gezien: 5GB, niet de grote /workspace-volume).
+  # Die loopt vroeg of laat vol zodra er modellen gedownload worden -- exact
+  # wat er gebeurde: root liep 100% vol, waardoor zelfs "apt-get install"
+  # geen dpkg-lock-bestand meer kon wegschrijven. Eenmalig verplaatsen naar
+  # /workspace en terugsymlinken lost dit voorgoed op, voor elke tool die
+  # naar ~/.cache/... schrijft, zonder per-tool env vars te hoeven zetten.
+  if [[ -L "$HOME/.cache" ]]; then
+    log "~/.cache is al een symlink → skip"
+    return 0
+  fi
+  mkdir -p "$WORKSPACE/.cache"
+  if [[ -d "$HOME/.cache" ]]; then
+    log "Verplaats bestaande ~/.cache (kan even duren) naar $WORKSPACE/.cache..."
+    shopt -s dotglob nullglob
+    mv "$HOME"/.cache/* "$WORKSPACE/.cache/" 2>/dev/null || true
+    shopt -u dotglob nullglob
+    rmdir "$HOME/.cache" 2>/dev/null || true
+  fi
+  ln -s "$WORKSPACE/.cache" "$HOME/.cache"
+  log "~/.cache → $WORKSPACE/.cache (symlink)"
+}
+
 # --- deps ---
 install_deps() {
   local marker="$WORKSPACE/.os_deps_installed"
@@ -345,6 +371,7 @@ gpustat() {
 
 # --- orchestrators ---
 do_setup() {
+  redirect_home_cache_to_workspace
   git_identity
   install_deps
   setup_repo
