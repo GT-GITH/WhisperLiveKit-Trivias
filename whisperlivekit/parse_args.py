@@ -317,6 +317,34 @@ def parse_args():
         help="600M or 1.3B",
     )
 
+    llm_group = parser.add_argument_group("LLM (on-prem classificatie/gehoorverslag)")
+    llm_group.add_argument(
+        "--llm-backend-url",
+        type=str,
+        default=None,
+        dest="llm_backend_url",
+        help="Base-URL van een lokaal/on-prem OpenAI-compatibel LLM-endpoint (bv. "
+             "http://localhost:11434/v1 voor Ollama). Nooit een cloud-endpoint -- dit "
+             "project is on-prem-only. Niet gezet = LLM-afhankelijke features (bv. "
+             "sectie-classificatie in het gehoorverslag) vallen automatisch terug op "
+             "hun niet-LLM-gedrag.",
+    )
+    llm_group.add_argument(
+        "--llm-model",
+        type=str,
+        default=None,
+        dest="llm_model",
+        help="Modelnaam zoals bekend bij het LLM-endpoint (bv. 'llama3.1:8b').",
+    )
+    llm_group.add_argument(
+        "--llm-api-key",
+        type=str,
+        default=None,
+        dest="llm_api_key",
+        help="API-key voor het LLM-endpoint indien vereist (lokale runtimes zoals "
+             "Ollama hebben er meestal geen nodig).",
+    )
+
     args = parser.parse_args()
     
     args.transcription = not args.no_transcription

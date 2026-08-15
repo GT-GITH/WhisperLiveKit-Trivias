@@ -46,6 +46,7 @@ dependencies = [
     "onnxruntime",
     "scipy",  # cross_channel_gate.py (was already a transitive dep via librosa)
     "python-docx",  # gehoorverslag.py -- .docx-generatie voor het rapport van gehoor
+    "openai",  # llm_backend.py -- client voor lokale/on-prem OpenAI-compatibele LLM's (Ollama/vLLM/etc), NOOIT de cloud-API; ook al stilzwijgend gebruikt door de bestaande openai-api ASR-backend, nu pas expliciet gedeclareerd
 
     # --- diarization stack ---
     "pyannote.audio",

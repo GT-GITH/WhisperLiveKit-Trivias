@@ -21,7 +21,8 @@ from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 from whisperlivekit.simul_whisper.backend import evaluate_batch_segment
 from whisperlivekit.simul_whisper.config import get_channel_config
 from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
-from whisperlivekit.gehoorverslag import build_gehoorverslag_docx
+from whisperlivekit.gehoorverslag import build_gehoorverslag_docx, classify_segments, order_segments_for_report
+from whisperlivekit.llm_backend import LLMBackend, build_llm_backend
 
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
 
@@ -133,6 +134,11 @@ def get_wav_path(session_id: str, channel_id: str) -> Optional[str]:
 
 # ====== Shared transcription engine ======
 transcription_engine: Optional[TranscriptionEngine] = None
+
+# On-prem LLM-backend (optioneel, zie llm_backend.py) -- None zolang
+# --llm-backend-url niet gezet is; LLM-afhankelijke features (bv.
+# gehoorverslag-classificatie) moeten hier altijd fail-safe mee omgaan.
+llm_backend: Optional[LLMBackend] = None
 
 def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
     try:
@@ -250,10 +256,14 @@ def _extract_batch_snapshot(engine: Any) -> Dict[str, Any]:
 async def lifespan(app: FastAPI):
     _log_kv_block("TRIVIAS SERVER STARTUP PARAMETERS (RAW ARGS)", vars(args))
 
-    global transcription_engine
+    global transcription_engine, llm_backend
     logger.info("Initialising TranscriptionEngine for TriviasServer...")
     transcription_engine = TranscriptionEngine(**vars(args))
     logger.info("TranscriptionEngine ready.")
+
+    llm_backend = build_llm_backend(args)
+    if llm_backend is None:
+        logger.info("[LLM] geen --llm-backend-url geconfigureerd -- LLM-afhankelijke features (bv. gehoorverslag-sectieclassificatie) draaien in fallback-modus.")
 
     # 1) Snapshot van bedoelde input / channel-context
     try:
@@ -760,11 +770,13 @@ async def generate_gehoorverslag(session_id: str):
     Stop, en idealiter ná "Ververs Transcriptie" (zelfde aanbeveling als bij
     die knop -- schoner brontranscript, minder hallucinatie-restjes).
 
-    v1-scope (zie plan feat-gehoorverslag): letterlijke, rol-geattribueerde
-    weergave + voorblad-metadata + benaderde pauze-annotaties. Geen
-    automatische IND-subsectie-indeling, geen AI-samenvatting -- beide
-    bewust uitgesteld vanwege de "geen oordeel"-eis uit IND-werkinstructie
-    WI 2021/13."""
+    Sectie-classificatie (welk segment hoort bij welke IND-sectie) draait
+    alleen als er een on-prem LLM-backend geconfigureerd is (--llm-backend-url,
+    zie llm_backend.py) -- zonder backend, of als classificatie niets
+    bruikbaars oplevert, valt het document terug op de platte chronologische
+    weergave. Classificatie is nooit een beoordeling van geloofwaardigheid,
+    puur een structurele indeling die de hoormedewerker achteraf controleert
+    (zie gehoorverslag.classify_segments())."""
     merged = _load_merged_transcript(session_id)
     if merged is None:
         return JSONResponse({"error": "transcript not found"}, status_code=404)
@@ -773,8 +785,23 @@ async def generate_gehoorverslag(session_id: str):
         "date": merged.get("date"),
         "languages": {ch: _resolve_channel_language(ch) for ch in merged["channels"]},
     }
+
+    section_labels = None
+    if llm_backend is not None:
+        try:
+            ordered = order_segments_for_report(merged["segments"])
+            section_labels = classify_segments(ordered, llm_backend) or None
+            if section_labels:
+                logger.info(
+                    f"[GEHOORVERSLAG][CLASSIFY] session={session_id} "
+                    f"{len(section_labels)}/{len(ordered)} segmenten geclassificeerd"
+                )
+        except Exception as e:
+            logger.warning(f"[GEHOORVERSLAG][CLASSIFY] session={session_id} mislukt, val terug op platte weergave: {e}")
+            section_labels = None
+
     try:
-        document = build_gehoorverslag_docx(session_id, merged["segments"], session_meta)
+        document = build_gehoorverslag_docx(session_id, merged["segments"], session_meta, section_labels=section_labels)
         buf = io.BytesIO()
         document.save(buf)
         buf.seek(0)

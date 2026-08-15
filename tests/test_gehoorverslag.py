@@ -25,15 +25,43 @@ _spec.loader.exec_module(_gv)
 channel_id_to_role = _gv.channel_id_to_role
 role_label = _gv.role_label
 build_gehoorverslag_docx = _gv.build_gehoorverslag_docx
+classify_segments = _gv.classify_segments
+order_segments_for_report = _gv.order_segments_for_report
+_extract_json_object = _gv._extract_json_object
+IND_SECTIONS = _gv.IND_SECTIONS
 
 
 def _body_paragraphs(document):
-    """Alinea's ná het voorblad (na de page-break), d.w.z. het eigenlijke
-    verloop van het gehoor -- sluit de voorblad-tekst uit van tekst-checks."""
+    """Alinea's ná de platte 'Verloop van het gehoor'-kop, d.w.z. alleen de
+    segment-regels zelf -- gebruikt door de tests voor de platte (niet-
+    gegroepeerde) weergave."""
     texts = [p.text for p in document.paragraphs]
-    # "Verloop van het gehoor" is de titel direct na de page-break-alinea.
     idx = texts.index("Verloop van het gehoor")
     return document.paragraphs[idx + 1:]
+
+
+def _paragraphs_after_pagebreak(document):
+    """Alles ná het voorblad (na de page-break-alinea, altijd leeg),
+    INCLUSIEF eventuele sectiekoppen -- gebruikt door de gegroepeerde-
+    weergave-test, die de koppen zelf juist wil controleren."""
+    texts = [p.text for p in document.paragraphs]
+    idx = texts.index("")  # de page-break-alinea
+    return document.paragraphs[idx + 1:]
+
+
+class _FakeLLMBackend:
+    """Test-double voor llm_backend.LLMBackend -- geen echte HTTP-call."""
+
+    def __init__(self, response=None, raise_exc=None):
+        self._response = response
+        self._raise_exc = raise_exc
+        self.calls = 0
+
+    def chat(self, system_prompt, user_prompt, *, temperature=0.0):
+        self.calls += 1
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return self._response
 
 
 def test_role_mapping():
@@ -137,10 +165,16 @@ def test_voorblad_has_placeholders_for_unknown_fields():
     table = doc.tables[0]
     rows = {row.cells[0].text: row.cells[1].text for row in table.rows}
     assert rows["Sessie-ID"] == "sess-6"
-    assert "handmatig aanvullen" in rows["Naam hoormedewerker"], (
-        "onbekende velden moeten een expliciete invulplaceholder krijgen, nooit verzonnen data"
-    )
-    assert "handmatig aanvullen" in rows["Naam tolk / registratieniveau"]
+    for label in (
+        "Naam hoormedewerker (geslacht)",
+        "Naam tolk (geslacht)",
+        "Tolk-registratieniveau (of reden niet-registertolk)",
+        "Naam/aanwezigheid gemachtigde of hulpverlener (VWN)",
+        "Termijn voor correcties en aanvullingen",
+    ):
+        assert "handmatig aanvullen" in rows[label], (
+            f"onbekend veld {label!r} moet een expliciete invulplaceholder krijgen, nooit verzonnen data"
+        )
     print("OK test_voorblad_has_placeholders_for_unknown_fields")
 
 
@@ -149,6 +183,99 @@ def test_empty_session_does_not_crash():
     # Moet gewoon een geldig (leeg) document opleveren, geen exception.
     assert doc is not None
     print("OK test_empty_session_does_not_crash")
+
+
+def test_grouped_rendering_by_section():
+    segments = [
+        {"channel_id": "employee", "start_ms": 0, "end_ms": 1000, "text_final": "Vertelt u eens over uw vertrek."},
+        {"channel_id": "foreign_ar", "start_ms": 1000, "end_ms": 5000, "text_final": "Lang asielrelaas hier."},
+        {"channel_id": "employee", "start_ms": 5000, "end_ms": 6000, "text_final": "Klopt het dat u toen alleen was?"},
+        {"channel_id": "foreign_ar", "start_ms": 6000, "end_ms": 7000, "text_final": "Ja, dat klopt."},
+        {"channel_id": "employee", "start_ms": 7000, "end_ms": 8000, "text_final": "Iets wat niet paste."},
+    ]
+    # index 0,1 -> "3" (asielrelaas), 2,3 -> "4.2" (verdere vragen), 4 -> geen label (-> overig)
+    section_labels = {0: "3", 1: "3", 2: "4.2", 3: "4.2"}
+    doc = build_gehoorverslag_docx("sess-7", segments, section_labels=section_labels)
+    body = [p.text for p in _paragraphs_after_pagebreak(doc) if p.text.strip()]
+
+    idx_3 = body.index("3 Reden asielaanvraag (asielrelaas)")
+    idx_42 = body.index("4.2 Verdere vragen")
+    idx_overig = body.index("overig Overig / niet geclassificeerd")
+    # IND_SECTIONS-documentvolgorde: 3 vóór 4.2 vóór overig.
+    assert idx_3 < idx_42 < idx_overig
+    assert "Vertelt u eens over uw vertrek." in body[idx_3 + 1]
+    assert "Lang asielrelaas hier." in body[idx_3 + 2]
+    assert "Klopt het dat u toen alleen was?" in body[idx_42 + 1]
+    assert "Iets wat niet paste." in body[idx_overig + 1], "ongelabeld segment moet onder 'overig' landen, niet verdwijnen"
+    print("OK test_grouped_rendering_by_section")
+
+
+def test_extract_json_object_handles_markdown_fence():
+    clean = _extract_json_object('{"0": "3", "1": "4.2"}')
+    assert clean == {"0": "3", "1": "4.2"}
+
+    fenced = _extract_json_object('```json\n{"0": "3"}\n```')
+    assert fenced == {"0": "3"}
+
+    garbage = _extract_json_object("dit is geen JSON")
+    assert garbage is None
+    print("OK test_extract_json_object_handles_markdown_fence")
+
+
+def test_classify_segments_no_backend_returns_empty():
+    segments = [{"channel_id": "employee", "start_ms": 0, "end_ms": 1000, "text_final": "Iets."}]
+    ordered = order_segments_for_report(segments)
+    assert classify_segments(ordered, None) == {}
+    print("OK test_classify_segments_no_backend_returns_empty")
+
+
+def test_classify_segments_fail_safe_on_exception():
+    segments = [{"channel_id": "employee", "start_ms": 0, "end_ms": 1000, "text_final": "Iets."}]
+    ordered = order_segments_for_report(segments)
+    backend = _FakeLLMBackend(raise_exc=RuntimeError("connection refused"))
+    result = classify_segments(ordered, backend)  # mag NOOIT raisen
+    assert result == {}
+    print("OK test_classify_segments_fail_safe_on_exception")
+
+
+def test_classify_segments_fail_safe_on_garbage_response():
+    segments = [{"channel_id": "employee", "start_ms": 0, "end_ms": 1000, "text_final": "Iets."}]
+    ordered = order_segments_for_report(segments)
+    backend = _FakeLLMBackend(response="Sorry, ik kan deze vraag niet beantwoorden.")
+    result = classify_segments(ordered, backend)
+    assert result == {}
+    print("OK test_classify_segments_fail_safe_on_garbage_response")
+
+
+def test_classify_segments_parses_valid_response_and_filters_invalid_codes():
+    segments = [
+        {"channel_id": "employee", "start_ms": 0, "end_ms": 1000, "text_final": "Vraag 0."},
+        {"channel_id": "foreign_ar", "start_ms": 1000, "end_ms": 2000, "text_final": "Antwoord 1."},
+        {"channel_id": "employee", "start_ms": 2000, "end_ms": 3000, "text_final": "Vraag 2."},
+    ]
+    ordered = order_segments_for_report(segments)
+    # index 2 krijgt een niet-bestaande sectiecode -- moet genegeerd worden,
+    # niet als geldig label doorsijpelen.
+    backend = _FakeLLMBackend(response='{"0": "4.1", "1": "3", "2": "9.9-bestaat-niet"}')
+    result = classify_segments(ordered, backend, batch_size=25)
+    assert result == {0: "4.1", 1: "3"}
+    assert 2 not in result
+    assert backend.calls == 1
+    print("OK test_classify_segments_parses_valid_response_and_filters_invalid_codes")
+
+
+def test_classify_segments_batches_large_input():
+    segments = [
+        {"channel_id": "employee", "start_ms": i * 1000, "end_ms": i * 1000 + 500, "text_final": f"Zin {i}."}
+        for i in range(30)
+    ]
+    ordered = order_segments_for_report(segments)
+    backend = _FakeLLMBackend(response='{"0": "4.1"}')  # elke batch "ziet" alleen z'n eigen lokale index 0
+    result = classify_segments(ordered, backend, batch_size=10)
+    assert backend.calls == 3, f"30 segmenten / batch_size=10 moet 3 calls geven, kreeg {backend.calls}"
+    # lokale index 0 van elke batch -> globale index 0, 10, 20
+    assert set(result.keys()) == {0, 10, 20}
+    print("OK test_classify_segments_batches_large_input")
 
 
 if __name__ == "__main__":
@@ -161,6 +288,13 @@ if __name__ == "__main__":
         test_pause_marker_only_above_threshold,
         test_voorblad_has_placeholders_for_unknown_fields,
         test_empty_session_does_not_crash,
+        test_grouped_rendering_by_section,
+        test_extract_json_object_handles_markdown_fence,
+        test_classify_segments_no_backend_returns_empty,
+        test_classify_segments_fail_safe_on_exception,
+        test_classify_segments_fail_safe_on_garbage_response,
+        test_classify_segments_parses_valid_response_and_filters_invalid_codes,
+        test_classify_segments_batches_large_input,
     ]
     failures = 0
     for t in tests:
