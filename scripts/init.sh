@@ -348,6 +348,20 @@ do_setup() {
   git_identity
   install_deps
   setup_repo
+
+  # setup_repo() kan dit scriptbestand zelf net hebben bijgewerkt (git reset
+  # --hard). Bash heeft de REST van dit script echter al in het geheugen
+  # geladen op het moment dat het startte -- zonder re-exec zou alles NA dit
+  # punt (setup_venv_pip, install_ollama, en straks startlive) nog de OUDE
+  # versie draaien, ook al staat de nieuwe allang op schijf. Dit heeft
+  # concreet een keer een hele --setup-start-run laten doorlopen zonder de
+  # net toegevoegde Ollama/LLM-stappen. _INIT_REEXECED voorkomt een lus.
+  if [[ "${_INIT_REEXECED:-0}" != "1" ]]; then
+    log "scripts/init.sh is bijgewerkt door setup_repo() -- herstart mezelf met de nieuwste versie..."
+    export _INIT_REEXECED=1
+    exec bash "$APP_DIR/scripts/init.sh" "$MODE"
+  fi
+
   setup_venv_pip
   install_ollama
 }
