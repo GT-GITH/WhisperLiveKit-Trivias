@@ -237,10 +237,17 @@ def align_all_channels(
             )
         else:
             offsets[ch] = None
+            # lag_ms hier ook loggen (ook al wordt 'm niet gebruikt): laat zien of de
+            # afgewezen piek een plausibele verbindings-jitter-waarde was (paar honderd
+            # ms) of een verdachte/willekeurige uitschieter -- nodig om bij een volgende
+            # test te kunnen beoordelen of min_confidence simpelweg te streng staat voor
+            # een zwak/deels lek, of dat de gevonden piek zelf ruis is.
+            lag_ms = lag * hop_samples / sample_rate * 1000.0
             logger.info(
                 f"[REFRESH][XGATE][ALIGN][SKIP] session={session_id} channel={ch} "
-                f"confidence={confidence:.3f} < min={min_confidence} -- alignment onbetrouwbaar, "
-                f"kanaal uitgesloten van cross-channel arbitrage (fail-safe: geen onderdrukking)"
+                f"confidence={confidence:.3f} < min={min_confidence} best_lag_ms={lag_ms:.1f} "
+                f"-- alignment onbetrouwbaar, kanaal uitgesloten van cross-channel arbitrage "
+                f"(fail-safe: geen onderdrukking)"
             )
 
     return ref_channel, offsets, confidences
