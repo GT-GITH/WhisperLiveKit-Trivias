@@ -8,8 +8,14 @@ set -euo pipefail
 #   REMOTE_BRANCH=main
 #   LOCAL_BRANCH=main
 #   LLM_ENABLED=1 LLM_MODEL=llama3.1:8b LLM_BACKEND_URL=http://localhost:11434/v1
-#     -> on-prem Ollama voor gehoorverslag-sectieclassificatie, altijd lokaal
-#        op de pod zelf (nooit een cloud-endpoint). LLM_ENABLED=0 om uit te zetten.
+#     -> on-prem Ollama, gereserveerd voor toekomstige features (geen actieve
+#        aanroeper meer -- /translate gebruikt sinds 2026-08-16 NLLB, zie
+#        onder). Altijd lokaal op de pod zelf. LLM_ENABLED=0 om uit te zetten.
+#   NLLB_ENABLED=1 NLLB_MODEL=entai2965/nllb-200-distilled-600M-ctranslate2 NLLB_DEVICE=auto
+#     -> on-prem NLLB-200 (via ctranslate2) voor het /translate-endpoint. Een
+#        chatmodel (Ollama) bleek onbetrouwbaar voor vertaling van complexe
+#        brontalen -- NLLB is uitsluitend op vertalen getraind. NLLB_ENABLED=0
+#        om uit te zetten (dan draait /translate in fallback, 503).
 #
 # Usage:
 #   bash scripts/init.sh --setup         # deps + git + venv + pip
@@ -53,12 +59,11 @@ DIARIZATION="${DIARIZATION:-0}"
 PCM_INPUT="${PCM_INPUT:-1}"  # altijd PCM voor multi-channel stabiliteit
 DIARIZATION_BACKEND="${DIARIZATION_BACKEND:-sortformer}"
 
-# On-prem LLM (gehoorverslag-sectieclassificatie, zie llm_backend.py) --
-# NOOIT een cloud-endpoint, altijd lokaal op de pod zelf (localhost, geen
-# externe port-forward nodig). Default AAN: L40S 48GB heeft ~30GB vrij naast
-# Whisper large-v3, ruim genoeg voor een 8B-model. LLM_ENABLED=0 schakelt
-# dit volledig uit (Trivias werkt dan gewoon fail-safe verder zonder
-# classificatie, zoals altijd zonder --llm-backend-url).
+# On-prem LLM (Ollama) -- gereserveerd voor toekomstige, nog niet gebouwde
+# features (zie llm_backend.py). NOOIT een cloud-endpoint, altijd lokaal op
+# de pod zelf (localhost, geen externe port-forward nodig). Default AAN:
+# L40S 48GB heeft ~30GB vrij naast Whisper large-v3, ruim genoeg voor een
+# 8B-model. LLM_ENABLED=0 schakelt dit volledig uit.
 LLM_ENABLED="${LLM_ENABLED:-1}"
 LLM_MODEL="${LLM_MODEL:-llama3.1:8b}"
 LLM_BACKEND_URL="${LLM_BACKEND_URL:-http://localhost:11434/v1}"
@@ -67,6 +72,19 @@ LLM_BACKEND_URL="${LLM_BACKEND_URL:-http://localhost:11434/v1}"
 # dit project al staat) -- expliciet naar /workspace verplaatst, anders loopt
 # een model van een paar GB de root-schijf vol.
 OLLAMA_MODELS="${OLLAMA_MODELS:-$WORKSPACE/.ollama-models}"
+
+# On-prem NLLB-200-vertaalmodel (zie nllb_backend.py), gebruikt door het
+# /translate-endpoint. Draait via ctranslate2 (geen aparte serverservice
+# zoals Ollama nodig -- het model wordt gewoon in het TriviasServer-proces
+# geladen). Default AAN, met het kleine gedistilleerde 600M-checkpoint
+# (past ruim, ook naast Whisper + eventueel Ollama). NLLB_ENABLED=0
+# schakelt dit volledig uit (dan draait /translate in fallback, 503).
+# Modelgewichten komen via huggingface_hub in ~/.cache/huggingface terecht --
+# dat is via redirect_home_cache_to_workspace() (zie hierboven) al naar
+# /workspace verplaatst, dus geen aparte disk-fix nodig zoals bij Ollama.
+NLLB_ENABLED="${NLLB_ENABLED:-1}"
+NLLB_MODEL="${NLLB_MODEL:-entai2965/nllb-200-distilled-600M-ctranslate2}"
+NLLB_DEVICE="${NLLB_DEVICE:-auto}"
 
 
 # --- ensure bash ---
@@ -272,14 +290,24 @@ PY
 
   log "Install project + deps (editable) via pyproject.toml..."
   pip install -e .
-  
+
+  if [[ "${NLLB_ENABLED}" == "1" ]]; then
+    log "Install NLLB-vertaal-dependency (transformers, voor de tokenizer -- ctranslate2 zelf is al een deps via faster-whisper)..."
+    pip install transformers
+  else
+    log "NLLB_ENABLED=0 → transformers-install skip"
+  fi
+
   install_nemo_sortformer
-  
+
   log "Sanity import checks..."
   python -c "import torch; print('torch', torch.__version__)" || die "torch import faalde"
   python -c "import torchaudio; print('torchaudio', torchaudio.__version__)" || die "torchaudio import faalde"
   python -c "import faster_whisper; print('faster_whisper OK')" || die "faster-whisper import faalde"
   python -c "import onnxruntime; print('onnxruntime OK')" || die "onnxruntime import faalde"
+  if [[ "${NLLB_ENABLED}" == "1" ]]; then
+    python -c "import ctranslate2, transformers; print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__)" || die "ctranslate2/transformers import faalde"
+  fi
 
   if [[ "${DIARIZATION}" == "1" ]]; then
     python - <<'PY' || die "pyannote.audio import faalde (zie traceback hierboven)"
@@ -326,10 +354,38 @@ pull_llm_model() {
   ollama pull "$LLM_MODEL"
 }
 
+download_nllb_model() {
+  [[ "${NLLB_ENABLED}" == "1" ]] || return 0
+  # Idempotent: huggingface_hub.snapshot_download() is zelf al een no-op als
+  # het model al in de HF-cache staat. Een lokaal pad (i.p.v. een HF-repo-id)
+  # hoeft niet gedownload te worden.
+  if [[ -d "$NLLB_MODEL" ]]; then
+    log "NLLB_MODEL is een lokaal pad ($NLLB_MODEL) → download skip"
+    return 0
+  fi
+  log "Zorg dat NLLB-vertaalmodel aanwezig is: $NLLB_MODEL (eerste keer kan even duren)..."
+  python - <<PY
+from huggingface_hub import snapshot_download
+snapshot_download("$NLLB_MODEL")
+PY
+}
+
 startlive() {
   # IMPORTANT: --start should NOT do setup. It assumes repo+venv are already ready.
   [[ -d "$APP_DIR/.git" ]] || die "Repo niet gevonden in $APP_DIR. Run eerst: bash scripts/init.sh --setup"
   [[ -d "$VENV_DIR" ]] || die "Venv niet gevonden in $VENV_DIR. Run eerst: bash scripts/init.sh --setup"
+
+  cd "$APP_DIR"
+  # shellcheck disable=SC1091
+  # Venv nu al actief (i.p.v. pas vlak voor exec) -- download_nllb_model()
+  # hieronder heeft de venv's python (met huggingface_hub) nodig, anders
+  # gebruikt het per ongeluk het systeem-python zonder die dependency.
+  source "$VENV_DIR/bin/activate"
+
+  # HuggingFace: voorkom impliciete hf_transfer dependency op RunPod images --
+  # ook nodig vóór download_nllb_model() hieronder, niet pas vlak voor exec.
+  export HF_HUB_ENABLE_HF_TRANSFER=0
+
   DIAR_ARGS=()
   if [[ "$DIARIZATION" == "1" ]]; then
     DIAR_ARGS+=(--diarization --diarization-backend "$DIARIZATION_BACKEND")
@@ -342,17 +398,18 @@ startlive() {
     pull_llm_model
     LLM_ARGS+=(--llm-backend-url "$LLM_BACKEND_URL" --llm-model "$LLM_MODEL")
   else
-    log "LLM_ENABLED=0 → gehoorverslag draait zonder sectieclassificatie (platte fallback)"
+    log "LLM_ENABLED=0 → geen actieve feature gebruikt dit momenteel (gereserveerd)"
   fi
 
-  cd "$APP_DIR"
-  # shellcheck disable=SC1091
-  source "$VENV_DIR/bin/activate"
+  NLLB_ARGS=()
+  if [[ "$NLLB_ENABLED" == "1" ]]; then
+    download_nllb_model
+    NLLB_ARGS+=(--nllb-model "$NLLB_MODEL" --nllb-device "$NLLB_DEVICE")
+  else
+    log "NLLB_ENABLED=0 → /translate draait in fallback-modus (geen vertaling)"
+  fi
 
-  # HuggingFace: voorkom impliciete hf_transfer dependency op RunPod images
-  export HF_HUB_ENABLE_HF_TRANSFER=0
-
-  log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED"
+  log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED nllb_enabled=$NLLB_ENABLED"
   exec python -m whisperlivekit.TriviasServer \
     --host "$HOST" --port "$PORT" \
     --model "$MODEL" --language "$LANGUAGE" \
@@ -362,7 +419,8 @@ startlive() {
     --beams "$BEAMS" \
     --pcm-input \
     "${DIAR_ARGS[@]}" \
-    "${LLM_ARGS[@]}"
+    "${LLM_ARGS[@]}" \
+    "${NLLB_ARGS[@]}"
 }
 
 gpustat() {
