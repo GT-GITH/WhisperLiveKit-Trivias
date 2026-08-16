@@ -64,7 +64,9 @@ sentence_tokenizer = ["mosestokenizer", "wtpsplit"]
 # NLLB-200-vertaling voor het /translate-endpoint (zie whisperlivekit/nllb_backend.py) --
 # los van "translation" hierboven (dat is nllw's streaming-wrapper, andere usecase).
 # ctranslate2/huggingface-hub zijn al harde dependencies (via faster-whisper resp. hierboven).
-nllb_translation = ["transformers"]
+# langid: lichte, offline taalcheck om te voorkomen dat al-Nederlandse tolk-tekst
+# tóch met een gegokte brontaal door NLLB gehaald wordt (zie translate.py: is_probably_dutch()).
+nllb_translation = ["transformers", "langid"]
 
 [project.urls]
 Homepage = "https://github.com/GT-GITH/WhisperLiveKit-Trivias.git"

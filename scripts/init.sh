@@ -292,10 +292,10 @@ PY
   pip install -e .
 
   if [[ "${NLLB_ENABLED}" == "1" ]]; then
-    log "Install NLLB-vertaal-dependency (transformers, voor de tokenizer -- ctranslate2 zelf is al een deps via faster-whisper)..."
-    pip install transformers
+    log "Install NLLB-vertaal-dependencies (transformers voor de tokenizer -- ctranslate2 zelf is al een dep via faster-whisper; langid voor de al-Nederlands-check bij tolk-vertaling)..."
+    pip install transformers langid
   else
-    log "NLLB_ENABLED=0 → transformers-install skip"
+    log "NLLB_ENABLED=0 → transformers/langid-install skip"
   fi
 
   install_nemo_sortformer
@@ -306,7 +306,7 @@ PY
   python -c "import faster_whisper; print('faster_whisper OK')" || die "faster-whisper import faalde"
   python -c "import onnxruntime; print('onnxruntime OK')" || die "onnxruntime import faalde"
   if [[ "${NLLB_ENABLED}" == "1" ]]; then
-    python -c "import ctranslate2, transformers; print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__)" || die "ctranslate2/transformers import faalde"
+    python -c "import ctranslate2, transformers, langid; print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__)" || die "ctranslate2/transformers/langid import faalde"
   fi
 
   if [[ "${DIARIZATION}" == "1" ]]; then

@@ -25,7 +25,7 @@ from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
 from whisperlivekit.gehoorverslag import build_gehoorverslag_docx
 from whisperlivekit.llm_backend import LLMBackend, build_llm_backend
 from whisperlivekit.nllb_backend import NLLBBackend, build_nllb_backend
-from whisperlivekit.translate import translate_text
+from whisperlivekit.translate import translate_text, is_probably_dutch
 
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
 
@@ -909,6 +909,13 @@ async def translate_segment(payload: TranslateRequest):
                           "gevonden, en geen taalpaar geconfigureerd) -- vertalen niet mogelijk"},
                 status_code=502,
             )
+        # Brontaal hier is een gok (taal van de vreemdeling in dezelfde sessie),
+        # niet betrouwbaar geconfigureerd zoals bij foreign_* -- een tolk spreekt
+        # vaak ook gewoon Nederlands. Zonder deze check zou NLLB al-Nederlandse
+        # tekst tóch als bv. Turks proberen te vertalen, wat betekenisloze onzin
+        # oplevert (zie translate.py: is_probably_dutch()).
+        if is_probably_dutch(payload.text):
+            return JSONResponse({"translation": payload.text})
 
     translation = translate_text(payload.text, source_language, nllb_backend)
     if translation is None:

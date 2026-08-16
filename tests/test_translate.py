@@ -25,6 +25,7 @@ sys.modules["translate"] = _tr
 _spec.loader.exec_module(_tr)
 
 translate_text = _tr.translate_text
+is_probably_dutch = _tr.is_probably_dutch
 
 
 class _FakeNLLBBackend:
@@ -83,6 +84,28 @@ def test_successful_translation_passthrough():
     print("OK test_successful_translation_passthrough")
 
 
+def test_is_probably_dutch_without_langid_fails_safe_to_false():
+    if _tr.langid is not None:
+        print("SKIP test_is_probably_dutch_without_langid_fails_safe_to_false (langid is geinstalleerd)")
+        return
+    assert is_probably_dutch("Nee, dat heb ik niet meegemaakt.") is False
+    print("OK test_is_probably_dutch_without_langid_fails_safe_to_false")
+
+
+def test_is_probably_dutch_distinguishes_nl_from_tr():
+    # Geconstateerd 2026-08-16 (testsessie, screenshot): deze exacte Nederlandse
+    # tolk-zinnen werden door NLLB als Turks behandeld en gaven onzin terug --
+    # dit is precies wat is_probably_dutch() daarvoor moet afvangen.
+    if _tr.langid is None:
+        print("SKIP test_is_probably_dutch_distinguishes_nl_from_tr (langid niet geinstalleerd)")
+        return
+    assert is_probably_dutch("Nee, dat heb ik niet meegemaakt.") is True
+    assert is_probably_dutch("Ja, dat ging goed, ik heb alles kunnen volgen.") is True
+    assert is_probably_dutch("Bu görüşme boyunca beni iyi anlayabildiniz mi?") is False
+    assert is_probably_dutch("Hayir, boyle bir sey yasamadim.") is False
+    print("OK test_is_probably_dutch_distinguishes_nl_from_tr")
+
+
 if __name__ == "__main__":
     tests = [
         test_no_backend_returns_none,
@@ -90,6 +113,8 @@ if __name__ == "__main__":
         test_fail_safe_on_backend_exception,
         test_fail_safe_on_none_response,
         test_successful_translation_passthrough,
+        test_is_probably_dutch_without_langid_fails_safe_to_false,
+        test_is_probably_dutch_distinguishes_nl_from_tr,
     ]
     failures = 0
     for t in tests:
