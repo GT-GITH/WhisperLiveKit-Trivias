@@ -274,7 +274,7 @@ function renderChannelConfigs() {
           </select>
         </div>
       </div>
-      <button class="ch-remove" title="Kanaal verwijderen">✕</button>
+      <button class="ch-remove" title="Kanaal verwijderen"><svg class="icon"><use href="#icon-close"></use></svg></button>
     `;
 
     const colorBar   = div.querySelector(".channel-color-bar");
@@ -408,7 +408,7 @@ function updateRecordButtonUI() {
   if (!recordButton) return;
   if (!isRecording) {
     recordButton.classList.remove("hidden");
-    recordButton.textContent = "🎙 Start";
+    recordButton.innerHTML = '<svg class="icon"><use href="#icon-mic"></use></svg> Start';
     recordButton.classList.remove("recording");
     if (pauseButton) pauseButton.classList.add("hidden");
     if (stopButton) stopButton.classList.add("hidden");
@@ -417,7 +417,9 @@ function updateRecordButtonUI() {
     recordButton.classList.add("hidden");
     if (pauseButton) {
       pauseButton.classList.remove("hidden");
-      pauseButton.textContent = isPaused ? "▶ Hervatten" : "⏸ Pauze";
+      pauseButton.innerHTML = isPaused
+        ? '<svg class="icon"><use href="#icon-play"></use></svg> Hervatten'
+        : '<svg class="icon"><use href="#icon-pause"></use></svg> Pauze';
       pauseButton.classList.toggle("paused", isPaused);
     }
     if (stopButton) {
@@ -1137,7 +1139,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     // tekst zien er nu identiek uit; alleen een klein vinkje geeft aan dat de batch-pass
     // dit segment heeft bevestigd. Het onderscheid blijft intact in de data (text_batch),
     // alleen de live-weergave is verzacht.
-    const confirmedBadge = isBatchConfirmed ? ` <span class="seg-confirmed" title="Bevestigd door batch-pass">✓</span>` : "";
+    const confirmedBadge = isBatchConfirmed ? ` <span class="seg-confirmed" title="Bevestigd door batch-pass"><svg class="icon"><use href="#icon-check"></use></svg></span>` : "";
 
     // Vertaalicoontje: bij bevestigde (batch) tekst van elk kanaal behalve medewerker/
     // advocaat (die zijn per ontwerp altijd Nederlands) -- ook de tolk kan soms iets in
@@ -1145,7 +1147,7 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     // data-raw-text ipv de al-geëscapete regeltekst, zodat de klik-handler de
     // ongewijzigde brontekst naar /translate stuurt.
     const translateIcon = (isBatchConfirmed && roleId !== "employee" && roleId !== "lawyer")
-      ? ` <span class="seg-translate" title="Vertaal naar het Nederlands" data-raw-text="${escapeHtml(rawTxt)}">🌐</span>`
+      ? ` <span class="seg-translate" title="Vertaal naar het Nederlands" data-raw-text="${escapeHtml(rawTxt)}"><svg class="icon"><use href="#icon-globe"></use></svg></span>`
       : "";
 
     htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}${confirmedBadge}${translateIcon}</div>`);
@@ -1189,10 +1191,10 @@ async function loadSessionsList() {
       item.innerHTML = `
         <div class="session-item-meta">
           <span class="session-item-id">${s.session_id.substring(0, 18)}…</span>
-          <span class="session-item-date">📅 ${date} · 🎙 ${s.channels.join(", ")} · ${s.wav_size_mb} MB</span>
+          <span class="session-item-date"><svg class="icon"><use href="#icon-calendar"></use></svg> ${date} · <svg class="icon"><use href="#icon-mic"></use></svg> ${s.channels.join(", ")} · ${s.wav_size_mb} MB</span>
         </div>
         <span class="session-item-badge ${s.has_transcript ? "" : "no-transcript"}">
-          ${s.has_transcript ? "transcript ✓" : "geen transcript"}
+          ${s.has_transcript ? '<svg class="icon"><use href="#icon-check"></use></svg> transcript' : "geen transcript"}
         </span>`;
       if (s.has_transcript) {
         item.addEventListener("click", () => loadSessionTranscript(s.session_id));
@@ -1398,7 +1400,11 @@ async function handleTranslateClick(iconEl) {
     return;
   }
 
-  iconEl.textContent = "⏳";
+  // Laadstatus via een class (spin-animatie op het bestaande icoontje, zie
+  // style.css) i.p.v. het icoontje te vervangen -- iconEl bevat nu een
+  // <svg>, dus textContent overschrijven zou die weer vervangen door platte
+  // tekst.
+  iconEl.classList.add("loading");
   try {
     const resp = await fetch("/translate", {
       method: "POST",
@@ -1415,7 +1421,7 @@ async function handleTranslateClick(iconEl) {
   } catch (err) {
     insertTranslationLine(seg, null, "Vertalen mislukt (verbindingsfout)");
   } finally {
-    iconEl.textContent = "🌐";
+    iconEl.classList.remove("loading");
   }
 }
 
@@ -1426,10 +1432,10 @@ function insertTranslationLine(seg, translation, errorMessage) {
   const line = document.createElement("div");
   if (translation) {
     line.className = "seg-translation";
-    line.textContent = `🌐 ${translation}`;
+    line.innerHTML = `<svg class="icon"><use href="#icon-globe"></use></svg> ${escapeHtml(translation)}`;
   } else {
     line.className = "seg-translation-error";
-    line.textContent = `⚠ ${errorMessage || "Vertalen mislukt"}`;
+    line.innerHTML = `<svg class="icon"><use href="#icon-warning"></use></svg> ${escapeHtml(errorMessage || "Vertalen mislukt")}`;
   }
   seg.appendChild(line);
 }

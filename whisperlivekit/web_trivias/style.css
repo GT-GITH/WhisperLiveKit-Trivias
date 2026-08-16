@@ -88,6 +88,17 @@ select:focus-visible,
   outline-offset: 2px;
 }
 
+/* Monochrome iconen (via <use href="#icon-..."> naar de sprite in
+   index.html) i.p.v. emoji -- die renderen per OS/browser als gekleurde,
+   onderling inconsistente plaatjes; deze volgen altijd de tekstkleur
+   (currentColor) en ogen overal gelijk. */
+.icon {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+  flex-shrink: 0;
+}
+
 /* App shell */
 
 .app-shell {
@@ -541,6 +552,13 @@ select:focus-visible,
 }
 .seg-translate:hover {
   opacity: 1;
+}
+.seg-translate.loading .icon {
+  animation: icon-spin 0.9s linear infinite;
+}
+@keyframes icon-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 .seg-translation {
   margin: 2px 0 2px 24px;
