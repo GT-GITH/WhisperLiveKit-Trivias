@@ -1398,6 +1398,8 @@ async function handleTranslateClick(iconEl) {
     return;
   }
 
+  console.log(`[TRANSLATE][DIAG] verzonden: channel=${channel} session=${session} text_len=${rawText.length} text=`, rawText);
+
   iconEl.textContent = "⏳";
   try {
     const resp = await fetch("/translate", {
@@ -1406,6 +1408,7 @@ async function handleTranslateClick(iconEl) {
       body: JSON.stringify({ text: rawText, channel_id: channel, session_id: session }),
     });
     const data = await resp.json().catch(() => ({}));
+    console.log(`[TRANSLATE][DIAG] ontvangen: status=${resp.status} translation_len=${(data.translation || "").length} translation=`, data.translation, "error=", data.error);
     if (!resp.ok || !data.translation) {
       insertTranslationLine(seg, null, data.error || "Vertalen mislukt");
       return;
@@ -1413,6 +1416,7 @@ async function handleTranslateClick(iconEl) {
     translationCache.set(cacheKey, data.translation);
     insertTranslationLine(seg, data.translation);
   } catch (err) {
+    console.log("[TRANSLATE][DIAG] fetch-exception:", err);
     insertTranslationLine(seg, null, "Vertalen mislukt (verbindingsfout)");
   } finally {
     iconEl.textContent = "🌐";

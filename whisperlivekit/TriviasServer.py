@@ -890,6 +890,10 @@ async def translate_segment(payload: TranslateRequest):
     Geen van drie beschikbaar? Bewust GEEN gok doorgeven aan NLLB (dat gaf
     eerder precies de onbetrouwbare vertalingen die deze herbouw moest
     oplossen) -- duidelijke foutmelding i.p.v. stil verkeerd vertalen."""
+    logger.info(
+        f"[TRANSLATE][DIAG] request: session={payload.session_id!r} channel={payload.channel_id!r} "
+        f"text_len={len(payload.text or '')} text={payload.text!r}"
+    )
     if nllb_backend is None:
         return JSONResponse({"error": "vertaalfunctie niet geconfigureerd (geen --nllb-model)"}, status_code=503)
 
@@ -917,10 +921,14 @@ async def translate_segment(payload: TranslateRequest):
         if is_probably_dutch(payload.text):
             return JSONResponse({"translation": payload.text})
 
+    logger.info(f"[TRANSLATE][DIAG] source_language bepaald: {source_language!r}")
     translation = translate_text(payload.text, source_language, nllb_backend)
     if translation is None:
         return JSONResponse({"error": "vertalen mislukt"}, status_code=502)
 
+    logger.info(
+        f"[TRANSLATE][DIAG] response: translation_len={len(translation)} translation={translation!r}"
+    )
     return JSONResponse({"translation": translation})
 
 

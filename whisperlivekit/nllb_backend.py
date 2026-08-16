@@ -103,12 +103,26 @@ class NLLBBackend:
         try:
             self._tokenizer.src_lang = src_code
             source_tokens = self._tokenizer.convert_ids_to_tokens(self._tokenizer.encode(text))
+            logger.info(
+                f"[NLLB][DIAG] input: src={src_code} tgt={tgt_code} "
+                f"text_len={len(text)} n_source_tokens={len(source_tokens)} "
+                f"text={text!r}"
+            )
             results = self._translator.translate_batch([source_tokens], target_prefix=[[tgt_code]])
+            n_hypotheses = len(results[0].hypotheses)
             target_tokens = results[0].hypotheses[0][1:]  # eerste token is de target-taalcode zelf
+            logger.info(
+                f"[NLLB][DIAG] ctranslate2 output: n_hypotheses={n_hypotheses} "
+                f"n_target_tokens={len(target_tokens)} "
+                f"raw_target_tokens={target_tokens}"
+            )
             translation = self._tokenizer.decode(
                 self._tokenizer.convert_tokens_to_ids(target_tokens),
                 skip_special_tokens=True,
             ).strip()
+            logger.info(
+                f"[NLLB][DIAG] decoded translation: len={len(translation)} text={translation!r}"
+            )
         except Exception as e:
             logger.warning(f"[NLLB] vertalen mislukt: {e}")
             return None
