@@ -67,11 +67,14 @@ body {
 body {
   display: flex;
   justify-content: center;
-  /* center i.p.v. stretch: bij weinig inhoud (bv. een korte sessie, of de
-     Bediening-tab) blijft er anders een lege grijze vlakte onderin staan --
-     dat viel nauwelijks op tegen het oude donkere thema, maar oogt op een
-     licht thema als "onaf". Gecentreerd voelt bedoeld. */
-  align-items: center;
+  /* Bovenaan beginnen (niet verticaal centreren -- dat hoort bij een
+     marketing-/loginpagina, niet bij een dagelijks te gebruiken werktool).
+     De eerder geconstateerde lege ruimte wordt nu opgelost door de
+     daadwerkelijke inhoud (transcript-paneel) te laten meegroeien met de
+     beschikbare hoogte, zie .app-shell/.app-main/.transcript-box hieronder --
+     ruimte die dan ook echt gebruikt wordt (meer regels tegelijk zichtbaar),
+     niet alleen leeg opgevuld. */
+  align-items: flex-start;
 }
 
 /* Zichtbare, toegankelijke focus-indicator (WCAG 2.4.11) voor elk
@@ -89,12 +92,17 @@ select:focus-visible,
 
 .app-shell {
   width: 100%;
-  max-width: 1200px;
+  /* Was 1200px -- op een breed scherm (dagelijkse werktool, niet een
+     tekstpagina) bleef dan een groot deel van het scherm ongebruikt. 1600px
+     is nog steeds een grens (voorkomt absurd brede regels op een ultrawide
+     monitor) maar benut een normaal breed beeldscherm goed. */
+  max-width: 1600px;
   margin: 16px auto;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: calc(100vh - 32px);
 }
 
 .app-header {
@@ -157,6 +165,12 @@ select:focus-visible,
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) minmax(260px, 0.9fr);
   gap: 16px;
+  /* Groeit mee met de resterende hoogte in .app-shell (i.p.v. alleen zo
+     hoog als de inhoud, met een lege vlakte eronder) -- min-height: 0 is
+     nodig zodat de grid-cellen (en daarbinnen .transcript-box) ook echt
+     mogen krimpen/scrollen i.p.v. de pagina zelf op te rekken. */
+  flex: 1;
+  min-height: 0;
 }
 
 /* Panels */
@@ -170,6 +184,7 @@ select:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
 }
 
 .panel-main {
@@ -219,11 +234,22 @@ select:focus-visible,
   background: var(--bg-subtle);
   border: 1px solid var(--border-subtle);
   min-height: 160px;
-  max-height: 260px;
   overflow-y: auto;
   font-size: 14px;
   line-height: 1.55;
   color: var(--text);
+}
+
+.transcript-box {
+  /* Groeit mee met de resterende ruimte in .panel-main i.p.v. te stoppen bij
+     een vaste max-height van 260px -- op een groter scherm zijn dan meer
+     transcriptieregels tegelijk zichtbaar zonder scrollen, i.p.v. dat de
+     ruimte eronder leeg blijft. */
+  flex: 1;
+}
+
+.final-box {
+  max-height: 260px;
 }
 
 .final-box {
