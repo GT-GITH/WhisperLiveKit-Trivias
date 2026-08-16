@@ -587,6 +587,28 @@ def _load_merged_transcript(session_id: str) -> Optional[Dict[str, Any]]:
     return {"channels": sorted(by_channel.keys()), "segments": merged_segments, "date": date_str}
 
 
+def _find_session_foreign_language(session_id: str) -> Optional[str]:
+    """Zoekt de taal van het foreign_*-kanaal in dezelfde sessie, als proxy
+    voor de brontaal van een tolk-kanaal zonder eigen betrouwbaar taalsignaal.
+
+    Redenering: een tolk vertaalt per definitie tussen het Nederlands en de
+    taal van de vreemdeling in DIT gehoor -- als de vreemdeling Turks spreekt
+    (bekend via de channel_id, zie _resolve_channel_language()), is Turks ook
+    de enige zinnige gok voor niet-Nederlandse tolk-tekst. Schijfgebaseerd
+    (via _load_merged_transcript(), dezelfde opgeslagen JSON-bestanden als
+    elke andere sessie-lookup) i.p.v. afhankelijk van een levende WS-
+    verbinding -- werkt daardoor net zo goed voor synthetische testsessies
+    (scripts/generate_test_gehoor_session_turks.py) als voor een net
+    opgenomen live gehoor, en overleeft een serverherstart."""
+    merged = _load_merged_transcript(session_id)
+    if not merged:
+        return None
+    for ch in merged["channels"]:
+        if ch.startswith("foreign_"):
+            return _resolve_channel_language(ch)
+    return None
+
+
 @app.get("/sessions/{session_id}/transcript")
 async def get_session_transcript(session_id: str, channel_id: str = Query(default="default")):
     """Haal het opgeslagen transcript op voor een sessie.
@@ -851,18 +873,23 @@ async def translate_segment(payload: TranslateRequest):
     kan de brontaal niet zelf detecteren/raden, dus is een expliciete,
     betrouwbare bron-taal-hint verplicht.
 
-    Twee bronnen voor die hint, op volgorde geprobeerd:
+    Drie bronnen voor die hint, op volgorde geprobeerd:
     1. "foreign_*"-kanalen: taal staat letterlijk (en per-sessie correct) in
        de channel_id zelf (zie _resolve_channel_language()).
-    2. Overige kanalen (bv. tolk): get_channel_config().language is een vast
-       rol-preset ("nl"), niet per se wat er in dít fragment gezegd is --
-       daarom wordt i.p.v. dat preset de daadwerkelijk bij WS-connect
-       meegegeven Taal 2 opgezocht via session_manager (zie
-       SessionManager.get_channel_language2()). Alleen bekend als dat kanaal
-       ooit in déze serverlevensduur verbonden is geweest (in-memory, geen
-       DB) -- anders faalt dit bewust i.p.v. te gokken (dat gaf eerder
-       precies de onbetrouwbare vertalingen die deze herbouw moest
-       oplossen)."""
+    2. Overige kanalen (bv. tolk): een tolk vertaalt per definitie tussen
+       Nederlands en de taal van DEZE vreemdeling -- dus de taal van het
+       foreign_*-kanaal in dezelfde sessie is ook de zinnige gok voor de
+       tolk (_find_session_foreign_language(), schijfgebaseerd via de
+       opgeslagen transcript-JSON's, werkt daardoor voor elke sessie op
+       schijf, live opgenomen of synthetische testdata, ongeacht of de
+       server ondertussen herstart is).
+    3. Fallback: de daadwerkelijk bij WS-connect meegegeven Taal 2
+       (session_manager.get_channel_language2()) -- alleen relevant in het
+       randgeval dat een tolk-kanaal al spreekt vóórdat het foreign_*-kanaal
+       zijn eerste bevestigde segment geschreven heeft.
+    Geen van drie beschikbaar? Bewust GEEN gok doorgeven aan NLLB (dat gaf
+    eerder precies de onbetrouwbare vertalingen die deze herbouw moest
+    oplossen) -- duidelijke foutmelding i.p.v. stil verkeerd vertalen."""
     if nllb_backend is None:
         return JSONResponse({"error": "vertaalfunctie niet geconfigureerd (geen --nllb-model)"}, status_code=503)
 
@@ -871,13 +898,15 @@ async def translate_segment(payload: TranslateRequest):
         source_language = _resolve_channel_language(channel_id)
     else:
         source_language = (
+            _find_session_foreign_language(payload.session_id) if payload.session_id else None
+        ) or (
             session_manager.get_channel_language2(payload.session_id, channel_id)
             if payload.session_id else None
         )
         if not source_language:
             return JSONResponse(
-                {"error": "brontaal van dit kanaal niet bekend (sessie niet meer actief op deze server, "
-                          "of geen taalpaar geconfigureerd) -- vertalen niet mogelijk"},
+                {"error": "brontaal van dit kanaal niet bekend (geen vreemdeling-kanaal in deze sessie "
+                          "gevonden, en geen taalpaar geconfigureerd) -- vertalen niet mogelijk"},
                 status_code=502,
             )
 
