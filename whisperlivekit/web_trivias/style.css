@@ -150,8 +150,11 @@ select:focus-visible,
 }
 
 .app-mark svg {
-  width: 18px;
-  height: 18px;
+  /* Iets groter dan de vorige, simpelere golfbalkjes-versie -- de
+     weegschaal heeft meer detail (balk, schalen, twee groepjes balkjes)
+     en heeft de extra ruimte nodig om leesbaar te blijven. */
+  width: 22px;
+  height: 22px;
 }
 
 .app-title-text {

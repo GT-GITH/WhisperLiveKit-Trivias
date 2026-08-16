@@ -70,16 +70,31 @@
       <header class="app-header">
         <div class="app-title">
           <span class="app-mark" aria-hidden="true">
-            <svg viewBox="0 0 32 32" fill="currentColor">
-              <rect x="3" y="13" width="4" height="8" rx="1.5"/>
-              <rect x="10" y="7" width="4" height="20" rx="1.5"/>
-              <rect x="17" y="2" width="4" height="30" rx="1.5"/>
-              <rect x="24" y="10" width="4" height="14" rx="1.5"/>
+            <!-- Weegschaal-motief: golfbalkjes als de twee schalen -- twee
+                 bronnen die tegen elkaar afgewogen worden. Werkt op twee
+                 niveaus: audio-bewijs dat gewogen wordt, én de live/batch-
+                 verificatie zelf (zie features/ merkverkenning). Bewust een
+                 universeel rechtssymbool, geen variatie op een bestaand
+                 instituutslogo (bv. de Rechtspraak) -- zie CLAUDE.md. -->
+            <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-linecap="round">
+              <line x1="16" y1="4" x2="16" y2="24" stroke-width="2"/>
+              <line x1="10" y1="27" x2="22" y2="27" stroke-width="2"/>
+              <line x1="16" y1="24" x2="16" y2="27" stroke-width="2"/>
+              <line x1="6" y1="8" x2="26" y2="8" stroke-width="2"/>
+              <circle cx="16" cy="8" r="1.6" fill="currentColor" stroke="none"/>
+              <line x1="6" y1="8" x2="6" y2="14" stroke-width="1.4"/>
+              <line x1="26" y1="8" x2="26" y2="14" stroke-width="1.4"/>
+              <rect x="2.5" y="14" width="2.2" height="7" rx="1.1" fill="currentColor" stroke="none"/>
+              <rect x="6.3" y="12" width="2.2" height="9" rx="1.1" fill="currentColor" stroke="none"/>
+              <rect x="10.1" y="15" width="2.2" height="6" rx="1.1" fill="currentColor" stroke="none"/>
+              <rect x="19.7" y="15" width="2.2" height="6" rx="1.1" fill="currentColor" stroke="none"/>
+              <rect x="23.5" y="12" width="2.2" height="9" rx="1.1" fill="currentColor" stroke="none"/>
+              <rect x="27.3" y="14" width="2.2" height="7" rx="1.1" fill="currentColor" stroke="none"/>
             </svg>
           </span>
           <span class="app-title-text">
             <span class="app-name">Trivias</span>
-            <span class="app-subtitle">Spraak-naar-tekst</span>
+            <span class="app-subtitle">Audio-first evidence platform</span>
           </span>
         </div>
         <div class="app-header-right">
