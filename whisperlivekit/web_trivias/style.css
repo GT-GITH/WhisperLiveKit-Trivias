@@ -130,19 +130,47 @@ select:focus-visible,
 .app-title {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  font-size: 15px;
-  text-transform: uppercase;
-  color: var(--text-muted);
+  gap: 12px;
 }
 
-.logo-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 999px;
-  background: var(--success);
+/* Merkteken: geluidsgolf-motief in een effen badge -- bewust GEEN
+   overheids-ogend zegel/wapen (zou een officiële status suggereren die
+   dit pilot-product niet heeft), wel een herkenbaar, serieus woordmerk
+   i.p.v. de eerdere losse statuspunt + kleine hoofdletter-tekst. */
+.app-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-control);
+  background: var(--accent-strong);
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.app-mark svg {
+  width: 18px;
+  height: 18px;
+}
+
+.app-title-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.app-name {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.app-subtitle {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--text-soft);
 }
 
 .app-header-right {
