@@ -29,7 +29,10 @@
   --shadow-soft: 0 1px 2px rgba(16, 24, 32, 0.06), 0 4px 12px rgba(16, 24, 32, 0.06);
   --radius-xl: 10px;
   --radius-2xl: 12px;
-  --radius-pill: 999px;
+  /* Bewust géén volledige pil (999px, "chat-app"-associatie) -- een
+     gematigde afronding oogt formeler/institutioneler, dichter bij hoe de
+     NL Design System-knoppen eruitzien. */
+  --radius-control: 8px;
   --transition-fast: 0.15s ease-out;
   --transition-med: 0.2s ease-out;
   --font-sans: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
@@ -64,7 +67,11 @@ body {
 body {
   display: flex;
   justify-content: center;
-  align-items: stretch;
+  /* center i.p.v. stretch: bij weinig inhoud (bv. een korte sessie, of de
+     Bediening-tab) blijft er anders een lege grijze vlakte onderin staan --
+     dat viel nauwelijks op tegen het oude donkere thema, maar oogt op een
+     licht thema als "onaf". Gecentreerd voelt bedoeld. */
+  align-items: center;
 }
 
 /* Zichtbare, toegankelijke focus-indicator (WCAG 2.4.11) voor elk
@@ -128,7 +135,7 @@ select:focus-visible,
 .tag {
   font-size: 11px;
   padding: 4px 10px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   border: 1px solid var(--border-subtle);
   color: var(--text-soft);
   background: var(--bg-subtle);
@@ -166,11 +173,11 @@ select:focus-visible,
 }
 
 .panel-main {
-  min-height: 340px;
+  min-height: 280px;
 }
 
 .panel-side {
-  min-height: 340px;  /* zelfde als panel-main */
+  min-height: 280px;  /* zelfde als panel-main */
 }
 
 .panel-header {
@@ -184,11 +191,9 @@ select:focus-visible,
 
 .panel-header h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text);
 }
 
 .panel-sub {
@@ -314,12 +319,10 @@ select:focus-visible,
   border: 1px solid transparent;
   outline: none;
   cursor: pointer;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   padding: 10px 18px;
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -352,12 +355,10 @@ select:focus-visible,
   border: 1px solid transparent;
   outline: none;
   cursor: pointer;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   padding: 10px 18px;
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -387,12 +388,10 @@ select:focus-visible,
   border: 1px solid transparent;
   outline: none;
   cursor: pointer;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   padding: 10px 18px;
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -428,7 +427,7 @@ select:focus-visible,
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   padding: 3px 9px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   border: 1px solid var(--border-subtle);
   background: var(--bg-subtle);
   color: var(--text-muted);
@@ -619,11 +618,9 @@ select:focus-visible,
 
 .sessions-modal-header h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: var(--text-muted);
+  color: var(--text);
 }
 
 .sessions-close {
@@ -685,7 +682,7 @@ select:focus-visible,
 .session-item-badge {
   font-size: 10px;
   padding: 2px 8px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   border: 1px solid #b6ddc8;
   color: var(--success);
   background: var(--success-soft);
@@ -708,7 +705,7 @@ select:focus-visible,
   cursor: pointer;
   font-size: 11px;
   padding: 4px 10px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   border: 1px solid var(--border-subtle) !important;
   color: var(--text-soft);
 }
@@ -735,11 +732,9 @@ select:focus-visible,
 
 .tab-btn {
   padding: 5px 12px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   border: 1px solid var(--border-subtle);
   background: transparent;
   color: var(--text-soft);
@@ -784,7 +779,7 @@ select:focus-visible,
   gap: 5px;
   font-size: 11px;
   padding: 3px 10px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   border: 1px solid var(--border-subtle);
   background: var(--bg-subtle);
   cursor: pointer;
