@@ -436,7 +436,13 @@ select:focus-visible,
   cursor: default;
 }
 
-#refreshPlaybackButton {
+/* Beide knoppen staan samen inline naast de "Live transcriptie"-kop
+   (panel-header) -- daar past een compactere maat dan de volle
+   .refresh-button-stijl (die is voor de losstaande knop in het
+   Bediening-tabblad). #gehoorverslagButton had deze verkleining eerder
+   niet, waardoor de twee knoppen naast elkaar niet gelijk oogden. */
+#refreshPlaybackButton,
+#gehoorverslagButton {
   padding: 6px 14px;
   font-size: 12px;
 }
