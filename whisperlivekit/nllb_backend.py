@@ -127,28 +127,17 @@ class NLLBBackend:
             source_batch = [
                 self._tokenizer.convert_ids_to_tokens(self._tokenizer.encode(s)) for s in sentences
             ]
-            logger.info(
-                f"[NLLB][DIAG] input: src={src_code} tgt={tgt_code} text_len={len(text)} "
-                f"n_sentences={len(sentences)} n_source_tokens={[len(t) for t in source_batch]} "
-                f"sentences={sentences!r}"
-            )
             results = self._translator.translate_batch(source_batch, target_prefix=[[tgt_code]] * len(source_batch))
             translated_sentences = []
-            for i, result in enumerate(results):
+            for result in results:
                 target_tokens = result.hypotheses[0][1:]  # eerste token is de target-taalcode zelf
                 decoded = self._tokenizer.decode(
                     self._tokenizer.convert_tokens_to_ids(target_tokens),
                     skip_special_tokens=True,
                 ).strip()
-                logger.info(
-                    f"[NLLB][DIAG] sentence {i}: n_target_tokens={len(target_tokens)} decoded={decoded!r}"
-                )
                 if decoded:
                     translated_sentences.append(decoded)
             translation = " ".join(translated_sentences).strip()
-            logger.info(
-                f"[NLLB][DIAG] decoded translation (samengevoegd): len={len(translation)} text={translation!r}"
-            )
         except Exception as e:
             logger.warning(f"[NLLB] vertalen mislukt: {e}")
             return None
