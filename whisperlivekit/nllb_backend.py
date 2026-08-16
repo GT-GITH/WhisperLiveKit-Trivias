@@ -26,10 +26,23 @@ gewoon `pip install transformers`) -- zonder is de feature stil uitgeschakeld.
 """
 
 import logging
+import re
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 logger = logging.getLogger("whisperlivekit.nllb_backend")
+
+# Splitst op .!? gevolgd door whitespace, behoudt het leesteken bij de
+# voorgaande zin. Regex, geen NLP-library (mosestokenizer/wtpsplit staan al
+# als ongebruikte optional-dependency "sentence_tokenizer" in pyproject.toml,
+# maar zijn zwaarder dan nodig voor de korte, simpele transcript-zinnen hier)
+# -- goed genoeg voor dit doel, niet perfect bij afkortingen.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_sentences(text: str) -> List[str]:
+    parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(text) if p.strip()]
+    return parts or [text]
 
 try:
     import ctranslate2
@@ -89,7 +102,15 @@ class NLLBBackend:
         Retourneert None (nooit een exception) als: de tekst leeg is, de
         brontaal onbekend/niet in ISO_TO_NLLB staat (NLLB heeft -- anders dan
         een chatmodel -- altijd een EXPLICIETE brontaal nodig, kan niet zelf
-        "raden"), of de vertaal-call zelf faalt."""
+        "raden"), of de vertaal-call zelf faalt.
+
+        Vertaalt per ZIN, niet de hele `text` in één keer: NLLB-200 is op
+        zin-niveau getraind, en bleek bij meerzinnige input (geconstateerd
+        2026-08-16, diagnostische logging: n_target_tokens veel lager dan bij
+        losse zinnen) een voortijdig stop-token te genereren en zo alles ná de
+        eerste zin stilzwijgend te laten vallen. Losse zinnen in ÉÉN
+        translate_batch()-call (efficiënt gebatcht, geen N losse calls) en de
+        resultaten weer samenvoegen omzeilt dit."""
         text = (text or "").strip()
         if not text:
             return None
@@ -100,28 +121,33 @@ class NLLBBackend:
             logger.warning(f"[NLLB] onbekende of ontbrekende brontaal-code: {source_iso!r}, vertaling overgeslagen")
             return None
 
+        sentences = _split_sentences(text)
         try:
             self._tokenizer.src_lang = src_code
-            source_tokens = self._tokenizer.convert_ids_to_tokens(self._tokenizer.encode(text))
+            source_batch = [
+                self._tokenizer.convert_ids_to_tokens(self._tokenizer.encode(s)) for s in sentences
+            ]
             logger.info(
-                f"[NLLB][DIAG] input: src={src_code} tgt={tgt_code} "
-                f"text_len={len(text)} n_source_tokens={len(source_tokens)} "
-                f"text={text!r}"
+                f"[NLLB][DIAG] input: src={src_code} tgt={tgt_code} text_len={len(text)} "
+                f"n_sentences={len(sentences)} n_source_tokens={[len(t) for t in source_batch]} "
+                f"sentences={sentences!r}"
             )
-            results = self._translator.translate_batch([source_tokens], target_prefix=[[tgt_code]])
-            n_hypotheses = len(results[0].hypotheses)
-            target_tokens = results[0].hypotheses[0][1:]  # eerste token is de target-taalcode zelf
+            results = self._translator.translate_batch(source_batch, target_prefix=[[tgt_code]] * len(source_batch))
+            translated_sentences = []
+            for i, result in enumerate(results):
+                target_tokens = result.hypotheses[0][1:]  # eerste token is de target-taalcode zelf
+                decoded = self._tokenizer.decode(
+                    self._tokenizer.convert_tokens_to_ids(target_tokens),
+                    skip_special_tokens=True,
+                ).strip()
+                logger.info(
+                    f"[NLLB][DIAG] sentence {i}: n_target_tokens={len(target_tokens)} decoded={decoded!r}"
+                )
+                if decoded:
+                    translated_sentences.append(decoded)
+            translation = " ".join(translated_sentences).strip()
             logger.info(
-                f"[NLLB][DIAG] ctranslate2 output: n_hypotheses={n_hypotheses} "
-                f"n_target_tokens={len(target_tokens)} "
-                f"raw_target_tokens={target_tokens}"
-            )
-            translation = self._tokenizer.decode(
-                self._tokenizer.convert_tokens_to_ids(target_tokens),
-                skip_special_tokens=True,
-            ).strip()
-            logger.info(
-                f"[NLLB][DIAG] decoded translation: len={len(translation)} text={translation!r}"
+                f"[NLLB][DIAG] decoded translation (samengevoegd): len={len(translation)} text={translation!r}"
             )
         except Exception as e:
             logger.warning(f"[NLLB] vertalen mislukt: {e}")

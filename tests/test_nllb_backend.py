@@ -23,6 +23,7 @@ _spec.loader.exec_module(_nb)
 
 ISO_TO_NLLB = _nb.ISO_TO_NLLB
 build_nllb_backend = _nb.build_nllb_backend
+_split_sentences = _nb._split_sentences
 
 
 def test_no_model_configured_returns_none():
@@ -56,12 +57,42 @@ def test_iso_to_nllb_covers_all_ui_languages():
     print("OK test_iso_to_nllb_covers_all_ui_languages")
 
 
+def test_split_sentences_multi_sentence():
+    # Geconstateerd 2026-08-16 (testsessie): NLLB-200 genereert bij meerzinnige
+    # input een voortijdig stop-token en laat alles na de eerste zin vallen --
+    # translate() splitst daarom nu vooraf in losse zinnen (zie NLLBBackend.translate()).
+    result = _split_sentences(
+        "Kardesim gazeteciydi ve hukumeti elestiren yazilar yaziyordu. "
+        "Bir gece evimize silahli kisiler geldi."
+    )
+    assert result == [
+        "Kardesim gazeteciydi ve hukumeti elestiren yazilar yaziyordu.",
+        "Bir gece evimize silahli kisiler geldi.",
+    ]
+    print("OK test_split_sentences_multi_sentence")
+
+
+def test_split_sentences_single_sentence_unchanged():
+    result = _split_sentences("Enkele zin zonder splitsing.")
+    assert result == ["Enkele zin zonder splitsing."]
+    print("OK test_split_sentences_single_sentence_unchanged")
+
+
+def test_split_sentences_question_and_exclamation_marks():
+    result = _split_sentences("Vraag? Antwoord! Nog een zin.")
+    assert result == ["Vraag?", "Antwoord!", "Nog een zin."]
+    print("OK test_split_sentences_question_and_exclamation_marks")
+
+
 if __name__ == "__main__":
     tests = [
         test_no_model_configured_returns_none,
         test_empty_string_model_returns_none,
         test_missing_nllb_model_attr_does_not_crash,
         test_iso_to_nllb_covers_all_ui_languages,
+        test_split_sentences_multi_sentence,
+        test_split_sentences_single_sentence_unchanged,
+        test_split_sentences_question_and_exclamation_marks,
     ]
     failures = 0
     for t in tests:
