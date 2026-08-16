@@ -317,7 +317,11 @@ def parse_args():
         help="600M or 1.3B",
     )
 
-    llm_group = parser.add_argument_group("LLM (on-prem classificatie/gehoorverslag)")
+    # Nog niet aangeroepen door een actieve feature (zie
+    # whisperlivekit/llm_backend.py) -- gereserveerd voor de volgende
+    # roadmap-fase (kennisondersteuning). Declareren kost niets en voorkomt
+    # dat elke toekomstige LLM-feature zijn eigen CLI-args verzint.
+    llm_group = parser.add_argument_group("LLM (on-prem, gereserveerd voor toekomstige features)")
     llm_group.add_argument(
         "--llm-backend-url",
         type=str,
@@ -325,9 +329,7 @@ def parse_args():
         dest="llm_backend_url",
         help="Base-URL van een lokaal/on-prem OpenAI-compatibel LLM-endpoint (bv. "
              "http://localhost:11434/v1 voor Ollama). Nooit een cloud-endpoint -- dit "
-             "project is on-prem-only. Niet gezet = LLM-afhankelijke features (bv. "
-             "sectie-classificatie in het gehoorverslag) vallen automatisch terug op "
-             "hun niet-LLM-gedrag.",
+             "project is on-prem-only. Nog niet gebruikt door een actieve feature.",
     )
     llm_group.add_argument(
         "--llm-model",

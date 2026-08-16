@@ -3,16 +3,16 @@ stille placeholder-WAV's) rechtstreeks in recordings/, zodat je 'm in de
 Trivias-UI kan selecteren en direct op "Genereer gehoorverslag" kan klikken
 -- zonder eerst een echte opname te hoeven doen.
 
-Puur voor het testen van de gehoorverslag/classificatie-feature. Geen echte
-audio: de WAV's zijn stilte (gehoorverslag leest toch alleen de JSON, zie
+Puur voor het testen van de gehoorverslag-export-feature (zie
+whisperlivekit/gehoorverslag.py). Geen echte audio: de WAV's zijn stilte
+(de export leest toch alleen de JSON, zie
 TriviasServer._load_merged_transcript()), maar wel geldig en lang genoeg
 zodat de sessie-lijst en eventuele terugluister-UI niet stuklopen.
 
-De dialoog dekt bewust alle IND_SECTIONS uit whisperlivekit/gehoorverslag.py
-(2.1, 2.2, 3, 4.1, 4.2, 4.3, 4.5, 4.6, 5.1) met content die daar qua thema
-ook echt bij past -- dit is de eerste "geschikte" test-content voor de
-classificatie (in tegenstelling tot het eerder gebruikte willekeurige
-interview-transcript).
+De dialoog is realistische, thematisch geordende interview-content -- geen
+classificatie meer om tegen te testen (die feature is losgelaten, zie
+features/gehoorverslag-automatisering.md in de projectrepo), puur bruikbaar
+als representatieve testinvoer voor de platte export.
 
 Gebruik (op de runpod, vanuit de repo-root):
     python scripts/generate_test_gehoor_session.py

@@ -23,9 +23,11 @@ logger = logging.getLogger("whisperlivekit.llm_backend")
 class LLMBackend:
     """Dunne wrapper om één blocking chat-call. Geen state, geen retries,
     geen fail-safe-logica hier -- dat is de verantwoordelijkheid van de
-    AANROEPER (bv. gehoorverslag.classify_segments()), zodat deze klasse
-    voor elk toekomstig LLM-gebruik in dit project herbruikbaar blijft
-    zonder impliciete aannames over hoe fouten afgehandeld moeten worden."""
+    AANROEPER, zodat deze klasse voor elk toekomstig LLM-gebruik in dit
+    project herbruikbaar blijft zonder impliciete aannames over hoe fouten
+    afgehandeld moeten worden. Nog niet aangeroepen door een actieve
+    feature -- gereserveerd voor de volgende roadmap-fase
+    (kennisondersteuning)."""
 
     def __init__(self, base_url: str, model: str, api_key: Optional[str] = None, timeout: float = 90.0):
         from openai import OpenAI  # lazy import, zelfde stijl als de bestaande openai-api ASR-backend
