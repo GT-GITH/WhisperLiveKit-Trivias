@@ -1383,6 +1383,7 @@ async function handleTranslateClick(iconEl) {
 
   const rawText = iconEl.dataset.rawText || "";
   const channel = seg.dataset.channel || "default";
+  const session = seg.dataset.session || currentSessionId || "";
   if (!rawText.trim()) return;
 
   const existing = seg.querySelector(".seg-translation, .seg-translation-error");
@@ -1402,7 +1403,7 @@ async function handleTranslateClick(iconEl) {
     const resp = await fetch("/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: rawText, channel_id: channel }),
+      body: JSON.stringify({ text: rawText, channel_id: channel, session_id: session }),
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || !data.translation) {

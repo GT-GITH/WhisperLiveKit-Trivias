@@ -94,6 +94,9 @@ class SessionManager:
         source_system: Optional[str],
         external_references: Dict[str, Optional[str]],
         user_id: Optional[str],
+        channel_id: Optional[str] = None,
+        language: Optional[str] = None,
+        language2: Optional[str] = None,
     ) -> Dict[str, Any]:
         now = datetime.utcnow().isoformat() + "Z"
         meta = self._sessions.get(session_id, {})
@@ -110,12 +113,31 @@ class SessionManager:
                 "created_at": meta.get("created_at", now),
             }
         )
+        # Per-kanaal taalconfiguratie zoals meegegeven bij WS-connect (lang/lang2
+        # query-params) -- vooral relevant voor de tolk (Taal 2), die anders
+        # nergens buiten de levende AudioProcessor-instance bekend is. Puur
+        # in-memory (zelfde levenscyclus als de rest van deze registry, zie
+        # klasse-docstring) -- gaat verloren bij een serverherstart, maar dat is
+        # een acceptabele v1-beperking (fail-safe: /translate valt dan terug op
+        # "brontaal onbekend", niet op een gok).
+        if channel_id:
+            channels = meta.setdefault("channels", {})
+            channels[channel_id] = {"language": language, "language2": language2}
         self._sessions[session_id] = meta
         logger.info(f"[SESSION] {session_id} ÔåÆ {meta}")
         return meta
 
     def get(self, session_id: str) -> Optional[Dict[str, Any]]:
         return self._sessions.get(session_id)
+
+    def get_channel_language2(self, session_id: str, channel_id: str) -> Optional[str]:
+        """De daadwerkelijk geconfigureerde Taal 2 (brontaal-hint bij een
+        taalpaar-kanaal zoals de tolk) voor deze sessie/kanaal, indien bekend
+        (alleen als dat kanaal ooit in déze serverlevensduur is verbonden)."""
+        meta = self._sessions.get(session_id)
+        if not meta:
+            return None
+        return (meta.get("channels", {}).get(channel_id) or {}).get("language2")
 
     def all(self) -> Dict[str, Dict[str, Any]]:
         return self._sessions
@@ -815,6 +837,7 @@ async def generate_gehoorverslag(session_id: str):
 class TranslateRequest(BaseModel):
     text: str
     channel_id: str
+    session_id: Optional[str] = None
 
 
 @app.post("/translate")
@@ -826,26 +849,38 @@ async def translate_segment(payload: TranslateRequest):
     translate.py's moduledocstring voor waarom (chatmodel bleek onbetrouwbaar
     op complexe brontalen). Belangrijk verschil met de eerdere aanpak: NLLB
     kan de brontaal niet zelf detecteren/raden, dus is een expliciete,
-    betrouwbare bron-taal-hint verplicht. Die is alleen beschikbaar voor
-    "foreign_*"-kanalen, waar de taal letterlijk (en per-sessie correct) in
-    de channel_id staat (zie _resolve_channel_language()). Voor overige
-    kanalen (bv. tolk) is de taal in get_channel_config() slechts een vast
-    rol-preset, niet per se wat er in dít fragment gezegd is -- daar bewust
-    GEEN gok doorgeven (dat gaf eerder precies de onbetrouwbare vertalingen
-    die deze herbouw moest oplossen). Tolk-vertaling is voor nu buiten scope;
-    zie features/vertaling-niet-nl-tekst.md voor het vervolg (taalpaar-
-    configuratie server-side beschikbaar maken)."""
+    betrouwbare bron-taal-hint verplicht.
+
+    Twee bronnen voor die hint, op volgorde geprobeerd:
+    1. "foreign_*"-kanalen: taal staat letterlijk (en per-sessie correct) in
+       de channel_id zelf (zie _resolve_channel_language()).
+    2. Overige kanalen (bv. tolk): get_channel_config().language is een vast
+       rol-preset ("nl"), niet per se wat er in dít fragment gezegd is --
+       daarom wordt i.p.v. dat preset de daadwerkelijk bij WS-connect
+       meegegeven Taal 2 opgezocht via session_manager (zie
+       SessionManager.get_channel_language2()). Alleen bekend als dat kanaal
+       ooit in déze serverlevensduur verbonden is geweest (in-memory, geen
+       DB) -- anders faalt dit bewust i.p.v. te gokken (dat gaf eerder
+       precies de onbetrouwbare vertalingen die deze herbouw moest
+       oplossen)."""
     if nllb_backend is None:
         return JSONResponse({"error": "vertaalfunctie niet geconfigureerd (geen --nllb-model)"}, status_code=503)
 
     channel_id = payload.channel_id or ""
-    if not channel_id.startswith("foreign_"):
-        return JSONResponse(
-            {"error": "brontaal van dit kanaal niet betrouwbaar bekend -- vertalen nog niet ondersteund"},
-            status_code=502,
+    if channel_id.startswith("foreign_"):
+        source_language = _resolve_channel_language(channel_id)
+    else:
+        source_language = (
+            session_manager.get_channel_language2(payload.session_id, channel_id)
+            if payload.session_id else None
         )
+        if not source_language:
+            return JSONResponse(
+                {"error": "brontaal van dit kanaal niet bekend (sessie niet meer actief op deze server, "
+                          "of geen taalpaar geconfigureerd) -- vertalen niet mogelijk"},
+                status_code=502,
+            )
 
-    source_language = _resolve_channel_language(channel_id)
     translation = translate_text(payload.text, source_language, nllb_backend)
     if translation is None:
         return JSONResponse({"error": "vertalen mislukt"}, status_code=502)
@@ -904,6 +939,9 @@ async def websocket_endpoint(
         source_system=source_system,
         external_references={"case_ref": case_ref, "person_ref": person_ref},
         user_id=user_id,
+        channel_id=channel_id,
+        language=lang,
+        language2=lang2,
     )
 
     #audio_processor = AudioProcessor(transcription_engine=transcription_engine)
