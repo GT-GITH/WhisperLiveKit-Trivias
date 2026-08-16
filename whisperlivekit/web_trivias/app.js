@@ -1139,10 +1139,12 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     // alleen de live-weergave is verzacht.
     const confirmedBadge = isBatchConfirmed ? ` <span class="seg-confirmed" title="Bevestigd door batch-pass">✓</span>` : "";
 
-    // Vertaalicoontje: alleen bij bevestigde (batch) tekst van een vreemdeling-kanaal --
-    // zie features/vertaling-niet-nl-tekst.md. data-raw-text ipv de al-geëscapete
-    // regeltekst, zodat de klik-handler de ongewijzigde brontekst naar /translate stuurt.
-    const translateIcon = (isBatchConfirmed && roleId === "foreign")
+    // Vertaalicoontje: bij bevestigde (batch) tekst van elk kanaal behalve medewerker/
+    // advocaat (die zijn per ontwerp altijd Nederlands) -- ook de tolk kan soms iets in
+    // de brontaal van de vreemdeling zeggen, zie features/vertaling-niet-nl-tekst.md.
+    // data-raw-text ipv de al-geëscapete regeltekst, zodat de klik-handler de
+    // ongewijzigde brontekst naar /translate stuurt.
+    const translateIcon = (isBatchConfirmed && roleId !== "employee" && roleId !== "lawyer")
       ? ` <span class="seg-translate" title="Vertaal naar het Nederlands" data-raw-text="${escapeHtml(rawTxt)}">🌐</span>`
       : "";
 

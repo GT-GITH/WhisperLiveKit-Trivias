@@ -32,10 +32,22 @@ _LANGUAGE_NAMES = {
     "nl": "Nederlands",
 }
 
-_SYSTEM_PROMPT_TEMPLATE = (
+# Bekende brontaal (bv. het foreign_*-kanaal, waar de taal betrouwbaar in de
+# channel_id zelf staat) -- expliciet benoemd in de prompt.
+_SYSTEM_PROMPT_KNOWN = (
     "Je vertaalt een fragment uit een asielgehoor-transcript van het {lang} "
     "naar het Nederlands. Geef UITSLUITEND de vertaling terug -- geen "
-    "uitleg, geen aanhalingstekens, geen markdown."
+    "uitleg, geen aanhalingstekens, geen markdown. Is de tekst al Nederlands, "
+    "geef 'm dan ongewijzigd terug."
+)
+# Onbekende/onbetrouwbare brontaal (bv. het tolk-kanaal: meestal Nederlands,
+# maar een tolk zegt soms iets in de brontaal van de vreemdeling) -- geen
+# brontaal opdringen, het LLM detecteert zelf.
+_SYSTEM_PROMPT_AUTODETECT = (
+    "Je vertaalt een fragment uit een asielgehoor-transcript naar het "
+    "Nederlands. Detecteer zelf de brontaal. Geef UITSLUITEND de vertaling "
+    "terug -- geen uitleg, geen aanhalingstekens, geen markdown. Is de tekst "
+    "al Nederlands, geef 'm dan ongewijzigd terug."
 )
 
 
@@ -44,6 +56,13 @@ def _language_name(source_language: Optional[str]) -> str:
     if not code:
         return "de brontaal"
     return _LANGUAGE_NAMES.get(code, code)
+
+
+def _build_system_prompt(source_language: Optional[str]) -> str:
+    code = (source_language or "").strip().lower()
+    if not code:
+        return _SYSTEM_PROMPT_AUTODETECT
+    return _SYSTEM_PROMPT_KNOWN.format(lang=_language_name(code))
 
 
 def translate_text(text: str, source_language: Optional[str], llm_backend: Optional[Any]) -> Optional[str]:
@@ -58,7 +77,7 @@ def translate_text(text: str, source_language: Optional[str], llm_backend: Optio
     if not text or not llm_backend:
         return None
 
-    system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(lang=_language_name(source_language))
+    system_prompt = _build_system_prompt(source_language)
 
     try:
         raw = llm_backend.chat(system_prompt, text)

@@ -809,14 +809,20 @@ class TranslateRequest(BaseModel):
 @app.post("/translate")
 async def translate_segment(payload: TranslateRequest):
     """Vertaalt een los tekstfragment naar het Nederlands, on-demand (geen
-    persistente opslag -- zie features/vertaling-niet-nl-tekst.md). Bron-taal
-    wordt afgeleid uit channel_id via _resolve_channel_language() (zelfde
-    functie als Ververs Transcriptie gebruikt), niet aan het LLM overgelaten
-    om te raden."""
+    persistente opslag -- zie features/vertaling-niet-nl-tekst.md).
+
+    Bron-taal-hint: alleen betrouwbaar voor "foreign_*"-kanalen, waar de taal
+    letterlijk (en per-sessie correct) in de channel_id staat (zie
+    _resolve_channel_language()). Voor overige kanalen (bv. tolk) is de taal
+    in get_channel_config() een vast rol-preset ("nl"), niet per se wat er in
+    dít fragment gezegd is -- een tolk zegt soms iets in de brontaal van de
+    vreemdeling. Daar geen onbetrouwbare aanname doorgeven; het LLM detecteert
+    de brontaal dan zelf (zie translate.py: _build_system_prompt)."""
     if llm_backend is None:
         return JSONResponse({"error": "vertaalfunctie niet geconfigureerd (geen --llm-backend-url)"}, status_code=503)
 
-    source_language = _resolve_channel_language(payload.channel_id)
+    channel_id = payload.channel_id or ""
+    source_language = _resolve_channel_language(channel_id) if channel_id.startswith("foreign_") else None
     translation = translate_text(payload.text, source_language, llm_backend)
     if translation is None:
         return JSONResponse({"error": "vertalen mislukt"}, status_code=502)

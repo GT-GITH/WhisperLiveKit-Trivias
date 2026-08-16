@@ -89,11 +89,11 @@ def test_unknown_language_code_falls_back_gracefully():
     print("OK test_unknown_language_code_falls_back_gracefully")
 
 
-def test_missing_language_falls_back_to_generic_wording():
+def test_missing_language_falls_back_to_autodetect_prompt():
     backend = _FakeLLMBackend(response="Hallo")
-    translate_text("hello", None, backend)
-    assert "de brontaal" in backend.last_system_prompt
-    print("OK test_missing_language_falls_back_to_generic_wording")
+    translate_text("bir şey söyledi", None, backend)
+    assert "Detecteer zelf de brontaal" in backend.last_system_prompt
+    print("OK test_missing_language_falls_back_to_autodetect_prompt")
 
 
 if __name__ == "__main__":
@@ -105,7 +105,7 @@ if __name__ == "__main__":
         test_successful_translation_strips_whitespace,
         test_language_code_mapped_to_readable_name_in_prompt,
         test_unknown_language_code_falls_back_gracefully,
-        test_missing_language_falls_back_to_generic_wording,
+        test_missing_language_falls_back_to_autodetect_prompt,
     ]
     failures = 0
     for t in tests:
