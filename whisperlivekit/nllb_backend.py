@@ -73,7 +73,16 @@ class NLLBBackend:
 
     def __init__(self, model_dir: str, device: str = "auto") -> None:
         self._translator = ctranslate2.Translator(model_dir, device=device)
-        self._tokenizer = AutoTokenizer.from_pretrained(model_dir)
+        # fix_mistral_regex=True: transformers >=5 waarschuwt bij het laden van
+        # deze tokenizer voor een fout regex-patroon dat tot verkeerde
+        # tokenisatie leidt -- in de praktijk gezien als vertalingen die halverwege
+        # een meerzinnige zin afkappen (2026-08-16, testsessie). Fail-safe: op een
+        # oudere transformers-versie die deze kwarg niet kent, gewoon zonder laden
+        # i.p.v. de hele backend te laten crashen.
+        try:
+            self._tokenizer = AutoTokenizer.from_pretrained(model_dir, fix_mistral_regex=True)
+        except TypeError:
+            self._tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
     def translate(self, text: str, source_iso: Optional[str], target_iso: str = "nl") -> Optional[str]:
         """Vertaalt `text` van `source_iso` naar `target_iso` (default Nederlands).
