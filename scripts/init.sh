@@ -440,11 +440,21 @@ do_setup() {
   # punt (setup_venv_pip, install_ollama, en straks startlive) nog de OUDE
   # versie draaien, ook al staat de nieuwe allang op schijf. Dit heeft
   # concreet een keer een hele --setup-start-run laten doorlopen zonder de
-  # net toegevoegde Ollama/LLM-stappen. _INIT_REEXECED voorkomt een lus.
-  if [[ "${_INIT_REEXECED:-0}" != "1" ]]; then
+  # net toegevoegde Ollama/LLM-stappen (en nogmaals met de NLLB-stappen,
+  # 2026-08-16) -- REEXEC_MARKER (2e positieargument) voorkomt een lus.
+  #
+  # BEWUST GEEN environment-variabele (was eerder _INIT_REEXECED via
+  # `export` + `exec`) -- dat bleek onbetrouwbaar: als deze guard ooit
+  # ergens leeft in de omgeving (bv. via een eerdere `source`, of een
+  # ge-exporteerde var die op een of andere manier al gezet was) wordt de
+  # herstart stilzwijgend overgeslagen, óók bij een verse, losstaande
+  # `bash scripts/init.sh ...`-aanroep -- exact het geconstateerde gedrag:
+  # geen "herstart mezelf"-regel in de output, oude functiedefinities
+  # (zonder --nllb-model) bleven draaien ondanks een geslaagde git pull.
+  # Een positieargument kan nooit tussen twee losse `bash`-aanroepen lekken.
+  if [[ "${REEXEC_MARKER:-}" != "--reexeced" ]]; then
     log "scripts/init.sh is bijgewerkt door setup_repo() -- herstart mezelf met de nieuwste versie..."
-    export _INIT_REEXECED=1
-    exec bash "$APP_DIR/scripts/init.sh" "$MODE"
+    exec bash "$APP_DIR/scripts/init.sh" "$MODE" --reexeced
   fi
 
   setup_venv_pip
@@ -458,6 +468,7 @@ do_update() {
 
 # --- CLI ---
 MODE="${1:-}"
+REEXEC_MARKER="${2:-}"
 
 case "$MODE" in
   --deps)
