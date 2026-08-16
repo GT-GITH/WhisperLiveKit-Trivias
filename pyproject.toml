@@ -61,6 +61,10 @@ dependencies = [
 [project.optional-dependencies]
 translation = ["nllw"]
 sentence_tokenizer = ["mosestokenizer", "wtpsplit"]
+# NLLB-200-vertaling voor het /translate-endpoint (zie whisperlivekit/nllb_backend.py) --
+# los van "translation" hierboven (dat is nllw's streaming-wrapper, andere usecase).
+# ctranslate2/huggingface-hub zijn al harde dependencies (via faster-whisper resp. hierboven).
+nllb_translation = ["transformers"]
 
 [project.urls]
 Homepage = "https://github.com/GT-GITH/WhisperLiveKit-Trivias.git"

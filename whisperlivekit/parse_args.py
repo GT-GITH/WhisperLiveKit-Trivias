@@ -347,6 +347,30 @@ def parse_args():
              "Ollama hebben er meestal geen nodig).",
     )
 
+    # Gebruikt door het /translate-endpoint (zie whisperlivekit/nllb_backend.py) --
+    # NIET dezelfde route als --nllb-backend/--nllb-size hierboven (die horen bij
+    # het losstaande, nog ongebruikte `nllw`-streamingpakket/--target-language).
+    # Los van het LLM-endpoint hierboven: een chatmodel bleek onbetrouwbaar voor
+    # dit soort vertalingen, NLLB-200 is een specifiek op vertalen getraind model.
+    nllb_group = parser.add_argument_group("NLLB-vertaling (on-prem, /translate-endpoint)")
+    nllb_group.add_argument(
+        "--nllb-model",
+        type=str,
+        default=None,
+        dest="nllb_model",
+        help="HuggingFace-repo (bv. entai2965/nllb-200-distilled-600M-ctranslate2) of "
+             "lokaal pad naar een ctranslate2-geconverteerd NLLB-200-model. Onbekend/leeg "
+             "= /translate draait in fail-safe fallback (503). Vereist de optionele "
+             "'transformers'-dependency (pip install whisperlivekit[nllb_translation]).",
+    )
+    nllb_group.add_argument(
+        "--nllb-device",
+        type=str,
+        default="auto",
+        dest="nllb_device",
+        help="Device voor het NLLB-model ('auto', 'cuda' of 'cpu'). Default 'auto'.",
+    )
+
     args = parser.parse_args()
     
     args.transcription = not args.no_transcription

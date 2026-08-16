@@ -24,6 +24,7 @@ from whisperlivekit.simul_whisper.config import get_channel_config
 from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
 from whisperlivekit.gehoorverslag import build_gehoorverslag_docx
 from whisperlivekit.llm_backend import LLMBackend, build_llm_backend
+from whisperlivekit.nllb_backend import NLLBBackend, build_nllb_backend
 from whisperlivekit.translate import translate_text
 
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
@@ -138,9 +139,15 @@ def get_wav_path(session_id: str, channel_id: str) -> Optional[str]:
 transcription_engine: Optional[TranscriptionEngine] = None
 
 # On-prem LLM-backend (optioneel, zie llm_backend.py) -- None zolang
-# --llm-backend-url niet gezet is; LLM-afhankelijke features (bv. het
-# /translate-endpoint) moeten hier altijd fail-safe mee omgaan.
+# --llm-backend-url niet gezet is. Nog niet aangeroepen door een actieve
+# feature (het /translate-endpoint gebruikt sinds 2026-08-16 nllb_backend
+# hieronder, niet dit chatmodel -- zie translate.py's moduledocstring voor
+# waarom) -- gereserveerd voor de volgende roadmap-fase.
 llm_backend: Optional[LLMBackend] = None
+
+# On-prem NLLB-vertaalmodel (optioneel, zie nllb_backend.py) -- None zolang
+# --nllb-model niet gezet is; /translate moet hier altijd fail-safe mee omgaan.
+nllb_backend: Optional[NLLBBackend] = None
 
 def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
     try:
@@ -258,14 +265,18 @@ def _extract_batch_snapshot(engine: Any) -> Dict[str, Any]:
 async def lifespan(app: FastAPI):
     _log_kv_block("TRIVIAS SERVER STARTUP PARAMETERS (RAW ARGS)", vars(args))
 
-    global transcription_engine, llm_backend
+    global transcription_engine, llm_backend, nllb_backend
     logger.info("Initialising TranscriptionEngine for TriviasServer...")
     transcription_engine = TranscriptionEngine(**vars(args))
     logger.info("TranscriptionEngine ready.")
 
     llm_backend = build_llm_backend(args)
     if llm_backend is None:
-        logger.info("[LLM] geen --llm-backend-url geconfigureerd -- /translate draait in fallback-modus (503).")
+        logger.info("[LLM] geen --llm-backend-url geconfigureerd (gereserveerd voor toekomstige features).")
+
+    nllb_backend = build_nllb_backend(args)
+    if nllb_backend is None:
+        logger.info("[NLLB] geen --nllb-model geconfigureerd -- /translate draait in fallback-modus (503).")
 
     # 1) Snapshot van bedoelde input / channel-context
     try:
@@ -811,19 +822,31 @@ async def translate_segment(payload: TranslateRequest):
     """Vertaalt een los tekstfragment naar het Nederlands, on-demand (geen
     persistente opslag -- zie features/vertaling-niet-nl-tekst.md).
 
-    Bron-taal-hint: alleen betrouwbaar voor "foreign_*"-kanalen, waar de taal
-    letterlijk (en per-sessie correct) in de channel_id staat (zie
-    _resolve_channel_language()). Voor overige kanalen (bv. tolk) is de taal
-    in get_channel_config() een vast rol-preset ("nl"), niet per se wat er in
-    dít fragment gezegd is -- een tolk zegt soms iets in de brontaal van de
-    vreemdeling. Daar geen onbetrouwbare aanname doorgeven; het LLM detecteert
-    de brontaal dan zelf (zie translate.py: _build_system_prompt)."""
-    if llm_backend is None:
-        return JSONResponse({"error": "vertaalfunctie niet geconfigureerd (geen --llm-backend-url)"}, status_code=503)
+    Draait op NLLB-200 (nllb_backend.py), niet op het LLM-chatmodel -- zie
+    translate.py's moduledocstring voor waarom (chatmodel bleek onbetrouwbaar
+    op complexe brontalen). Belangrijk verschil met de eerdere aanpak: NLLB
+    kan de brontaal niet zelf detecteren/raden, dus is een expliciete,
+    betrouwbare bron-taal-hint verplicht. Die is alleen beschikbaar voor
+    "foreign_*"-kanalen, waar de taal letterlijk (en per-sessie correct) in
+    de channel_id staat (zie _resolve_channel_language()). Voor overige
+    kanalen (bv. tolk) is de taal in get_channel_config() slechts een vast
+    rol-preset, niet per se wat er in dít fragment gezegd is -- daar bewust
+    GEEN gok doorgeven (dat gaf eerder precies de onbetrouwbare vertalingen
+    die deze herbouw moest oplossen). Tolk-vertaling is voor nu buiten scope;
+    zie features/vertaling-niet-nl-tekst.md voor het vervolg (taalpaar-
+    configuratie server-side beschikbaar maken)."""
+    if nllb_backend is None:
+        return JSONResponse({"error": "vertaalfunctie niet geconfigureerd (geen --nllb-model)"}, status_code=503)
 
     channel_id = payload.channel_id or ""
-    source_language = _resolve_channel_language(channel_id) if channel_id.startswith("foreign_") else None
-    translation = translate_text(payload.text, source_language, llm_backend)
+    if not channel_id.startswith("foreign_"):
+        return JSONResponse(
+            {"error": "brontaal van dit kanaal niet betrouwbaar bekend -- vertalen nog niet ondersteund"},
+            status_code=502,
+        )
+
+    source_language = _resolve_channel_language(channel_id)
+    translation = translate_text(payload.text, source_language, nllb_backend)
     if translation is None:
         return JSONResponse({"error": "vertalen mislukt"}, status_code=502)
 

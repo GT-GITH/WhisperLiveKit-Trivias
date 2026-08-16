@@ -4,16 +4,20 @@ Geen testsuite/pytest-dependency in dit project (zie CLAUDE.md) -- draai dit
 bestand rechtstreeks: `python tests/test_translate.py`. Focus ligt op de
 fail-safe-eis die het ontwerp bepaalt: translate_text() mag nooit een
 exception naar de aanroeper laten lekken -- ontbrekende backend, lege tekst,
-een falende LLM-call of een lege respons resulteren allemaal in None.
+een falende vertaal-call, of een lege respons resulteren allemaal in None.
+
+Gebruikt een testdubbel voor NLLBBackend (geen echte modelgewichten nodig,
+die zijn hier niet beschikbaar -- zie tests/test_nllb_backend.py voor wat
+wél zonder gewichten te testen is: de taalcode-mapping en de fail-safe
+factory). Wat de "echte" vertaalkwaliteit betreft (NLLB vs. het eerder
+gebruikte, onbetrouwbaar gebleken LLM-chatmodel) is alleen op de runpod met
+een echt geladen model te verifiëren.
 """
 
 import importlib.util
 import sys
 from pathlib import Path
 
-# translate.py is verder onafhankelijk van de rest van het pakket -- rechtstreeks
-# via bestandspad laden i.p.v. via `whisperlivekit.translate`, want dat laatste
-# triggert whisperlivekit/__init__.py, dat de hele (zware) ASR-stack importeert.
 _MODULE_PATH = Path(__file__).resolve().parent.parent / "whisperlivekit" / "translate.py"
 _spec = importlib.util.spec_from_file_location("translate", _MODULE_PATH)
 _tr = importlib.util.module_from_spec(_spec)
@@ -23,21 +27,20 @@ _spec.loader.exec_module(_tr)
 translate_text = _tr.translate_text
 
 
-class _FakeLLMBackend:
-    """Testdubbel voor LLMBackend -- zie tests/test_gehoorverslag.py voor
-    hetzelfde patroon (nu daar verwijderd samen met classify_segments())."""
+class _FakeNLLBBackend:
+    """Testdubbel voor whisperlivekit.nllb_backend.NLLBBackend."""
 
     def __init__(self, response=None, raise_exc=None):
         self.response = response
         self.raise_exc = raise_exc
-        self.last_system_prompt = None
-        self.last_user_prompt = None
+        self.last_text = None
+        self.last_source = None
         self.call_count = 0
 
-    def chat(self, system_prompt, user_prompt):
+    def translate(self, text, source_iso, target_iso="nl"):
         self.call_count += 1
-        self.last_system_prompt = system_prompt
-        self.last_user_prompt = user_prompt
+        self.last_text = text
+        self.last_source = source_iso
         if self.raise_exc:
             raise self.raise_exc
         return self.response
@@ -49,7 +52,7 @@ def test_no_backend_returns_none():
 
 
 def test_empty_text_returns_none_without_calling_backend():
-    backend = _FakeLLMBackend(response="zou nooit gebruikt moeten worden")
+    backend = _FakeNLLBBackend(response="zou nooit gebruikt moeten worden")
     assert translate_text("", "en", backend) is None
     assert translate_text("   ", "en", backend) is None
     assert backend.call_count == 0
@@ -57,43 +60,27 @@ def test_empty_text_returns_none_without_calling_backend():
 
 
 def test_fail_safe_on_backend_exception():
-    backend = _FakeLLMBackend(raise_exc=RuntimeError("connection refused"))
+    backend = _FakeNLLBBackend(raise_exc=RuntimeError("model niet geladen"))
     assert translate_text("merhaba", "tr", backend) is None
     print("OK test_fail_safe_on_backend_exception")
 
 
-def test_fail_safe_on_empty_response():
-    backend = _FakeLLMBackend(response="   ")
+def test_fail_safe_on_none_response():
+    # NLLBBackend.translate() geeft zelf al None terug bij een onbekende
+    # brontaal of een mislukte call -- translate_text() moet dat gewoon
+    # doorgeven, niet omzetten naar een lege string of exception.
+    backend = _FakeNLLBBackend(response=None)
     assert translate_text("merhaba", "tr", backend) is None
-    print("OK test_fail_safe_on_empty_response")
+    print("OK test_fail_safe_on_none_response")
 
 
-def test_successful_translation_strips_whitespace():
-    backend = _FakeLLMBackend(response="  Hallo, hoe gaat het?  ")
-    result = translate_text("merhaba, nasılsın?", "tr", backend)
+def test_successful_translation_passthrough():
+    backend = _FakeNLLBBackend(response="Hallo, hoe gaat het?")
+    result = translate_text("merhaba, nasilsin?", "tr", backend)
     assert result == "Hallo, hoe gaat het?"
-    print("OK test_successful_translation_strips_whitespace")
-
-
-def test_language_code_mapped_to_readable_name_in_prompt():
-    backend = _FakeLLMBackend(response="Hallo")
-    translate_text("merhaba", "tr", backend)
-    assert "Turks" in backend.last_system_prompt
-    print("OK test_language_code_mapped_to_readable_name_in_prompt")
-
-
-def test_unknown_language_code_falls_back_gracefully():
-    backend = _FakeLLMBackend(response="Hallo")
-    translate_text("hello", "xx", backend)
-    assert "xx" in backend.last_system_prompt
-    print("OK test_unknown_language_code_falls_back_gracefully")
-
-
-def test_missing_language_falls_back_to_autodetect_prompt():
-    backend = _FakeLLMBackend(response="Hallo")
-    translate_text("bir şey söyledi", None, backend)
-    assert "Detecteer zelf de brontaal" in backend.last_system_prompt
-    print("OK test_missing_language_falls_back_to_autodetect_prompt")
+    assert backend.last_text == "merhaba, nasilsin?"
+    assert backend.last_source == "tr"
+    print("OK test_successful_translation_passthrough")
 
 
 if __name__ == "__main__":
@@ -101,11 +88,8 @@ if __name__ == "__main__":
         test_no_backend_returns_none,
         test_empty_text_returns_none_without_calling_backend,
         test_fail_safe_on_backend_exception,
-        test_fail_safe_on_empty_response,
-        test_successful_translation_strips_whitespace,
-        test_language_code_mapped_to_readable_name_in_prompt,
-        test_unknown_language_code_falls_back_gracefully,
-        test_missing_language_falls_back_to_autodetect_prompt,
+        test_fail_safe_on_none_response,
+        test_successful_translation_passthrough,
     ]
     failures = 0
     for t in tests:
