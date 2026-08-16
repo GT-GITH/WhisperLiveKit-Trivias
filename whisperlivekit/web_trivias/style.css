@@ -505,6 +505,31 @@ body {
   font-weight: normal;
 }
 
+.seg-translate {
+  cursor: pointer;
+  margin-left: 4px;
+  opacity: 0.7;
+}
+.seg-translate:hover {
+  opacity: 1;
+}
+.seg-translation {
+  margin: 2px 0 2px 24px;
+  padding-left: 8px;
+  border-left: 2px solid var(--role-foreign, #f97316);
+  font-style: italic;
+  color: var(--text-soft);
+  cursor: default;
+}
+.seg-translation-error {
+  margin: 2px 0 2px 24px;
+  padding-left: 8px;
+  border-left: 2px solid #f87171;
+  font-style: italic;
+  color: #f87171;
+  cursor: default;
+}
+
 .seg-buffer {
   color: var(--text-muted);
   opacity: 0.9;

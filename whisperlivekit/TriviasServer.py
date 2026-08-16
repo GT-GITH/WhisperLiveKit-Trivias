@@ -16,12 +16,15 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
+from pydantic import BaseModel
 
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 from whisperlivekit.simul_whisper.backend import evaluate_batch_segment
 from whisperlivekit.simul_whisper.config import get_channel_config
 from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
 from whisperlivekit.gehoorverslag import build_gehoorverslag_docx
+from whisperlivekit.llm_backend import LLMBackend, build_llm_backend
+from whisperlivekit.translate import translate_text
 
 from whisperlivekit.web_trivias.web_interface import get_inline_ui_html
 
@@ -133,6 +136,11 @@ def get_wav_path(session_id: str, channel_id: str) -> Optional[str]:
 
 # ====== Shared transcription engine ======
 transcription_engine: Optional[TranscriptionEngine] = None
+
+# On-prem LLM-backend (optioneel, zie llm_backend.py) -- None zolang
+# --llm-backend-url niet gezet is; LLM-afhankelijke features (bv. het
+# /translate-endpoint) moeten hier altijd fail-safe mee omgaan.
+llm_backend: Optional[LLMBackend] = None
 
 def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
     try:
@@ -250,10 +258,14 @@ def _extract_batch_snapshot(engine: Any) -> Dict[str, Any]:
 async def lifespan(app: FastAPI):
     _log_kv_block("TRIVIAS SERVER STARTUP PARAMETERS (RAW ARGS)", vars(args))
 
-    global transcription_engine
+    global transcription_engine, llm_backend
     logger.info("Initialising TranscriptionEngine for TriviasServer...")
     transcription_engine = TranscriptionEngine(**vars(args))
     logger.info("TranscriptionEngine ready.")
+
+    llm_backend = build_llm_backend(args)
+    if llm_backend is None:
+        logger.info("[LLM] geen --llm-backend-url geconfigureerd -- /translate draait in fallback-modus (503).")
 
     # 1) Snapshot van bedoelde input / channel-context
     try:
@@ -787,6 +799,29 @@ async def generate_gehoorverslag(session_id: str):
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="gehoorverslag_{session_id}.docx"'},
     )
+
+
+class TranslateRequest(BaseModel):
+    text: str
+    channel_id: str
+
+
+@app.post("/translate")
+async def translate_segment(payload: TranslateRequest):
+    """Vertaalt een los tekstfragment naar het Nederlands, on-demand (geen
+    persistente opslag -- zie features/vertaling-niet-nl-tekst.md). Bron-taal
+    wordt afgeleid uit channel_id via _resolve_channel_language() (zelfde
+    functie als Ververs Transcriptie gebruikt), niet aan het LLM overgelaten
+    om te raden."""
+    if llm_backend is None:
+        return JSONResponse({"error": "vertaalfunctie niet geconfigureerd (geen --llm-backend-url)"}, status_code=503)
+
+    source_language = _resolve_channel_language(payload.channel_id)
+    translation = translate_text(payload.text, source_language, llm_backend)
+    if translation is None:
+        return JSONResponse({"error": "vertalen mislukt"}, status_code=502)
+
+    return JSONResponse({"translation": translation})
 
 
 # ====== WebSocket result handler ======

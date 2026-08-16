@@ -1139,7 +1139,14 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     // alleen de live-weergave is verzacht.
     const confirmedBadge = isBatchConfirmed ? ` <span class="seg-confirmed" title="Bevestigd door batch-pass">✓</span>` : "";
 
-    htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}${confirmedBadge}</div>`);
+    // Vertaalicoontje: alleen bij bevestigde (batch) tekst van een vreemdeling-kanaal --
+    // zie features/vertaling-niet-nl-tekst.md. data-raw-text ipv de al-geëscapete
+    // regeltekst, zodat de klik-handler de ongewijzigde brontekst naar /translate stuurt.
+    const translateIcon = (isBatchConfirmed && roleId === "foreign")
+      ? ` <span class="seg-translate" title="Vertaal naar het Nederlands" data-raw-text="${escapeHtml(rawTxt)}">🌐</span>`
+      : "";
+
+    htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}${confirmedBadge}${translateIcon}</div>`);
   }
 
   const hasLiveContent = (lines || []).some(item => (item?.text || item?.text_live) && !item?.text_batch && item?.speaker !== -2);
@@ -1333,6 +1340,13 @@ function renderPlaybackFiltered() {
 
 if (liveTranscriptDiv) {
   liveTranscriptDiv.addEventListener("click", async e => {
+    const translateIcon = e.target.closest(".seg-translate");
+    if (translateIcon) {
+      e.stopPropagation();
+      await handleTranslateClick(translateIcon);
+      return;
+    }
+
     const seg = e.target.closest(".seg-clickable");
     if (!seg) return;
     const startMs = parseInt(seg.dataset.startMs || "0", 10);
@@ -1351,6 +1365,70 @@ if (liveTranscriptDiv) {
     audio.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:9999;background:#1e293b;border-radius:8px;";
     document.body.appendChild(audio);
   });
+}
+
+// === Vertaling niet-NL tekst (on-demand, zie features/vertaling-niet-nl-tekst.md) ===
+
+// Client-side cache binnen dit paginabezoek -- niet persistent, geen sessionStorage/
+// localStorage: een vertaling is een AI-afleiding, geen onderdeel van de autoritatieve
+// transcriptie (CLAUDE.md "audio is authoritative"). Alleen bedoeld om een dubbele klik
+// op dezelfde regel geen tweede LLM-call te laten kosten.
+const translationCache = new Map();
+
+async function handleTranslateClick(iconEl) {
+  const seg = iconEl.closest(".seg-clickable");
+  if (!seg) return;
+
+  const rawText = iconEl.dataset.rawText || "";
+  const channel = seg.dataset.channel || "default";
+  if (!rawText.trim()) return;
+
+  const existing = seg.querySelector(".seg-translation, .seg-translation-error");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+
+  const cacheKey = `${channel}::${rawText}`;
+  if (translationCache.has(cacheKey)) {
+    insertTranslationLine(seg, translationCache.get(cacheKey));
+    return;
+  }
+
+  iconEl.textContent = "⏳";
+  try {
+    const resp = await fetch("/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: rawText, channel_id: channel }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.translation) {
+      insertTranslationLine(seg, null, data.error || "Vertalen mislukt");
+      return;
+    }
+    translationCache.set(cacheKey, data.translation);
+    insertTranslationLine(seg, data.translation);
+  } catch (err) {
+    insertTranslationLine(seg, null, "Vertalen mislukt (verbindingsfout)");
+  } finally {
+    iconEl.textContent = "🌐";
+  }
+}
+
+function insertTranslationLine(seg, translation, errorMessage) {
+  const existing = seg.querySelector(".seg-translation, .seg-translation-error");
+  if (existing) existing.remove();
+
+  const line = document.createElement("div");
+  if (translation) {
+    line.className = "seg-translation";
+    line.textContent = `🌐 ${translation}`;
+  } else {
+    line.className = "seg-translation-error";
+    line.textContent = `⚠ ${errorMessage || "Vertalen mislukt"}`;
+  }
+  seg.appendChild(line);
 }
 
 // === Event wiring ===
