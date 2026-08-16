@@ -118,6 +118,7 @@ dmypy.json
 /Log/
 /Gehoren/
 /features/
+/recordings/
 run_*.sh
 
 # Downloaded models
