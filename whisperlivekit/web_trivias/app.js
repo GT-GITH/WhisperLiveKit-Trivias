@@ -1207,87 +1207,126 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 }
 
 // === Startpagina ===
-// Vervangt de vorige sessie-browser-modal: eerste-klas paginasectie i.p.v.
-// pop-up. Eén fetch, drie afgeleide weergaven (recent / nog geen
-// gehoorverslag / eerder gegenereerd) + een client-side zoekfilter op
-// zaaknummer/sessie-id -- geen apart backend-endpoint nodig daarvoor.
+// Georganiseerd rondom zaken/gesprekken, niet rondom bestanden: één lijst
+// waarin elke sessie precies één keer voorkomt (i.p.v. drie parallelle
+// kolommen met dezelfde sessies), gefilterd via knoppen + een zoekveld.
+// Zaaknummer is de primaire identiteit van een rij, niet de technische
+// sessie-id. Vervangt ook de vorige sessie-browser-modal.
 
 let landingSessionsCache = [];
+let landingActiveFilter = "all";
+
+// Bewust geen naam in de begroeting ("Goedemorgen, {naam}") -- er is nog
+// geen echt account-systeem (zie CLAUDE.md/de login-discussie), dus een
+// naam tonen zou een niet-bestaande login voorwenden. Het tijdstip komt
+// gewoon van de systeemklok, geen gebruikersgegeven.
+function landingGreetingText() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Goedemorgen";
+  if (hour < 18) return "Goedemiddag";
+  return "Goedenavond";
+}
 
 async function loadLandingData() {
-  const recentEl = document.getElementById("landingRecentList");
-  if (!recentEl) return;
-  recentEl.innerHTML = '<p class="sessions-loading">Laden…</p>';
+  const listEl = document.getElementById("landingSessionsList");
+  const greetingEl = document.getElementById("landingGreeting");
+  if (greetingEl) greetingEl.textContent = landingGreetingText();
+  if (!listEl) return;
+  listEl.innerHTML = '<p class="sessions-loading">Laden…</p>';
   try {
     const resp = await fetch("/sessions/list");
     const data = await resp.json();
     landingSessionsCache = data.sessions || [];
-    renderLandingLists();
+    renderLandingStats();
+    renderLandingList();
   } catch (e) {
-    recentEl.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
+    listEl.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
   }
 }
 
-function renderLandingLists() {
-  const recentEl = document.getElementById("landingRecentList");
-  const needsEl  = document.getElementById("landingNeedsReportList");
-  const genEl    = document.getElementById("landingGeneratedList");
-  if (!recentEl) return;
+// Bescheiden oriëntatie, geen dashboard -- platte tekst, geen grote
+// getal-kaarten.
+function renderLandingStats() {
+  const statsEl = document.getElementById("landingStats");
+  if (!statsEl) return;
+  const total = landingSessionsCache.length;
+  if (!total) { statsEl.innerHTML = ""; return; }
+  const needsReport = landingSessionsCache.filter(s => s.has_transcript && !s.gehoorverslag_generated_at).length;
+  statsEl.innerHTML = `<span><strong>${total}</strong> recente sessies</span><span><strong>${needsReport}</strong> zonder verslag</span>`;
+}
+
+function renderLandingList() {
+  const listEl = document.getElementById("landingSessionsList");
+  if (!listEl) return;
 
   const query = (landingSearchInput?.value || "").trim().toLowerCase();
   const matchesQuery = s => !query
     || s.session_id.toLowerCase().includes(query)
     || (s.case_ref || "").toLowerCase().includes(query);
+  const matchesFilter = s => {
+    if (landingActiveFilter === "needs_report") return s.has_transcript && !s.gehoorverslag_generated_at;
+    if (landingActiveFilter === "has_report") return !!s.gehoorverslag_generated_at;
+    return true;
+  };
 
-  const filtered = landingSessionsCache.filter(matchesQuery);
-  recentEl.innerHTML = "";
+  const filtered = landingSessionsCache.filter(s => matchesQuery(s) && matchesFilter(s));
+  listEl.innerHTML = "";
   if (filtered.length === 0) {
-    recentEl.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
-  } else {
-    for (const s of filtered.slice(0, 20)) recentEl.appendChild(createSessionItemEl(s));
+    listEl.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
+    return;
   }
+  for (const s of filtered) listEl.appendChild(createSessionItemEl(s));
+}
 
-  if (needsEl) {
-    const needsReport = landingSessionsCache.filter(s => s.has_transcript && !s.gehoorverslag_generated_at);
-    needsEl.innerHTML = needsReport.length ? "" : '<p class="sessions-loading">Geen sessies.</p>';
-    for (const s of needsReport) needsEl.appendChild(createSessionItemEl(s));
-  }
-
-  if (genEl) {
-    const generated = landingSessionsCache
-      .filter(s => s.gehoorverslag_generated_at)
-      .sort((a, b) => (b.gehoorverslag_generated_at || "").localeCompare(a.gehoorverslag_generated_at || ""));
-    genEl.innerHTML = generated.length ? "" : '<p class="sessions-loading">Geen sessies.</p>';
-    for (const s of generated) genEl.appendChild(createSessionItemEl(s));
-  }
+// "employee"/"foreign_tr"/... zijn interne kanaal-id's -- getRoleLabel()/
+// channelIdToRoleId() (al bestaand, ook gebruikt door de live transcriptie
+// zelf) vertalen dat naar wat een gebruiker daar ook al ziet staan
+// ("Medewerker", "Vreemdeling", ...), hier gededupliceerd.
+function humanRoleLabels(channels) {
+  const labels = (channels || []).map(ch => getRoleLabel(channelIdToRoleId(ch)));
+  return [...new Set(labels)].join(", ");
 }
 
 function createSessionItemEl(s) {
   const date = s.created_at
     ? s.created_at.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, "$3-$2-$1 $4:$5")
     : "onbekend";
-  const caseLine = s.case_ref
-    ? `<span class="session-item-case">Zaaknummer: ${escapeHtml(s.case_ref)}</span>`
-    : "";
-  // Feitelijke tijdstempel, geen afhandel-status -- zie mark_gehoorverslag_generated()
-  // in TriviasServer.py: gegenereerd-zijn betekent niet automatisch gecontroleerd/
-  // in INDiGO verwerkt, dus dit label mag dat onderscheid niet wegpoetsen.
-  const reportLine = s.gehoorverslag_generated_at
-    ? `<span class="session-item-report">Laatst gegenereerd op ${escapeHtml(new Date(s.gehoorverslag_generated_at).toLocaleString("nl-NL"))}</span>`
-    : `<span class="session-item-report session-item-report-missing">Nog niet gegenereerd</span>`;
+  // Zaaknummer is het hoofdonderwerp van de rij, niet de technische id --
+  // die blijft klein/gedempt zichtbaar (support/verwijzing), maar is nooit
+  // meer de kop.
+  const title = s.case_ref ? escapeHtml(s.case_ref) : "Sessie zonder zaaknummer";
+  const shortId = `${s.session_id.substring(0, 8)}…`;
+  const duration = Number.isFinite(s.duration_ms) ? formatMs(s.duration_ms) : null;
 
+  const detailParts = [
+    `<svg class="icon"><use href="#icon-calendar"></use></svg> ${date}`,
+    escapeHtml(humanRoleLabels(s.channels)),
+  ];
+  if (duration) detailParts.push(duration);
+
+  let statusLine;
   const item = document.createElement("div");
   item.className = "session-item";
+  if (!s.has_transcript) {
+    statusLine = `<span class="session-item-status session-item-status-pending">Transcript wordt nog verwerkt</span>`;
+    item.classList.add("session-item-disabled");
+  } else if (s.gehoorverslag_generated_at) {
+    // Feitelijke tijdstempel, geen afhandel-status -- zie
+    // mark_gehoorverslag_generated() in TriviasServer.py: gegenereerd-zijn
+    // betekent niet automatisch gecontroleerd/in INDiGO verwerkt.
+    statusLine = `<span class="session-item-status">Gehoorverslag: laatst gegenereerd op ${escapeHtml(new Date(s.gehoorverslag_generated_at).toLocaleString("nl-NL"))}</span>`;
+  } else {
+    statusLine = `<span class="session-item-status session-item-status-missing">Gehoorverslag: nog niet gegenereerd</span>`;
+  }
+
   item.innerHTML = `
-    <div class="session-item-meta">
-      <span class="session-item-id">${s.session_id.substring(0, 18)}…</span>
-      ${caseLine}
-      <span class="session-item-date"><svg class="icon"><use href="#icon-calendar"></use></svg> ${date} · <svg class="icon"><use href="#icon-mic"></use></svg> ${s.channels.join(", ")} · ${s.wav_size_mb} MB</span>
-      ${reportLine}
+    <div class="session-item-main">
+      <span class="session-item-title">${title}</span>
+      <span class="session-item-id">${shortId}</span>
     </div>
-    <span class="session-item-badge ${s.has_transcript ? "" : "no-transcript"}">
-      ${s.has_transcript ? '<svg class="icon"><use href="#icon-check"></use></svg> transcript' : "geen transcript"}
-    </span>`;
+    <div class="session-item-detail">${detailParts.map(p => `<span>${p}</span>`).join("")}</div>
+    ${statusLine}`;
+
   if (s.has_transcript) {
     item.addEventListener("click", () => {
       showWorkspace();
@@ -1557,7 +1596,15 @@ if (newSessionBtn) newSessionBtn.addEventListener("click", () => {
   document.querySelector('.tab-btn[data-tab="config"]')?.click();
 });
 if (backToLandingBtn) backToLandingBtn.addEventListener("click", showLandingPage);
-if (landingSearchInput) landingSearchInput.addEventListener("input", renderLandingLists);
+if (landingSearchInput) landingSearchInput.addEventListener("input", renderLandingList);
+
+document.querySelectorAll(".landing-filter").forEach(btn => {
+  btn.addEventListener("click", () => {
+    landingActiveFilter = btn.dataset.filter;
+    document.querySelectorAll(".landing-filter").forEach(b => b.classList.toggle("active", b === btn));
+    renderLandingList();
+  });
+});
 
 const addChannelBtn = document.getElementById("addChannelBtn");
 if (addChannelBtn) addChannelBtn.addEventListener("click", addChannelConfig);

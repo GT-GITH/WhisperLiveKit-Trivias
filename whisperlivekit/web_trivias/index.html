@@ -107,33 +107,33 @@
       </header>
 
       <!-- Startpagina: overzicht + startpunt, i.p.v. direct het live-scherm.
-           Zie CLAUDE.md/features-discussie: geen dashboardgrafieken, drie
-           functionele blokken. -->
+           Georganiseerd rondom zaken/gesprekken (één lijst, elke sessie één
+           keer, met filters) i.p.v. rondom bestanden/technische metadata. -->
       <div id="landingPage" class="landing-page">
         <div class="landing-hero">
+          <div class="landing-greeting">
+            <h1 id="landingGreeting">Welkom</h1>
+            <p>Wat wil je vandaag doen?</p>
+          </div>
           <button id="newSessionBtn" class="record-button">
             <svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe sessie starten
           </button>
         </div>
 
-        <div class="landing-search">
+        <div id="landingStats" class="landing-stats"></div>
+
+        <div class="landing-toolbar">
           <input type="text" id="landingSearchInput" placeholder="Zoeken op zaaknummer of sessie-id…" autocomplete="off">
+          <div class="landing-filters" id="landingFilters">
+            <button class="landing-filter active" data-filter="all">Alle sessies</button>
+            <button class="landing-filter" data-filter="needs_report">Nog geen verslag</button>
+            <button class="landing-filter" data-filter="has_report">Verslag gegenereerd</button>
+          </div>
         </div>
 
-        <div class="landing-columns">
-          <section class="landing-section">
-            <h2>Recente sessies</h2>
-            <div id="landingRecentList" class="sessions-list"><p class="sessions-loading">Laden…</p></div>
-          </section>
-          <section class="landing-section">
-            <h2>Nog geen gehoorverslag</h2>
-            <div id="landingNeedsReportList" class="sessions-list"></div>
-          </section>
-          <section class="landing-section">
-            <h2>Eerder gegenereerd</h2>
-            <div id="landingGeneratedList" class="sessions-list"></div>
-          </section>
-        </div>
+        <section class="landing-section-full">
+          <div id="landingSessionsList" class="sessions-list"><p class="sessions-loading">Laden…</p></div>
+        </section>
       </div>
 
       <main class="app-main hidden">

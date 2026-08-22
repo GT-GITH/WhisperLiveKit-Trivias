@@ -662,18 +662,21 @@ select:focus-visible,
 }
 
 /* === Startpagina ===
-   Vervangt de vorige sessie-browser-modal: eerste-klas paginasectie i.p.v.
-   pop-up, zodat er niet twee plekken zijn met dezelfde "blader door
-   sessies"-functionaliteit. .sessions-list/.session-item hieronder blijven
-   gedeeld tussen alle drie de kolommen (Recente sessies, Nog geen
-   gehoorverslag, Eerder gegenereerd). */
+   Georganiseerd rondom zaken/gesprekken, niet rondom bestanden: één lijst
+   waarin elke sessie precies één keer voorkomt (gefilterd via knoppen,
+   i.p.v. drie parallelle kolommen met dezelfde sessies), zaaknummer als
+   primaire identiteit i.p.v. de technische sessie-id, rollen in
+   begrijpelijk Nederlands. Vervangt ook de vorige sessie-browser-modal. */
 
 .landing-page {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 18px;
   flex: 1;
   min-height: 0;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .landing-page.hidden {
@@ -682,23 +685,49 @@ select:focus-visible,
 
 .landing-hero {
   display: flex;
-  justify-content: center;
-  padding: 24px 0 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
 }
 
-.landing-hero .record-button {
-  padding: 14px 28px;
-  font-size: 16px;
+.landing-greeting h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
 }
 
-.landing-search {
-  max-width: 420px;
-  margin: 0 auto;
-  width: 100%;
+.landing-greeting p {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--text-soft);
 }
 
-.landing-search input {
-  width: 100%;
+/* Bescheiden oriëntatie, geen dashboard: platte tekst, geen grote
+   getal-kaarten die om aandacht vragen die ze op een startpagina niet
+   verdienen. */
+.landing-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.landing-stats strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.landing-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.landing-toolbar input {
+  flex: 1 1 220px;
   padding: 8px 14px;
   border-radius: var(--radius-control);
   border: 1px solid var(--border-strong);
@@ -708,49 +737,54 @@ select:focus-visible,
   outline: none;
 }
 
-.landing-search input:focus {
+.landing-toolbar input:focus {
   border-color: var(--accent);
 }
 
-.landing-columns {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  flex: 1;
-  min-height: 0;
+.landing-filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
-.landing-section {
+.landing-filter {
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-soft);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.landing-filter:hover {
+  border-color: var(--accent);
+}
+
+.landing-filter.active {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #fff;
+}
+
+.landing-section-full {
   background: var(--bg-elevated);
   border-radius: var(--radius-2xl);
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-soft);
-  padding: 16px 18px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  flex: 1;
   min-height: 0;
 }
 
-.landing-section h2 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.landing-section .sessions-list {
+.landing-section-full .sessions-list {
   flex: 1;
-  min-height: 120px;
-  padding: 0;
-}
-
-@media (max-width: 900px) {
-  .landing-columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
+  min-height: 200px;
+  padding: 4px;
 }
 
 .sessions-list {
@@ -761,10 +795,16 @@ select:focus-visible,
   gap: 8px;
 }
 
+/* Zaak/gesprek is het hoofdonderwerp van een rij, niet het bestand: het
+   zaaknummer (of "Sessie zonder zaaknummer") is de primaire titel, de
+   technische sessie-id staat er klein en gedempt naast -- nog altijd
+   zichtbaar (nuttig voor support/verwijzing), maar vraagt geen aandacht
+   meer die het op een startpagina niet verdient. Bestandsgrootte en de
+   transcript-badge zijn bewust helemaal weggelaten. */
 .session-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 5px;
   padding: 12px 14px;
   border-radius: var(--radius-xl);
   background: var(--bg-subtle);
@@ -778,54 +818,57 @@ select:focus-visible,
   background: var(--accent-soft);
 }
 
-.session-item-meta {
+.session-item.session-item-disabled {
+  cursor: default;
+}
+
+.session-item.session-item-disabled:hover {
+  border-color: var(--border-subtle);
+  background: var(--bg-subtle);
+}
+
+.session-item-main {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.session-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .session-item-id {
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: 11px;
+  color: var(--text-soft);
   font-family: monospace;
 }
 
-.session-item-case {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent-strong);
-}
-
-.session-item-date {
-  font-size: 11px;
+.session-item-detail {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
-/* Feitelijke tijdstempel, geen afhandel-status -- zie SessionManager.
-   mark_gehoorverslag_generated() in TriviasServer.py: gegenereerd-zijn
-   betekent niet automatisch gecontroleerd/in INDiGO verwerkt. */
-.session-item-report {
-  font-size: 11px;
+/* Eén duidelijke statusregel -- feitelijk geformuleerd, geen afhandel-status
+   (zie SessionManager.mark_gehoorverslag_generated() in TriviasServer.py):
+   gegenereerd-zijn betekent niet automatisch gecontroleerd/in INDiGO
+   verwerkt. */
+.session-item-status {
+  font-size: 12px;
   color: var(--text-soft);
 }
 
-.session-item-report-missing {
+.session-item-status-missing {
   color: var(--warning);
 }
 
-.session-item-badge {
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: var(--radius-control);
-  border: 1px solid #b6ddc8;
-  color: var(--success);
-  background: var(--success-soft);
-}
-
-.session-item-badge.no-transcript {
-  border-color: var(--border-subtle);
-  color: var(--text-soft);
-  background: transparent;
+.session-item-status-pending {
+  font-style: italic;
 }
 
 .sessions-loading {

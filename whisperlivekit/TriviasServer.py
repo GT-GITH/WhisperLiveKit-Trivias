@@ -445,6 +445,20 @@ def _parse_session_wav_name(stem: str) -> Optional[tuple[str, str, str]]:
     return session_uuid, channel_part, timestamp_part
 
 
+def _wav_duration_ms(wav_path: Path) -> Optional[int]:
+    """Leest alleen de WAV-header (frames/samplerate) voor de duur -- geen
+    audio-transfer/decode nodig. None als het bestand ontbreekt/niet leesbaar
+    is; de caller valt dan gewoon terug op geen duur-weergave."""
+    try:
+        with wave.open(str(wav_path), "rb") as wf:
+            rate = wf.getframerate()
+            if rate <= 0:
+                return None
+            return int(wf.getnframes() / rate * 1000)
+    except Exception:
+        return None
+
+
 def _resolve_channel_language(channel_id: str) -> str:
     """Bepaal de taal voor een kanaal zonder levende sessie nodig te hebben.
 
@@ -594,8 +608,15 @@ async def list_sessions_from_disk():
                 "created_at": timestamp_part,
                 "wav_size_mb": round(wav_file.stat().st_size / 1024 / 1024, 2),
                 "has_transcript": wav_file.with_suffix(".json").exists(),
+                "duration_ms": None,
             }
         sessions[key]["channels"].append(channel_part)
+        # Sessieduur = langste kanaal-WAV (kanalen starten niet altijd op
+        # exact hetzelfde moment). Alleen de WAV-header wordt gelezen, geen
+        # audio-transfer.
+        duration = _wav_duration_ms(wav_file)
+        if duration is not None:
+            sessions[key]["duration_ms"] = max(duration, sessions[key]["duration_ms"] or 0)
 
     # Zaaknummer/cliëntreferentie/gebruiker/gehoorverslag-status komen niet uit
     # bestandsnamen maar uit de gepersisteerde SessionManager-metadata (die zelf
