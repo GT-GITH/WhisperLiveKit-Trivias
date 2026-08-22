@@ -190,6 +190,20 @@ class SessionManager:
         self._sessions[session_id] = meta
         self._persist(session_id)
 
+    def get_channel_language(self, session_id: str, channel_id: str) -> Optional[str]:
+        """De daadwerkelijk bij WS-connect meegegeven taal (Taal 1) voor dit
+        kanaal in deze sessie, indien bekend. Zelfde patroon als
+        get_channel_language2() hieronder (incl. hydrate voor na een
+        serverherstart) -- dit is de bron die _resolve_channel_language()
+        raadpleegt vóór de vaste rol-preset, want die preset is alleen een
+        gok (bv. altijd "nl" voor "employee"), terwijl dit de taal is die
+        voor déze sessie/kanaal daadwerkelijk gebruikt is."""
+        self._hydrate(session_id)
+        meta = self._sessions.get(session_id)
+        if not meta:
+            return None
+        return (meta.get("channels", {}).get(channel_id) or {}).get("language")
+
     def get_channel_language2(self, session_id: str, channel_id: str) -> Optional[str]:
         """De daadwerkelijk geconfigureerde Taal 2 (brontaal-hint bij een
         taalpaar-kanaal zoals de tolk) voor deze sessie/kanaal, indien bekend.
@@ -448,16 +462,30 @@ def _parse_session_wav_name(stem: str) -> Optional[tuple[str, str, str]]:
     return session_uuid, channel_part, timestamp_part
 
 
-def _resolve_channel_language(channel_id: str) -> str:
-    """Bepaal de taal voor een kanaal zonder levende sessie nodig te hebben.
+def _resolve_channel_language(channel_id: str, session_id: Optional[str] = None) -> str:
+    """Bepaal de taal voor een kanaal, met de daadwerkelijk-gebruikte waarde
+    als die bekend is, anders best-effort zonder sessie nodig te hebben.
 
-    De live WS-verbinding krijgt zijn taal via een los `lang=`-queryparam (zie
-    websocket_endpoint) -- die waarde wordt nergens gepersisteerd, dus "Ververs
-    Transcriptie" (draait achteraf, buiten elke levende verbinding om) kan er niet
-    bij. Voor het "foreign"-kanaal codeert de client de taal echter al in de
-    channel_id zelf (bv. "foreign_tr", zie getChannelId() in app.js) -- dat IS wel
-    persistent (staat letterlijk in de WAV-bestandsnaam). Voor overige kanalen is de
-    taal een vast rol-preset, dus get_channel_config() volstaat daar."""
+    Prioriteit:
+    1. Als `session_id` gegeven is: de daadwerkelijk bij WS-connect meegegeven
+       taal voor dit kanaal in déze sessie (session_manager.get_channel_language(),
+       gepersisteerd door create_or_update()). Dit is de enige betrouwbare bron
+       voor kanalen als "employee"/"interpreter"/"lawyer" -- de Configuratie-UI
+       staat een afwijkende taal toe voor elke rol, niet alleen "Vreemdeling",
+       maar alleen bij "foreign_*" staat die keuze ook in de channel_id zelf.
+       Zonder deze stap kreeg "Ververs Transcriptie" voor zo'n kanaal altijd de
+       rol-preset (bv. "nl" voor employee) opgelegd, ongeacht de echt gesproken
+       taal -- FasterWhisper hallucineert zichtbaar (herhalende onzin) als de
+       opgelegde taal niet bij de audio past.
+    2. Voor "foreign_*"-kanalen: de taal staat letterlijk in de channel_id zelf
+       (bv. "foreign_tr", zie getChannelId() in app.js) -- persistent (staat
+       letterlijk in de WAV-bestandsnaam), ook zonder sessie-metadata.
+    3. Fallback: de vaste rol-preset (get_channel_config()) -- voor sessies van
+       vóór de per-kanaal-taal-persistentie, of zonder session_id beschikbaar."""
+    if session_id:
+        persisted = session_manager.get_channel_language(session_id, channel_id)
+        if persisted:
+            return persisted
     if channel_id and channel_id.startswith("foreign_"):
         return channel_id[len("foreign_"):] or "nl"
     return get_channel_config(channel_id).language
@@ -521,7 +549,7 @@ def rebuild_channel_transcript(
             )
         asr_audio_f32 = audio_f32
 
-    lang = _resolve_channel_language(channel_id)
+    lang = _resolve_channel_language(channel_id, session_id=session_id)
     segments = engine.batch_asr.transcribe_full(asr_audio_f32, language_override=lang)
 
     entries: list[dict] = []
@@ -751,7 +779,7 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
         # en het gehoorverslag-endpoint hieronder, geen nieuwe berekeningen.
         meta = session_manager.get(session_id) or {}
         external_refs = meta.get("external_references") or {}
-        languages = {ch: _resolve_channel_language(ch) for ch in merged["channels"]}
+        languages = {ch: _resolve_channel_language(ch, session_id=session_id) for ch in merged["channels"]}
         # Taal 2 (bv. bij de tolk) is alleen bekend als dat kanaal ooit met een
         # lang2-queryparam verbonden heeft -- zelfde bron als
         # session_manager.get_channel_language2(), al gebruikt voor de
@@ -986,7 +1014,7 @@ async def generate_gehoorverslag(session_id: str):
 
     session_meta = {
         "date": merged.get("date"),
-        "languages": {ch: _resolve_channel_language(ch) for ch in merged["channels"]},
+        "languages": {ch: _resolve_channel_language(ch, session_id=session_id) for ch in merged["channels"]},
     }
 
     try:
