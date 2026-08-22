@@ -153,6 +153,36 @@ const STORAGE_KEY = "trivias_channel_config";
 let channelConfigs = [];
 let availableMics = [];
 
+// === Sessie-brede referenties (zaaknummer, cliëntreferentie) ===
+// Bewust GEEN localStorage (i.t.t. channelConfigs hierboven, dat legitieme
+// apparaatinstellingen bevat): op een gedeeld werkstation mag een zaaknummer
+// nooit blijven staan voor de volgende gebruiker. Kale in-memory state,
+// expliciet leeggemaakt via resetSessionRefs() bij Stop en bij het starten
+// van een nieuwe opname vanaf de startpagina.
+let sessionCaseRef = "";
+let sessionPersonRef = "";
+
+const sessionCaseRefInput   = document.getElementById("sessionCaseRefInput");
+const sessionPersonRefInput = document.getElementById("sessionPersonRefInput");
+
+if (sessionCaseRefInput) {
+  sessionCaseRefInput.addEventListener("input", () => {
+    sessionCaseRef = sessionCaseRefInput.value.trim();
+  });
+}
+if (sessionPersonRefInput) {
+  sessionPersonRefInput.addEventListener("input", () => {
+    sessionPersonRef = sessionPersonRefInput.value.trim();
+  });
+}
+
+function resetSessionRefs() {
+  sessionCaseRef = "";
+  sessionPersonRef = "";
+  if (sessionCaseRefInput) sessionCaseRefInput.value = "";
+  if (sessionPersonRefInput) sessionPersonRefInput.value = "";
+}
+
 function loadChannelConfigs() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -375,10 +405,11 @@ const asrStatusSpan        = document.getElementById("asrStatus");
 const timerSpan            = document.getElementById("recordingTimer");
 const hintText             = document.getElementById("hintText");
 
-const sessionsBtn        = document.getElementById("sessionsBtn");
-const sessionsModal      = document.getElementById("sessionsModal");
-const sessionsModalClose = document.getElementById("sessionsModalClose");
-const sessionsList       = document.getElementById("sessionsList");
+const landingPage        = document.getElementById("landingPage");
+const workspaceMain      = document.querySelector(".app-main");
+const backToLandingBtn   = document.getElementById("backToLandingBtn");
+const newSessionBtn      = document.getElementById("newSessionBtn");
+const landingSearchInput = document.getElementById("landingSearchInput");
 
 // === Status UI helpers ===
 
@@ -488,6 +519,11 @@ function buildWebSocketUrl(sessionId, channelId, cfg) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({ session_id: sessionId, channel_id: channelId, lang: cfg.language || "nl", gate_framed: "1" });
   if (cfg.language2) params.set("lang2", cfg.language2);
+  // Elk kanaal opent zijn eigen WS-verbinding maar deelt dezelfde session_id;
+  // de backend merget case_ref/person_ref per sessie (SessionManager.create_or_update),
+  // dus het is onschadelijk dat elk kanaal dezelfde waarde meestuurt.
+  if (sessionCaseRef) params.set("case_ref", sessionCaseRef);
+  if (sessionPersonRef) params.set("person_ref", sessionPersonRef);
   return `${proto}//${location.host}/ws?${params}`;
 }
 
@@ -751,6 +787,7 @@ async function stopRecording() {
   }
 
   setConnectionStatus(0, channelConfigs.length);
+  resetSessionRefs();
 }
 
 async function confirmAndStop() {
@@ -1169,41 +1206,108 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   }
 }
 
-// === Sessie browser ===
+// === Startpagina ===
+// Vervangt de vorige sessie-browser-modal: eerste-klas paginasectie i.p.v.
+// pop-up. Eén fetch, drie afgeleide weergaven (recent / nog geen
+// gehoorverslag / eerder gegenereerd) + een client-side zoekfilter op
+// zaaknummer/sessie-id -- geen apart backend-endpoint nodig daarvoor.
 
-async function loadSessionsList() {
-  if (!sessionsList) return;
-  sessionsList.innerHTML = '<p class="sessions-loading">Laden…</p>';
+let landingSessionsCache = [];
+
+async function loadLandingData() {
+  const recentEl = document.getElementById("landingRecentList");
+  if (!recentEl) return;
+  recentEl.innerHTML = '<p class="sessions-loading">Laden…</p>';
   try {
     const resp = await fetch("/sessions/list");
     const data = await resp.json();
-    if (!data.sessions || data.sessions.length === 0) {
-      sessionsList.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
-      return;
-    }
-    sessionsList.innerHTML = "";
-    for (const s of data.sessions) {
-      const date = s.created_at
-        ? s.created_at.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, "$3-$2-$1 $4:$5")
-        : "onbekend";
-      const item = document.createElement("div");
-      item.className = "session-item";
-      item.innerHTML = `
-        <div class="session-item-meta">
-          <span class="session-item-id">${s.session_id.substring(0, 18)}…</span>
-          <span class="session-item-date"><svg class="icon"><use href="#icon-calendar"></use></svg> ${date} · <svg class="icon"><use href="#icon-mic"></use></svg> ${s.channels.join(", ")} · ${s.wav_size_mb} MB</span>
-        </div>
-        <span class="session-item-badge ${s.has_transcript ? "" : "no-transcript"}">
-          ${s.has_transcript ? '<svg class="icon"><use href="#icon-check"></use></svg> transcript' : "geen transcript"}
-        </span>`;
-      if (s.has_transcript) {
-        item.addEventListener("click", () => loadSessionTranscript(s.session_id));
-      }
-      sessionsList.appendChild(item);
-    }
+    landingSessionsCache = data.sessions || [];
+    renderLandingLists();
   } catch (e) {
-    sessionsList.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
+    recentEl.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
   }
+}
+
+function renderLandingLists() {
+  const recentEl = document.getElementById("landingRecentList");
+  const needsEl  = document.getElementById("landingNeedsReportList");
+  const genEl    = document.getElementById("landingGeneratedList");
+  if (!recentEl) return;
+
+  const query = (landingSearchInput?.value || "").trim().toLowerCase();
+  const matchesQuery = s => !query
+    || s.session_id.toLowerCase().includes(query)
+    || (s.case_ref || "").toLowerCase().includes(query);
+
+  const filtered = landingSessionsCache.filter(matchesQuery);
+  recentEl.innerHTML = "";
+  if (filtered.length === 0) {
+    recentEl.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
+  } else {
+    for (const s of filtered.slice(0, 20)) recentEl.appendChild(createSessionItemEl(s));
+  }
+
+  if (needsEl) {
+    const needsReport = landingSessionsCache.filter(s => s.has_transcript && !s.gehoorverslag_generated_at);
+    needsEl.innerHTML = needsReport.length ? "" : '<p class="sessions-loading">Geen sessies.</p>';
+    for (const s of needsReport) needsEl.appendChild(createSessionItemEl(s));
+  }
+
+  if (genEl) {
+    const generated = landingSessionsCache
+      .filter(s => s.gehoorverslag_generated_at)
+      .sort((a, b) => (b.gehoorverslag_generated_at || "").localeCompare(a.gehoorverslag_generated_at || ""));
+    genEl.innerHTML = generated.length ? "" : '<p class="sessions-loading">Geen sessies.</p>';
+    for (const s of generated) genEl.appendChild(createSessionItemEl(s));
+  }
+}
+
+function createSessionItemEl(s) {
+  const date = s.created_at
+    ? s.created_at.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, "$3-$2-$1 $4:$5")
+    : "onbekend";
+  const caseLine = s.case_ref
+    ? `<span class="session-item-case">Zaaknummer: ${escapeHtml(s.case_ref)}</span>`
+    : "";
+  // Feitelijke tijdstempel, geen afhandel-status -- zie mark_gehoorverslag_generated()
+  // in TriviasServer.py: gegenereerd-zijn betekent niet automatisch gecontroleerd/
+  // in INDiGO verwerkt, dus dit label mag dat onderscheid niet wegpoetsen.
+  const reportLine = s.gehoorverslag_generated_at
+    ? `<span class="session-item-report">Laatst gegenereerd op ${escapeHtml(new Date(s.gehoorverslag_generated_at).toLocaleString("nl-NL"))}</span>`
+    : `<span class="session-item-report session-item-report-missing">Nog niet gegenereerd</span>`;
+
+  const item = document.createElement("div");
+  item.className = "session-item";
+  item.innerHTML = `
+    <div class="session-item-meta">
+      <span class="session-item-id">${s.session_id.substring(0, 18)}…</span>
+      ${caseLine}
+      <span class="session-item-date"><svg class="icon"><use href="#icon-calendar"></use></svg> ${date} · <svg class="icon"><use href="#icon-mic"></use></svg> ${s.channels.join(", ")} · ${s.wav_size_mb} MB</span>
+      ${reportLine}
+    </div>
+    <span class="session-item-badge ${s.has_transcript ? "" : "no-transcript"}">
+      ${s.has_transcript ? '<svg class="icon"><use href="#icon-check"></use></svg> transcript' : "geen transcript"}
+    </span>`;
+  if (s.has_transcript) {
+    item.addEventListener("click", () => {
+      showWorkspace();
+      loadSessionTranscript(s.session_id);
+    });
+  }
+  return item;
+}
+
+function showLandingPage() {
+  if (landingPage) landingPage.classList.remove("hidden");
+  if (workspaceMain) workspaceMain.classList.add("hidden");
+  if (backToLandingBtn) backToLandingBtn.classList.add("hidden");
+  loadLandingData();
+}
+
+function showWorkspace() {
+  if (landingPage) landingPage.classList.add("hidden");
+  if (workspaceMain) workspaceMain.classList.remove("hidden");
+  if (backToLandingBtn) backToLandingBtn.classList.remove("hidden");
 }
 
 // Haalt altijd het gemergde transcript van ALLE kanalen van een sessie op
@@ -1215,8 +1319,6 @@ async function loadSessionTranscript(sessionId) {
     const resp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/transcript?channel_id=all`);
     if (!resp.ok) { alert("Transcript niet gevonden."); return; }
     const data = await resp.json();
-
-    sessionsModal.classList.add("hidden");
 
     currentSessionId   = data.session_id;
     isPlaybackMode     = true;
@@ -1449,12 +1551,13 @@ if (refreshButton) refreshButton.addEventListener("click", refreshTranscript);
 if (refreshPlaybackButton) refreshPlaybackButton.addEventListener("click", refreshTranscript);
 if (gehoorverslagButton) gehoorverslagButton.addEventListener("click", downloadGehoorverslag);
 
-if (sessionsBtn) sessionsBtn.addEventListener("click", () => {
-  sessionsModal.classList.remove("hidden");
-  loadSessionsList();
+if (newSessionBtn) newSessionBtn.addEventListener("click", () => {
+  resetSessionRefs();
+  showWorkspace();
+  document.querySelector('.tab-btn[data-tab="config"]')?.click();
 });
-if (sessionsModalClose) sessionsModalClose.addEventListener("click", () => sessionsModal.classList.add("hidden"));
-if (sessionsModal) sessionsModal.addEventListener("click", e => { if (e.target === sessionsModal) sessionsModal.classList.add("hidden"); });
+if (backToLandingBtn) backToLandingBtn.addEventListener("click", showLandingPage);
+if (landingSearchInput) landingSearchInput.addEventListener("input", renderLandingLists);
 
 const addChannelBtn = document.getElementById("addChannelBtn");
 if (addChannelBtn) addChannelBtn.addEventListener("click", addChannelConfig);
@@ -1498,3 +1601,8 @@ updateRecordButtonUI();
 updateHint();
 setConnectionStatus(0, channelConfigs.length);
 setAsrStatus("Wachten op opname");
+
+// Startpagina is de landingsplek i.p.v. direct het live-scherm (index.html
+// toont #landingPage al zichtbaar / .app-main al hidden by default -- dit
+// vult 'm alleen met data, wisselt geen zichtbaarheid).
+loadLandingData();

@@ -100,13 +100,43 @@
         <div class="app-header-right">
           <span class="tag tag-model">model: large-v3</span>
           <span class="tag tag-lang">taal: NL</span>
-          <button id="sessionsBtn" class="tag tag-sessions">
-            <svg class="icon"><use href="#icon-folder"></use></svg> Sessies
+          <button id="backToLandingBtn" class="tag tag-sessions hidden">
+            <svg class="icon"><use href="#icon-folder"></use></svg> ◄ Overzicht
           </button>
         </div>
       </header>
 
-      <main class="app-main">
+      <!-- Startpagina: overzicht + startpunt, i.p.v. direct het live-scherm.
+           Zie CLAUDE.md/features-discussie: geen dashboardgrafieken, drie
+           functionele blokken. -->
+      <div id="landingPage" class="landing-page">
+        <div class="landing-hero">
+          <button id="newSessionBtn" class="record-button">
+            <svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe sessie starten
+          </button>
+        </div>
+
+        <div class="landing-search">
+          <input type="text" id="landingSearchInput" placeholder="Zoeken op zaaknummer of sessie-id…" autocomplete="off">
+        </div>
+
+        <div class="landing-columns">
+          <section class="landing-section">
+            <h2>Recente sessies</h2>
+            <div id="landingRecentList" class="sessions-list"><p class="sessions-loading">Laden…</p></div>
+          </section>
+          <section class="landing-section">
+            <h2>Nog geen gehoorverslag</h2>
+            <div id="landingNeedsReportList" class="sessions-list"></div>
+          </section>
+          <section class="landing-section">
+            <h2>Eerder gegenereerd</h2>
+            <div id="landingGeneratedList" class="sessions-list"></div>
+          </section>
+        </div>
+      </div>
+
+      <main class="app-main hidden">
         <section class="panel panel-main">
           <div class="panel-header">
             <h2>Live transcriptie</h2>
@@ -155,6 +185,21 @@
 
           <!-- Configuratie tab -->
           <div id="tab-config" class="tab-pane hidden">
+            <!-- Sessie-brede (niet per-kanaal) referenties -- bewust NIET
+                 opgeslagen in localStorage, i.t.t. de kanaalconfiguratie
+                 hieronder: op een gedeeld werkstation mag een zaaknummer nooit
+                 blijven staan voor de volgende gebruiker. Zie app.js
+                 resetSessionRefs(). -->
+            <div class="session-refs">
+              <div class="session-ref-field">
+                <label for="sessionCaseRefInput">Zaaknummer</label>
+                <input type="text" id="sessionCaseRefInput" placeholder="Optioneel" autocomplete="off">
+              </div>
+              <div class="session-ref-field">
+                <label for="sessionPersonRefInput">Cliëntreferentie</label>
+                <input type="text" id="sessionPersonRefInput" placeholder="Optioneel" autocomplete="off">
+              </div>
+            </div>
             <div id="channelConfigList" class="channel-config-list"></div>
             <button id="addChannelBtn" class="add-channel-btn">+ Kanaal toevoegen</button>
             <label class="cross-gate-toggle">
@@ -167,18 +212,5 @@
     </div>
 
     <script type="module" src="app.js"></script>
-
-    <!-- Sessie browser modal -->
-    <div id="sessionsModal" class="sessions-modal hidden">
-      <div class="sessions-modal-inner">
-        <div class="sessions-modal-header">
-          <h2>Opgeslagen sessies</h2>
-          <button id="sessionsModalClose" class="sessions-close"><svg class="icon"><use href="#icon-close"></use></svg></button>
-        </div>
-        <div id="sessionsList" class="sessions-list">
-          <p class="sessions-loading">Laden...</p>
-        </div>
-      </div>
-    </div>
   </body>
 </html>

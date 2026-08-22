@@ -661,61 +661,96 @@ select:focus-visible,
   50% { opacity: 0.4; transform: scale(0.75); }
 }
 
-/* === Sessie browser modal === */
-.sessions-modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(22, 32, 43, 0.55);
-  z-index: 1000;
+/* === Startpagina ===
+   Vervangt de vorige sessie-browser-modal: eerste-klas paginasectie i.p.v.
+   pop-up, zodat er niet twee plekken zijn met dezelfde "blader door
+   sessies"-functionaliteit. .sessions-list/.session-item hieronder blijven
+   gedeeld tussen alle drie de kolommen (Recente sessies, Nog geen
+   gehoorverslag, Eerder gegenereerd). */
+
+.landing-page {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  gap: 20px;
+  flex: 1;
+  min-height: 0;
 }
 
-.sessions-modal.hidden {
+.landing-page.hidden {
   display: none;
 }
 
-.sessions-modal-inner {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-2xl);
-  box-shadow: 0 8px 28px rgba(16, 24, 32, 0.22);
-  width: 90%;
-  max-width: 700px;
-  max-height: 80vh;
+.landing-hero {
   display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  justify-content: center;
+  padding: 24px 0 8px;
 }
 
-.sessions-modal-header {
+.landing-hero .record-button {
+  padding: 14px 28px;
+  font-size: 16px;
+}
+
+.landing-search {
+  max-width: 420px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.landing-search input {
+  width: 100%;
+  padding: 8px 14px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.landing-search input:focus {
+  border-color: var(--accent);
+}
+
+.landing-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.landing-section {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-2xl);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-soft);
+  padding: 16px 18px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.landing-section h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.sessions-modal-header h2 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--text);
+.landing-section .sessions-list {
+  flex: 1;
+  min-height: 120px;
+  padding: 0;
 }
 
-.sessions-close {
-  background: none;
-  border: none;
-  color: var(--text-soft);
-  font-size: 16px;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 6px;
-}
-
-.sessions-close:hover {
-  background: var(--bg-subtle);
+@media (max-width: 900px) {
+  .landing-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .sessions-list {
@@ -755,9 +790,27 @@ select:focus-visible,
   font-family: monospace;
 }
 
+.session-item-case {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-strong);
+}
+
 .session-item-date {
   font-size: 11px;
   color: var(--text-soft);
+}
+
+/* Feitelijke tijdstempel, geen afhandel-status -- zie SessionManager.
+   mark_gehoorverslag_generated() in TriviasServer.py: gegenereerd-zijn
+   betekent niet automatisch gecontroleerd/in INDiGO verwerkt. */
+.session-item-report {
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+.session-item-report-missing {
+  color: var(--warning);
 }
 
 .session-item-badge {
@@ -869,6 +922,42 @@ select:focus-visible,
 
 .channel-filter-chip input {
   cursor: pointer;
+}
+
+/* === Configuratie tab: sessie-brede referenties (zaaknummer e.d.) === */
+
+.session-refs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.session-ref-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.session-ref-field label {
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+.session-ref-field input {
+  padding: 6px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.session-ref-field input:focus {
+  border-color: var(--accent);
 }
 
 /* === Configuratie tab: channel rows === */
