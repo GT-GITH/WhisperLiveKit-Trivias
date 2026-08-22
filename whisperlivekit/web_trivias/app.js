@@ -2356,7 +2356,20 @@ function insertTranslationLine(seg, translation, errorMessage) {
 
 // === Event wiring ===
 
-if (recordButton) recordButton.addEventListener("click", startRecording);
+// #recordButton is hetzelfde element in twee contexten: "Start" in het
+// Bediening-tabblad (start meteen op met de al ingestelde kanaalconfiguratie
+// -- correct in die context) vs. "Nieuwe opname starten" in de read-only
+// sessiesamenvatting tijdens terugluisteren (zie updateRecordButtonUI()).
+// Dat laatste moet NIET blind opnemen met een willekeurige oude configuratie
+// -- de gebruiker heeft nog niets voor déze nieuwe opname ingesteld. Zelfde
+// bestemming als de "Nieuwe opname"-hoofdnavigatie: naar Configuratie, niet
+// direct starten.
+if (recordButton) {
+  recordButton.addEventListener("click", () => {
+    if (isViewingStoredSession()) startNewSessionFlow();
+    else startRecording();
+  });
+}
 
 const startFromConfigBtn = document.getElementById("startFromConfigBtn");
 if (startFromConfigBtn) {
