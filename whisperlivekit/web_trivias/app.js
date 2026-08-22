@@ -407,7 +407,6 @@ const hintText             = document.getElementById("hintText");
 
 const landingPage        = document.getElementById("landingPage");
 const workspaceMain      = document.querySelector(".app-main");
-const backToLandingBtn   = document.getElementById("backToLandingBtn");
 const newSessionBtn      = document.getElementById("newSessionBtn");
 const landingSearchInput = document.getElementById("landingSearchInput");
 
@@ -1216,8 +1215,10 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 let landingSessionsCache = [];
 let landingActiveFilter = "all";
 let landingSortMode = "newest";
-let landingShowAll = false;
-const LANDING_PAGE_SIZE = 8;
+let landingPageIndex = 0;
+let landingCurrentView = "overview"; // "overview" | "sessions"
+const SESSIONS_PER_PAGE = 15;
+const OVERVIEW_RECENT_COUNT = 5;
 
 // Bewust geen naam in de begroeting ("Goedemorgen, {naam}") -- er is nog
 // geen echt account-systeem (zie CLAUDE.md/de login-discussie), dus een
@@ -1231,21 +1232,32 @@ function landingGreetingText() {
 }
 
 async function loadLandingData() {
-  const listEl = document.getElementById("landingSessionsList");
   const greetingEl = document.getElementById("landingGreeting");
   if (greetingEl) greetingEl.textContent = landingGreetingText();
-  if (!listEl) return;
-  listEl.innerHTML = '<p class="sessions-loading">Laden…</p>';
   try {
     const resp = await fetch("/sessions/list");
     const data = await resp.json();
     landingSessionsCache = data.sessions || [];
-    renderLandingStats();
-    renderLandingAttention();
-    renderLandingList();
   } catch (e) {
-    listEl.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
+    landingSessionsCache = [];
   }
+  landingPageIndex = 0;
+  renderLandingStats();
+  renderLandingAttention();
+  renderOverviewRecent();
+  renderLandingList();
+}
+
+// Klikbare navigatie tussen Werkoverzicht en Sessies -- beide leunen op
+// dezelfde landingSessionsCache/renderfuncties, dus geen nieuwe fetch nodig
+// om te wisselen.
+function setLandingView(view) {
+  landingCurrentView = view;
+  document.getElementById("overviewView")?.classList.toggle("hidden", view !== "overview");
+  document.getElementById("sessionsView")?.classList.toggle("hidden", view !== "sessions");
+  document.querySelectorAll(".app-nav-item[data-view]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.view === view);
+  });
 }
 
 // Een héél korte opname (test/per ongeluk gestarte sessie) telt niet mee als
@@ -1306,10 +1318,13 @@ function renderLandingAttention() {
 }
 
 // Gedeeld tussen de filterknoppen in de toolbar en de klikbare rijen in
-// "Aandacht nodig".
+// "Aandacht nodig" (die nu op Werkoverzicht staan) -- filteren betekent dus
+// ook naar de Sessies-pagina navigeren, want daar leeft de gefilterde lijst.
 function applyLandingFilter(filter) {
   landingActiveFilter = filter;
+  landingPageIndex = 0;
   document.querySelectorAll(".landing-filter").forEach(b => b.classList.toggle("active", b.dataset.filter === filter));
+  setLandingView("sessions");
   renderLandingList();
 }
 
@@ -1330,9 +1345,29 @@ function sortLandingSessions(list) {
   return arr;
 }
 
+// Werkoverzicht: enkele recente gesprekken, altijd nieuwste-eerst ongeacht de
+// sorteerkeuze op de Sessies-pagina (onafhankelijke context) -- geen
+// zoeken/filteren hier, dat hoort bij het volledige archief.
+function renderOverviewRecent() {
+  const el = document.getElementById("overviewRecentList");
+  if (!el) return;
+  const recent = [...landingSessionsCache]
+    .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
+    .slice(0, OVERVIEW_RECENT_COUNT);
+  el.innerHTML = "";
+  if (recent.length === 0) {
+    el.innerHTML = '<p class="sessions-loading">Nog geen sessies.</p>';
+    return;
+  }
+  for (const s of recent) el.appendChild(createSessionItemEl(s));
+}
+
+// Sessies-pagina: het volledige, doorzoekbare/filterbare/sorteerbare archief
+// met echte paginering (i.p.v. de vorige "alles tonen"-toggle -- dit IS nu
+// het volledige-lijst-scherm, geen samenvatting meer).
 function renderLandingList() {
   const listEl = document.getElementById("landingSessionsList");
-  const showAllBtn = document.getElementById("landingShowAllBtn");
+  const paginationEl = document.getElementById("landingPagination");
   if (!listEl) return;
 
   const query = (landingSearchInput?.value || "").trim().toLowerCase();
@@ -1347,7 +1382,11 @@ function renderLandingList() {
   };
 
   const filtered = sortLandingSessions(landingSessionsCache.filter(s => matchesQuery(s) && matchesFilter(s)));
-  const visible = landingShowAll ? filtered : filtered.slice(0, LANDING_PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / SESSIONS_PER_PAGE));
+  if (landingPageIndex >= totalPages) landingPageIndex = totalPages - 1;
+  if (landingPageIndex < 0) landingPageIndex = 0;
+  const start = landingPageIndex * SESSIONS_PER_PAGE;
+  const visible = filtered.slice(start, start + SESSIONS_PER_PAGE);
 
   listEl.innerHTML = "";
   if (filtered.length === 0) {
@@ -1356,7 +1395,18 @@ function renderLandingList() {
     for (const s of visible) listEl.appendChild(createSessionItemEl(s));
   }
 
-  if (showAllBtn) showAllBtn.classList.toggle("hidden", landingShowAll || filtered.length <= LANDING_PAGE_SIZE);
+  if (paginationEl) {
+    if (filtered.length <= SESSIONS_PER_PAGE) {
+      paginationEl.innerHTML = "";
+    } else {
+      paginationEl.innerHTML = `
+        <button type="button" id="landingPrevBtn"${landingPageIndex === 0 ? " disabled" : ""}>← Vorige</button>
+        <span>Pagina ${landingPageIndex + 1} van ${totalPages}</span>
+        <button type="button" id="landingNextBtn"${landingPageIndex >= totalPages - 1 ? " disabled" : ""}>Volgende →</button>`;
+      document.getElementById("landingPrevBtn")?.addEventListener("click", () => { landingPageIndex--; renderLandingList(); });
+      document.getElementById("landingNextBtn")?.addEventListener("click", () => { landingPageIndex++; renderLandingList(); });
+    }
+  }
 }
 
 // "employee"/"foreign_tr"/... zijn interne kanaal-id's -- getRoleLabel()/
@@ -1408,8 +1458,9 @@ function createSessionItemEl(s) {
   const duration = Number.isFinite(s.duration_ms) ? formatMs(s.duration_ms) : null;
 
   // Eén doorlopende, met "·" gescheiden regel i.p.v. losse blokjes die tegen
-  // elkaar aan stonden.
-  const detailBits = [formatDutchDateTime(s.created_at)];
+  // elkaar aan stonden. Datum/tijd alleen hier tonen als de titel die nog
+  // niet al bevat (bij "Gesprek · {datum, tijd}" zou dat dubbelop zijn).
+  const detailBits = hasCase ? [formatDutchDateTime(s.created_at)] : [];
   if (duration) detailBits.push(duration);
   const roles = humanRoleLabels(s.channels);
   if (roles) detailBits.push(roles);
@@ -1470,17 +1521,20 @@ function createSessionItemEl(s) {
 function showLandingPage() {
   if (landingPage) landingPage.classList.remove("hidden");
   if (workspaceMain) workspaceMain.classList.add("hidden");
-  if (backToLandingBtn) backToLandingBtn.classList.add("hidden");
   // Model/taal zijn relevant in de werkomgeving, niet op de startpagina.
   document.getElementById("appHeaderTags")?.classList.add("hidden");
+  setLandingView("overview");
   loadLandingData();
 }
 
 function showWorkspace() {
   if (landingPage) landingPage.classList.add("hidden");
   if (workspaceMain) workspaceMain.classList.remove("hidden");
-  if (backToLandingBtn) backToLandingBtn.classList.remove("hidden");
   document.getElementById("appHeaderTags")?.classList.remove("hidden");
+  // Geen navitem blijft "actief" ogen als je hier via een sessiekaart bent
+  // beland (i.p.v. via "Nieuwe opname") -- startNewSessionFlow() zet die
+  // markering zelf terug aan wanneer dat wél de aanleiding was.
+  document.querySelectorAll(".app-nav-item").forEach(b => b.classList.remove("active"));
 }
 
 // Haalt altijd het gemergde transcript van ALLE kanalen van een sessie op
@@ -1724,13 +1778,35 @@ if (refreshButton) refreshButton.addEventListener("click", refreshTranscript);
 if (refreshPlaybackButton) refreshPlaybackButton.addEventListener("click", refreshTranscript);
 if (gehoorverslagButton) gehoorverslagButton.addEventListener("click", downloadGehoorverslag);
 
-if (newSessionBtn) newSessionBtn.addEventListener("click", () => {
+// Gedeeld door de hero-knop op Werkoverzicht en de "Nieuwe opname"-navitem.
+function startNewSessionFlow() {
   resetSessionRefs();
   showWorkspace();
+  document.querySelectorAll('.app-nav-item[data-view="new"]').forEach(b => b.classList.add("active"));
   document.querySelector('.tab-btn[data-tab="config"]')?.click();
+}
+
+if (newSessionBtn) newSessionBtn.addEventListener("click", startNewSessionFlow);
+
+// Hoofdnavigatie: Werkoverzicht/Sessies wisselen binnen de startpagina (geen
+// nieuwe fetch nodig, zie setLandingView()); "Nieuwe opname" gaat naar de
+// werkomgeving. Vervangt de vorige losse "◄ Overzicht"-knop -- die had geen
+// functie meer nu de navigatie er is.
+document.querySelectorAll(".app-nav-item[data-view]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const view = btn.dataset.view;
+    if (view === "new") { startNewSessionFlow(); return; }
+    showLandingPage();
+    setLandingView(view);
+  });
 });
-if (backToLandingBtn) backToLandingBtn.addEventListener("click", showLandingPage);
-if (landingSearchInput) landingSearchInput.addEventListener("input", renderLandingList);
+
+if (landingSearchInput) {
+  landingSearchInput.addEventListener("input", () => {
+    landingPageIndex = 0;
+    renderLandingList();
+  });
+}
 
 document.querySelectorAll(".landing-filter").forEach(btn => {
   btn.addEventListener("click", () => applyLandingFilter(btn.dataset.filter));
@@ -1740,14 +1816,7 @@ const landingSortSelect = document.getElementById("landingSortSelect");
 if (landingSortSelect) {
   landingSortSelect.addEventListener("change", () => {
     landingSortMode = landingSortSelect.value;
-    renderLandingList();
-  });
-}
-
-const landingShowAllBtn = document.getElementById("landingShowAllBtn");
-if (landingShowAllBtn) {
-  landingShowAllBtn.addEventListener("click", () => {
-    landingShowAll = true;
+    landingPageIndex = 0;
     renderLandingList();
   });
 }

@@ -97,6 +97,16 @@
             <span class="app-subtitle">Audio-first evidence platform</span>
           </span>
         </div>
+        <!-- Bescheiden hoofdnavigatie: elke sectie krijgt een eigen taak
+             i.p.v. alles op één pagina (werkoverzicht = kort en glanceable,
+             sessies = het volledige doorzoekbare archief, nieuwe opname =
+             de bestaande werkomgeving). Zie app.js setLandingView()/
+             startNewSessionFlow(). -->
+        <nav class="app-nav" id="appNav">
+          <button class="app-nav-item active" data-view="overview">Werkoverzicht</button>
+          <button class="app-nav-item" data-view="sessions">Sessies</button>
+          <button class="app-nav-item" data-view="new">Nieuwe opname</button>
+        </nav>
         <div class="app-header-right">
           <!-- Alleen relevant in de werkomgeving, niet op de startpagina
                (zie showLandingPage()/showWorkspace() in app.js). -->
@@ -104,56 +114,60 @@
             <span class="tag tag-model">model: large-v3</span>
             <span class="tag tag-lang">taal: NL</span>
           </div>
-          <button id="backToLandingBtn" class="tag tag-sessions hidden">
-            <svg class="icon"><use href="#icon-folder"></use></svg> ◄ Overzicht
-          </button>
         </div>
       </header>
 
-      <!-- Startpagina: werkoverzicht i.p.v. direct het live-scherm. Georganiseerd
-           rondom zaken/gesprekken: hoofdkolom = doorzoekbare/sorteerbare
-           sessielijst, zijkolom = "Aandacht nodig" (klikbare tellers die de
-           hoofdlijst filteren) -- vertelt niet alleen wat er is, maar ook wat
-           de eerstvolgende handeling zou moeten zijn. -->
+      <!-- Startpagina: krijgt via #appNav twee eigen secties i.p.v. alles op
+           één lange lijst -- Werkoverzicht (glanceable: enkele recente
+           gesprekken + wat aandacht vraagt) en Sessies (het volledige
+           doorzoekbare/sorteerbare/gepagineerde archief). -->
       <div id="landingPage" class="landing-page">
-        <div class="landing-hero">
-          <div class="landing-greeting">
+
+        <!-- Werkoverzicht -->
+        <div id="overviewView" class="landing-view">
+          <div class="landing-hero">
             <p class="landing-greeting-small" id="landingGreeting">Welkom</p>
-            <h1>Werkoverzicht</h1>
+            <button id="newSessionBtn" class="record-button">
+              <svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe opname starten
+            </button>
           </div>
-          <button id="newSessionBtn" class="record-button">
-            <svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe sessie starten
-          </button>
+
+          <div id="landingStats" class="landing-stats"></div>
+
+          <div class="landing-grid">
+            <section class="landing-main-col">
+              <h2>Recente gesprekken</h2>
+              <div id="overviewRecentList" class="sessions-list"></div>
+            </section>
+
+            <aside class="landing-side-col">
+              <h2>Aandacht nodig</h2>
+              <ul id="landingAttentionList" class="landing-attention-list"></ul>
+            </aside>
+          </div>
         </div>
 
-        <div id="landingStats" class="landing-stats"></div>
-
-        <div class="landing-grid">
-          <section class="landing-main-col">
-            <div class="landing-toolbar">
-              <input type="text" id="landingSearchInput" placeholder="Zoeken op zaaknummer of sessie-id…" autocomplete="off">
-              <div class="landing-toolbar-row">
-                <div class="landing-filters" id="landingFilters">
-                  <button class="landing-filter active" data-filter="all">Alle sessies</button>
-                  <button class="landing-filter" data-filter="no_transcript">Zonder transcriptie</button>
-                  <button class="landing-filter" data-filter="needs_report">Nog geen verslag</button>
-                  <button class="landing-filter" data-filter="has_report">Verslag gegenereerd</button>
-                </div>
-                <select id="landingSortSelect" class="landing-sort-select">
-                  <option value="newest">Nieuwste eerst</option>
-                  <option value="oldest">Oudste eerst</option>
-                  <option value="case_ref">Zaaknummer</option>
-                </select>
+        <!-- Sessies -->
+        <div id="sessionsView" class="landing-view hidden">
+          <h1>Sessies</h1>
+          <div class="landing-toolbar">
+            <input type="text" id="landingSearchInput" placeholder="Zoeken op zaaknummer of sessie-id…" autocomplete="off">
+            <div class="landing-toolbar-row">
+              <div class="landing-filters" id="landingFilters">
+                <button class="landing-filter active" data-filter="all">Alle sessies</button>
+                <button class="landing-filter" data-filter="no_transcript">Zonder transcriptie</button>
+                <button class="landing-filter" data-filter="needs_report">Nog geen verslag</button>
+                <button class="landing-filter" data-filter="has_report">Verslag gegenereerd</button>
               </div>
+              <select id="landingSortSelect" class="landing-sort-select">
+                <option value="newest">Nieuwste eerst</option>
+                <option value="oldest">Oudste eerst</option>
+                <option value="case_ref">Zaaknummer</option>
+              </select>
             </div>
-            <div id="landingSessionsList" class="sessions-list"><p class="sessions-loading">Laden…</p></div>
-            <button id="landingShowAllBtn" class="landing-show-all hidden">Alle sessies bekijken</button>
-          </section>
-
-          <aside class="landing-side-col">
-            <h2>Aandacht nodig</h2>
-            <ul id="landingAttentionList" class="landing-attention-list"></ul>
-          </aside>
+          </div>
+          <div id="landingSessionsList" class="sessions-list"><p class="sessions-loading">Laden…</p></div>
+          <div id="landingPagination" class="landing-pagination"></div>
         </div>
       </div>
 

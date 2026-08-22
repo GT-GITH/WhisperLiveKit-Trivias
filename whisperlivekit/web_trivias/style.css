@@ -127,6 +127,39 @@ select:focus-visible,
   box-shadow: var(--shadow-soft);
 }
 
+/* Bescheiden hoofdnavigatie: centreert zich in de resterende ruimte tussen
+   logo (links) en de werkomgeving-tags (rechts), ongeacht hun eigen breedte. */
+.app-nav {
+  display: flex;
+  justify-content: center;
+  flex: 1;
+  gap: 4px;
+}
+
+.app-nav-item {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.app-nav-item:hover {
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+.app-nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
 .app-title {
   display: inline-flex;
   align-items: center;
@@ -694,6 +727,14 @@ select:focus-visible,
   display: none;
 }
 
+.landing-view {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  flex: 1;
+  min-height: 0;
+}
+
 .landing-hero {
   display: flex;
   align-items: center;
@@ -702,15 +743,19 @@ select:focus-visible,
   padding: 8px 0;
 }
 
+/* Enige "titel" van het werkoverzicht -- geen aparte grote kop meer, want
+   #appNav labelt de sectie al ("Werkoverzicht"), een tweede identieke kop
+   zou overbodig zijn. */
 .landing-greeting-small {
-  margin: 0 0 2px;
-  font-size: 13px;
-  color: var(--text-soft);
+  margin: 0;
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--text);
 }
 
-.landing-greeting h1 {
+#sessionsView h1 {
   margin: 0;
-  font-size: 27px;
+  font-size: 20px;
   font-weight: 700;
   color: var(--text);
 }
@@ -754,9 +799,21 @@ select:focus-visible,
   min-height: 0;
 }
 
+.landing-main-col h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .landing-main-col .sessions-list {
   flex: 1;
   min-height: 200px;
+}
+
+#sessionsView .sessions-list {
+  flex: 1;
+  min-height: 300px;
 }
 
 /* Zoekveld op zijn eigen regel, filters+sortering eronder -- stonden eerder
@@ -829,22 +886,42 @@ select:focus-visible,
   color: #fff;
 }
 
-.landing-show-all {
-  align-self: center;
+/* Echte paginering i.p.v. de vorige "alles tonen"-toggle -- de Sessies-pagina
+   is nu het volledige archief, dus een lijst van 100+ hoort in pagina's, niet
+   in één eindeloze scroll. */
+.landing-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 8px 0 4px;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.landing-pagination button {
   appearance: none;
   border: 1px solid var(--border-strong);
   background: var(--bg-elevated);
   color: var(--accent-strong);
   font-size: 12px;
   font-weight: 600;
-  padding: 8px 18px;
+  padding: 6px 14px;
   border-radius: var(--radius-control);
   cursor: pointer;
-  margin-top: 4px;
 }
 
-.landing-show-all:hover {
+.landing-pagination button:hover:not(:disabled) {
   background: var(--accent-soft);
+}
+
+.landing-pagination button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.landing-view.hidden {
+  display: none;
 }
 
 .sessions-list {
@@ -1045,19 +1122,6 @@ select:focus-visible,
   text-align: center;
 }
 
-.tag-sessions {
-  cursor: pointer;
-  font-size: 11px;
-  padding: 4px 10px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--border-subtle) !important;
-  color: var(--text-soft);
-}
-
-.tag-sessions:hover {
-  border-color: var(--accent) !important;
-  color: var(--accent-strong);
-}
 
 /* === Tab bar === */
 
