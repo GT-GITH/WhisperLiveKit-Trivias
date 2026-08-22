@@ -468,7 +468,14 @@ let playbackSessionDate = null; // leesbare datum uit de server, voor de "Sessie
 let playbackCaseRef = null;
 let playbackPersonRef = null;
 let playbackLanguages = {}; // { channel_id: taalcode }
+let playbackLanguages2 = {}; // { channel_id: taalcode|null } -- Taal 2, alleen bij taalpaar-kanalen (tolk)
 let playbackGehoorverslagGeneratedAt = null;
+let playbackCreatedAt = null; // ruwe %Y%m%dT%H%M%SZ-timestamp, voor formatDutchDateTime()
+
+// True terwijl de gebruiker de transportbalk-scrubber vasthoudt -- voorkomt dat
+// de timeupdate-listener (renderPlaybackTimeline()) de balk tijdens het slepen
+// zelf terugzet naar de actuele afspeelpositie.
+let isScrubbingPlayback = false;
 
 // === Opname state ===
 
@@ -640,8 +647,13 @@ function updateLiveVsPlaybackUI() {
   if (subtitleEl) {
     const parts = [];
     if (viewing) {
-      if (playbackSessionDate) parts.push(playbackSessionDate);
-      if (currentSessionId) parts.push(`sessie ${currentSessionId.substring(0, 12)}…`);
+      parts.push(playbackCreatedAt ? formatDutchDateTime(playbackCreatedAt) : (playbackSessionDate || "onbekende datum"));
+      // Zaaknummer is de primaire identiteit van een sessie als het er is
+      // (zelfde principe als de sessielijst op het Werkoverzicht) -- de
+      // sessie-id is dan alleen nog secundaire/technische info, niet meer
+      // in deze titelregel.
+      if (playbackCaseRef) parts.push(`Zaak ${playbackCaseRef}`);
+      else if (currentSessionId) parts.push(`sessie ${currentSessionId.substring(0, 12)}…`);
     }
     subtitleEl.textContent = parts.join(" · ");
     subtitleEl.classList.toggle("hidden", parts.length === 0);
@@ -688,40 +700,63 @@ function updateLiveVsPlaybackUI() {
 // gestuurd of opgeslagen, en dus niet betrouwbaar bekend voor een sessie die
 // (mogelijk na een herstart) van disk geladen is.
 function buildSessionInfoCardsHTML() {
-  const sessieRows = [
-    ["Datum", playbackSessionDate || "onbekend"],
-  ];
+  const dateText = playbackCreatedAt ? formatDutchDateTime(playbackCreatedAt) : (playbackSessionDate || "onbekend");
+
+  // Volgorde: zaaknummer (indien aanwezig, primaire identiteit) -> datum ->
+  // duur -> status -> sessie-id als kleinere, secundaire technische regel
+  // (zie .session-info-id hieronder in style.css), niet meer gelijkwaardig
+  // aan de andere rijen.
+  const sessieRows = [];
   if (playbackCaseRef) sessieRows.push(["Zaaknummer", playbackCaseRef]);
-  sessieRows.push(["Sessie-id", currentSessionId ? `${currentSessionId.substring(0, 12)}…` : "-"]);
+  sessieRows.push(["Datum", dateText]);
   sessieRows.push(["Duur", formatMs(getPlaybackDurationMs())]);
+  // "Opgeslagen" is geen verzonnen gegeven -- deze kaart wordt uitsluitend
+  // getoond wanneer isViewingStoredSession() al waar is, dus dit beschrijft
+  // simpelweg de huidige, altijd-ware schermstaat.
+  sessieRows.push(["Status", "Opgeslagen"]);
 
   const sessieCard = `<div class="session-info-card">
     <p class="session-info-title">Sessiegegevens</p>
     <dl class="session-info-list">${sessieRows.map(([label, value]) =>
       `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`
     ).join("")}</dl>
+    <p class="session-info-id">Sessie-id: ${currentSessionId ? escapeHtml(`${currentSessionId.substring(0, 12)}…`) : "-"}</p>
   </div>`;
 
-  const sprekersRows = playbackChannels.map(ch => {
+  const speakerCards = playbackChannels.map(ch => {
     const roleId = channelIdToRoleId(ch);
     const color = getRoleColor(roleId);
     const label = getRoleLabel(roleId);
-    const lang = playbackLanguages[ch] || "-";
-    return [`<span class="channel-filter-dot" style="background:${color}"></span>${escapeHtml(label)}`, lang.toUpperCase()];
-  });
+    const lang2 = playbackLanguages2[ch];
+    // Taal 2 is alleen bekend als dit kanaal ooit met een lang2-queryparam
+    // verbonden heeft (typisch de tolk) -- zie get_channel_language2() op de
+    // backend. Zonder die waarde tonen we gewoon de ene bekende taal, geen
+    // verzonnen tweede regel.
+    const langText = lang2
+      ? `Taal 1: ${(playbackLanguages[ch] || "-").toUpperCase()} · Taal 2: ${lang2.toUpperCase()}`
+      : (playbackLanguages[ch] || "-").toUpperCase();
+    return `<div class="speaker-card">
+      <span class="channel-filter-dot" style="background:${color}"></span>
+      <span class="speaker-card-role">${escapeHtml(label)}</span>
+      <span class="speaker-card-lang">${escapeHtml(langText)}</span>
+    </div>`;
+  }).join("") || `<p class="session-info-empty">Geen kanalen bekend</p>`;
   const sprekersCard = `<div class="session-info-card">
     <p class="session-info-title">Sprekers</p>
-    <dl class="session-info-list">${sprekersRows.map(([label, value]) =>
-      `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`
-    ).join("") || `<div><dd>Geen kanalen bekend</dd></div>`}</dl>
+    ${speakerCards}
   </div>`;
 
-  const gehoorverslagStatus = playbackGehoorverslagGeneratedAt
+  const hasReport = !!playbackGehoorverslagGeneratedAt;
+  const gehoorverslagStatus = hasReport
     ? `Laatst gegenereerd op ${new Date(playbackGehoorverslagGeneratedAt).toLocaleString("nl-NL")}`
     : "Nog niet gegenereerd";
   const documentenCard = `<div class="session-info-card">
     <p class="session-info-title">Documenten</p>
-    <dl class="session-info-list"><div><dt>Gehoorverslag</dt><dd>${escapeHtml(gehoorverslagStatus)}</dd></div></dl>
+    <div class="doc-status-row">
+      <svg class="icon"><use href="#icon-document"></use></svg>
+      <span>Gehoorverslag</span>
+      <span class="doc-status-value${hasReport ? "" : " doc-status-pending"}">${escapeHtml(gehoorverslagStatus)}</span>
+    </div>
   </div>`;
 
   return sessieCard + sprekersCard + documentenCard;
@@ -1370,6 +1405,13 @@ function formatMs(ms) {
 function renderTranscript(lines, bufferTranscription, bufferTranslation, status) {
   if (!liveTranscriptDiv) return;
 
+  // Dossierweergave (vaste kolommen, gedempte iconen, ...) alleen tijdens
+  // terugluisteren -- alle bijbehorende CSS is geschoold onder .doc-view, dus
+  // deze toggle is de enige plek die bepaalt of het live-scherm meeverandert
+  // (dat mag het niet: zie CLAUDE.md "live vs. batch" en de expliciete scope
+  // van deze ronde, alleen het terugluister-scherm).
+  liveTranscriptDiv.classList.toggle("doc-view", isPlaybackMode);
+
   const scrollParent = liveTranscriptDiv;
   const isAtBottom = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 80;
 
@@ -1424,13 +1466,17 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
     const roleId    = channelIdToRoleId(channelId);
     const roleColor = getRoleColor(roleId);
-    const roleLabel = `<span class="seg-role" style="color:${roleColor}">${escapeHtml(getRoleLabel(roleId))}</span> `;
+    // .seg-role-dot is alleen zichtbaar onder .doc-view (terugluisteren) --
+    // in het live-scherm blijft de bestaande gekleurde .seg-role-tekst
+    // ongewijzigd, zie style.css.
+    const roleDot   = `<span class="seg-role-dot" style="background:${roleColor}"></span>`;
+    const roleLabel = `<span class="seg-role" style="color:${roleColor}">${roleDot}${escapeHtml(getRoleLabel(roleId))}</span> `;
 
     // Wit vs. groen oogde voor klanten als "werkt niet goed" -- FINAL en batch-bevestigde
     // tekst zien er nu identiek uit; alleen een klein vinkje geeft aan dat de batch-pass
     // dit segment heeft bevestigd. Het onderscheid blijft intact in de data (text_batch),
     // alleen de live-weergave is verzacht.
-    const confirmedBadge = isBatchConfirmed ? ` <span class="seg-confirmed" title="Bevestigd door batch-pass"><svg class="icon"><use href="#icon-check"></use></svg></span>` : "";
+    const confirmedBadge = isBatchConfirmed ? `<span class="seg-confirmed" title="Bevestigd door batch-pass"><svg class="icon"><use href="#icon-check"></use></svg></span>` : "";
 
     // Vertaalicoontje: bij bevestigde (batch) tekst van elk kanaal behalve medewerker/
     // advocaat (die zijn per ontwerp altijd Nederlands) -- ook de tolk kan soms iets in
@@ -1438,10 +1484,17 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
     // data-raw-text ipv de al-geëscapete regeltekst, zodat de klik-handler de
     // ongewijzigde brontekst naar /translate stuurt.
     const translateIcon = (isBatchConfirmed && roleId !== "employee" && roleId !== "lawyer")
-      ? ` <span class="seg-translate" title="Vertaal naar het Nederlands" data-raw-text="${escapeHtml(rawTxt)}"><svg class="icon"><use href="#icon-globe"></use></svg></span>`
+      ? `<span class="seg-translate" title="Vertaal naar het Nederlands" data-raw-text="${escapeHtml(rawTxt)}"><svg class="icon"><use href="#icon-globe"></use></svg></span>`
       : "";
 
-    htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${prefix}${escapeHtml(rawTxt)}${confirmedBadge}${translateIcon}</div>`);
+    // .seg-text/.seg-actions zijn no-op wrappers (display:inline, geen eigen
+    // CSS) buiten .doc-view -- alleen daar krijgen ze grid-kolommen, zie
+    // style.css. Live-scherm-markup/opmaak blijft zo ongewijzigd.
+    const textSpan    = `<span class="seg-text">${prefix}${escapeHtml(rawTxt)}</span>`;
+    const actionsSpan = (confirmedBadge || translateIcon)
+      ? `<span class="seg-actions">${confirmedBadge}${translateIcon}</span>` : "";
+
+    htmlParts.push(`<div class="${cls} seg-clickable"${idAttr}${audioAttr}>${timeLabel}${roleLabel}${textSpan}${actionsSpan}</div>`);
   }
 
   const hasLiveContent = (lines || []).some(item => (item?.text || item?.text_live) && !item?.text_batch && item?.speaker !== -2);
@@ -1812,7 +1865,9 @@ async function loadSessionTranscript(sessionId) {
     playbackCaseRef = data.case_ref || null;
     playbackPersonRef = data.person_ref || null;
     playbackLanguages = data.languages || {};
+    playbackLanguages2 = data.languages2 || {};
     playbackGehoorverslagGeneratedAt = data.gehoorverslag_generated_at || null;
+    playbackCreatedAt = data.created_at || null;
 
     playbackLines       = [];
     playbackLineById    = new Map();
@@ -1940,6 +1995,9 @@ function renderPlaybackTimeline() {
   const segments   = getAllPlaybackSegmentsFlat();
   const durationMs = getPlaybackDurationMs();
 
+  const scrubber = document.getElementById("playbackScrubber");
+  if (scrubber && !isScrubbingPlayback) scrubber.max = String(durationMs);
+
   labels.innerHTML = "";
   list.innerHTML = "";
   for (const channelId of playbackChannels) {
@@ -1977,6 +2035,13 @@ function renderPlaybackTimeline() {
   }
 
   wrap.classList.remove("hidden");
+
+  const timeLabelEl = document.getElementById("playbackTimeLabel");
+  if (timeLabelEl && !isScrubbingPlayback) {
+    const posMs = playbackAudioChannel ? (playbackAudioSliceStartMs + (player?.currentTime || 0) * 1000) : 0;
+    timeLabelEl.textContent = `${formatMs(posMs)} / ${formatMs(durationMs)}`;
+  }
+
   if (player && player.dataset.wired !== "1") {
     player.dataset.wired = "1";
     player.addEventListener("timeupdate", () => {
@@ -1984,7 +2049,53 @@ function renderPlaybackTimeline() {
       const absMs = playbackAudioSliceStartMs + player.currentTime * 1000;
       movePlayheadTo(absMs);
       highlightSegmentAt(playbackAudioChannel, absMs);
+      if (timeLabelEl && !isScrubbingPlayback) {
+        timeLabelEl.textContent = `${formatMs(absMs)} / ${formatMs(getPlaybackDurationMs())}`;
+      }
+      if (scrubber && !isScrubbingPlayback) scrubber.value = String(absMs);
     });
+
+    const playPauseBtn = document.getElementById("playbackPlayPause");
+    if (playPauseBtn) {
+      const setIcon = paused => {
+        playPauseBtn.innerHTML = `<svg class="icon"><use href="#${paused ? "icon-play" : "icon-pause"}"></use></svg>`;
+      };
+      playPauseBtn.addEventListener("click", () => {
+        if (!isPlaybackMode) return;
+        if (!playbackAudioChannel) {
+          // Nog geen kanaal geladen (nog niet op een regel/baan geklikt) --
+          // begin gewoon vanaf het begin van het eerste zichtbare kanaal,
+          // zelfde als klikken op tijdstip 0 van die baan.
+          if (playbackChannels.length > 0) playFromChannelAt(playbackChannels[0], 0);
+          return;
+        }
+        if (player.paused) player.play().catch(() => {});
+        else player.pause();
+      });
+      player.addEventListener("play",  () => setIcon(false));
+      player.addEventListener("pause", () => setIcon(true));
+      player.addEventListener("ended", () => setIcon(true));
+    }
+
+    if (scrubber) {
+      scrubber.addEventListener("input", () => {
+        isScrubbingPlayback = true;
+        if (timeLabelEl) timeLabelEl.textContent = `${formatMs(Number(scrubber.value))} / ${formatMs(getPlaybackDurationMs())}`;
+      });
+      scrubber.addEventListener("change", () => {
+        const targetMs = Number(scrubber.value);
+        const channel = playbackAudioChannel || playbackChannels[0];
+        isScrubbingPlayback = false;
+        if (channel) playFromChannelAt(channel, targetMs);
+      });
+    }
+
+    const volumeInput = document.getElementById("playbackVolume");
+    if (volumeInput) {
+      volumeInput.addEventListener("input", () => {
+        player.volume = Number(volumeInput.value);
+      });
+    }
   }
 }
 
@@ -1998,6 +2109,13 @@ function hidePlaybackTimeline() {
   if (labels) labels.innerHTML = "";
   if (list) list.innerHTML = "";
   playbackAudioChannel = null;
+  isScrubbingPlayback = false;
+  const playPauseBtn = document.getElementById("playbackPlayPause");
+  if (playPauseBtn) playPauseBtn.innerHTML = '<svg class="icon"><use href="#icon-play"></use></svg>';
+  const timeLabelEl = document.getElementById("playbackTimeLabel");
+  if (timeLabelEl) timeLabelEl.textContent = "00:00 / 00:00";
+  const scrubber = document.getElementById("playbackScrubber");
+  if (scrubber) scrubber.value = "0";
   movePlayheadTo(-1);
 }
 
@@ -2016,6 +2134,13 @@ function playFromChannelAt(channelId, atMs) {
   player.src = `/audio/${encodeURIComponent(currentSessionId)}/${encodeURIComponent(channelId)}?start_ms=${ms}`;
   player.play().catch(() => {});
   movePlayheadTo(ms);
+
+  // Directe feedback i.p.v. te wachten op de eerste timeupdate-tick van de
+  // net herladen speler (die duurt soms een fractie na een nieuwe src).
+  const scrubber = document.getElementById("playbackScrubber");
+  if (scrubber) scrubber.value = String(ms);
+  const timeLabelEl = document.getElementById("playbackTimeLabel");
+  if (timeLabelEl) timeLabelEl.textContent = `${formatMs(ms)} / ${formatMs(getPlaybackDurationMs())}`;
 }
 
 function movePlayheadTo(atMs) {
@@ -2212,10 +2337,16 @@ function insertTranslationLine(seg, translation, errorMessage) {
   const existing = seg.querySelector(".seg-translation, .seg-translation-error");
   if (existing) existing.remove();
 
+  // Terugluisteren krijgt een neutrale "Vertaling"-aanduiding i.p.v. het
+  // gekleurde globe-icoon + cursief -- zodat het leest als een rustige
+  // vervolgregel van dezelfde spreker, niet als een nieuwe/opvallende
+  // gebeurtenis. Het live-scherm behoudt de bestaande opmaak ongewijzigd.
   const line = document.createElement("div");
   if (translation) {
-    line.className = "seg-translation";
-    line.innerHTML = `<svg class="icon"><use href="#icon-globe"></use></svg> ${escapeHtml(translation)}`;
+    line.className = isPlaybackMode ? "seg-translation doc-translation" : "seg-translation";
+    line.innerHTML = isPlaybackMode
+      ? `<span class="doc-translation-tag">Vertaling</span>${escapeHtml(translation)}`
+      : `<svg class="icon"><use href="#icon-globe"></use></svg> ${escapeHtml(translation)}`;
   } else {
     line.className = "seg-translation-error";
     line.innerHTML = `<svg class="icon"><use href="#icon-warning"></use></svg> ${escapeHtml(errorMessage || "Vertalen mislukt")}`;

@@ -192,8 +192,11 @@ class SessionManager:
 
     def get_channel_language2(self, session_id: str, channel_id: str) -> Optional[str]:
         """De daadwerkelijk geconfigureerde Taal 2 (brontaal-hint bij een
-        taalpaar-kanaal zoals de tolk) voor deze sessie/kanaal, indien bekend
-        (alleen als dat kanaal ooit in déze serverlevensduur is verbonden)."""
+        taalpaar-kanaal zoals de tolk) voor deze sessie/kanaal, indien bekend.
+        Hydrateert eerst van disk (zelfde patroon als get() hierboven) zodat
+        dit ook werkt vlak na een serverherstart, niet alleen binnen dezelfde
+        procesduur als de WS-verbinding die 'm oorspronkelijk zette."""
+        self._hydrate(session_id)
         meta = self._sessions.get(session_id)
         if not meta:
             return None
@@ -695,6 +698,11 @@ def _load_merged_transcript(session_id: str) -> Optional[Dict[str, Any]]:
         "channels": sorted(by_channel.keys()),
         "segments": merged_segments,
         "date": date_str,
+        # Ruwe timestamp (naast het al-opgemaakte "date" hierboven) -- zelfde
+        # %Y%m%dT%H%M%SZ-vorm als created_at op /sessions/list, zodat de
+        # frontend dezelfde formatDutchDateTime()-helper kan hergebruiken
+        # i.p.v. de al-opgemaakte UTC-string opnieuw te moeten parsen.
+        "created_at": earliest_ts,
         "duration_ms": duration_ms,
         "channel_durations_ms": channel_durations_ms,
     }
@@ -744,6 +752,11 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
         meta = session_manager.get(session_id) or {}
         external_refs = meta.get("external_references") or {}
         languages = {ch: _resolve_channel_language(ch) for ch in merged["channels"]}
+        # Taal 2 (bv. bij de tolk) is alleen bekend als dat kanaal ooit met een
+        # lang2-queryparam verbonden heeft -- zelfde bron als
+        # session_manager.get_channel_language2(), al gebruikt voor de
+        # gehoorverslag-vertaling. None voor kanalen zonder taalpaar.
+        languages2 = {ch: session_manager.get_channel_language2(session_id, ch) for ch in merged["channels"]}
 
         return JSONResponse({
             "session_id": session_id,
@@ -753,9 +766,11 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
             "duration_ms": merged["duration_ms"],
             "channel_durations_ms": merged["channel_durations_ms"],
             "date": merged["date"],
+            "created_at": merged.get("created_at"),
             "case_ref": external_refs.get("case_ref"),
             "person_ref": external_refs.get("person_ref"),
             "gehoorverslag_generated_at": meta.get("gehoorverslag_generated_at"),
+            "languages2": languages2,
             "languages": languages,
         })
 

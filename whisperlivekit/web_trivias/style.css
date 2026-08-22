@@ -643,10 +643,26 @@ select:focus-visible,
 }
 
 .session-info-card {
-  padding: 10px 12px;
+  padding: 12px 14px;
   border-radius: var(--radius-xl);
-  background: var(--bg-subtle);
+  /* Wit i.p.v. --bg-subtle -- "witte kaarten met subtiele randen" i.p.v.
+     grote grijze vlakken, zelfde principe als het transcript-canvas. */
+  background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
+}
+
+/* Sessie-id: secundaire/technische info, niet meer gelijkwaardig aan
+   zaaknummer/datum/duur/status hierboven. */
+.session-info-id {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+.session-info-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-soft);
 }
 
 .session-info-title {
@@ -683,6 +699,57 @@ select:focus-visible,
   color: var(--text-muted);
   font-weight: 500;
   text-align: right;
+}
+
+/* Sprekers: eigen mini-kaart per kanaal i.p.v. rijen in één gedeelde lijst --
+   rustige witte kaart met dunne neutrale rand, sprekerkleur alleen als klein
+   bolletje (zelfde principe als de filterchips/tijdlijn-labels). */
+.speaker-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+.speaker-card + .speaker-card {
+  margin-top: 6px;
+}
+.speaker-card-role {
+  color: var(--text);
+  font-weight: 500;
+  flex: 1 1 auto;
+}
+.speaker-card-lang {
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.doc-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+.doc-status-row .icon {
+  width: 15px;
+  height: 15px;
+  color: var(--text-soft);
+  flex-shrink: 0;
+}
+.doc-status-value {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+/* "Nog niet gegenereerd" is een gedempte statusmelding, geen fout -- amber
+   i.p.v. het felle warning-rood, en niet gebruikt voor de afgeronde staat
+   ("Laatst gegenereerd op ..."), die is geen waarschuwing meer. */
+.doc-status-value.doc-status-pending {
+  color: var(--warning);
 }
 
 .hint {
@@ -847,6 +914,109 @@ select:focus-visible,
   margin-right: 6px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+/* === Dossierweergave ("Sessie terugluisteren") ===
+   Alleen actief via de .doc-view-klasse op #liveTranscript, gezet in
+   renderTranscript() op basis van isPlaybackMode -- het live-scherm gebruikt
+   dezelfde markup (.seg/.seg-role/.seg-text/.seg-actions/.seg-time) maar
+   zonder deze klasse, dus alles hieronder is strikt playback-only en laat de
+   live-opmaak hierboven ongewijzigd. */
+.doc-view .seg {
+  display: grid;
+  grid-template-columns: 64px 150px 1fr auto;
+  align-items: start;
+  gap: 4px 12px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: normal;
+}
+.doc-view .seg:last-child {
+  border-bottom: none;
+}
+.doc-view .seg-time {
+  opacity: 1;
+  padding-top: 1px;
+}
+.doc-view .seg-role {
+  /* !important overschrijft bewust de inline style="color:..." die de JS
+     nog steeds genereert (ongewijzigd, voor het live-scherm) -- zo hoeft de
+     markup-generatie zelf niet te weten in welke weergave ze draait. */
+  display: flex;
+  align-items: center;
+  color: var(--text-muted) !important;
+  text-transform: none !important;
+  letter-spacing: normal;
+  font-weight: 500;
+  opacity: 1;
+  margin-right: 0;
+}
+.doc-view .seg-role-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+.doc-view .seg-text {
+  color: var(--text);
+  font-weight: 400;
+}
+.doc-view .seg-actions {
+  grid-column: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.55;
+}
+.doc-view .seg:hover .seg-actions,
+.doc-view .seg:focus-within .seg-actions {
+  opacity: 1;
+}
+.doc-view .seg-confirmed,
+.doc-view .seg-translate {
+  color: var(--text-soft);
+}
+.doc-view .seg-confirmed .icon,
+.doc-view .seg-translate .icon {
+  width: 14px;
+  height: 14px;
+}
+/* Tabelrij-hover i.p.v. de globale link-achtige underline/opacity-fade van
+   .seg-clickable:hover hierboven -- die leest hier als een lopende tekstlink,
+   niet als een rij in een dossier. */
+.doc-view .seg-clickable:hover {
+  opacity: 1;
+  text-decoration: none;
+  background: var(--bg-subtle);
+}
+
+/* Vertaling: kleine neutrale aanduiding i.p.v. het gekleurde globe-icoon +
+   cursief van de live-weergave (.seg-translation blijft de basisstijl voor
+   marge/rand-breedte, hier alleen kleur/vorm/label overschreven). */
+.doc-view .seg-translation.doc-translation {
+  grid-column: 3 / span 2;
+  margin: 2px 0 4px 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border-strong);
+  font-style: normal;
+  color: var(--text);
+  background: var(--bg-subtle);
+  border-radius: 4px;
+}
+.doc-translation-tag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 .live-indicator {
   display: flex;
@@ -1722,14 +1892,14 @@ select:focus-visible,
 .playback-timeline-labels {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   padding: 4px 0;
   flex: 0 0 auto;
   width: 84px;
 }
 
 .playback-timeline-label {
-  height: 14px;
+  height: 11px;
   display: flex;
   align-items: center;
   font-size: 10px;
@@ -1748,14 +1918,14 @@ select:focus-visible,
 .playback-timeline-lanes-list {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   padding: 4px 0;
   cursor: pointer;
 }
 
 .playback-timeline-lane {
   position: relative;
-  height: 14px;
+  height: 11px;
   border-radius: 2px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
@@ -1791,14 +1961,108 @@ select:focus-visible,
 }
 
 .playback-audio-player {
-  width: 100%;
+  display: none; /* onzichtbaar audio-element -- eigen transportbalk hieronder stuurt 'm aan */
+}
+
+/* Eigen transportbalk i.p.v. de browser-eigen <audio controls>: die toonde de
+   duur van de zojuist-opgehaalde audio-SLICE (vanaf het aangeklikte moment
+   tot het einde van dat kanaal), niet de sessiebrede positie/duur -- vandaar
+   bv. "0:03 / 0:46" i.p.v. "00:32 / 04:12". Hergebruikt exact dezelfde
+   absMs-berekening als de tijdlijn-playhead (zie renderPlaybackTimeline()
+   in app.js), dus geen nieuwe databron. */
+.playback-transport {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-top: 8px;
-  height: 32px;
+}
+
+.playback-transport-btn {
+  appearance: none;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-strong);
+  color: #fff;
+}
+.playback-transport-btn:hover {
+  background: var(--accent-hover);
+}
+.playback-transport-btn .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.playback-time-label {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+  min-width: 92px;
+}
+
+.playback-scrubber {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.playback-volume-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-soft);
+  flex-shrink: 0;
+}
+
+.playback-volume {
+  flex: 0 0 70px;
+}
+
+/* Dunne, minimalistische range-inputs (native i.p.v. een volledig custom
+   div-slider -- toetsenbord-bediening/accessibility komt zo gratis mee). */
+.playback-scrubber,
+.playback-volume {
+  appearance: none;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  cursor: pointer;
+}
+.playback-scrubber::-webkit-slider-thumb,
+.playback-volume::-webkit-slider-thumb {
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  border: none;
+}
+.playback-scrubber::-moz-range-thumb,
+.playback-volume::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  border: none;
+}
+.playback-scrubber::-moz-range-track,
+.playback-volume::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-strong);
 }
 
 /* Transcriptsegment dat overeenkomt met de huidige afspeelpositie in de
    playback-tijdlijn. */
 .seg-clickable.seg-now-playing {
   background: var(--accent-soft);
-  border-radius: 4px;
+  border-radius: 0;
+  border-left: 3px solid var(--accent-strong);
+  margin-left: -3px; /* compenseert de border zodat de rij niet opschuift */
 }

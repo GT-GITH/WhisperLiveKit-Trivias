@@ -71,6 +71,10 @@
       <symbol id="icon-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="2 12 7 12 10 20 14 4 17 12 22 12"/>
       </symbol>
+      <symbol id="icon-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="4 9 8 9 12 5 12 19 8 15 4 15 4 9"/>
+        <path d="M16.5 8.5a5 5 0 0 1 0 7"/>
+      </symbol>
       <symbol id="icon-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polygon points="12 2 2 8 12 14 22 8 12 2"/>
         <polyline points="2 14 12 20 22 14"/>
@@ -207,7 +211,21 @@
                 <div id="playbackTimelinePlayhead" class="playback-timeline-playhead"></div>
               </div>
             </div>
-            <audio id="playbackAudioPlayer" class="playback-audio-player" controls></audio>
+            <audio id="playbackAudioPlayer" class="playback-audio-player"></audio>
+            <!-- Eigen transportbalk i.p.v. de browser-eigen <audio controls> --
+                 die toonde de duur van de zojuist-opgehaalde audio-SLICE
+                 (/audio/{session}/{channel}?start_ms=...), niet de sessiebrede
+                 positie/duur. Zie renderPlaybackTimeline() in app.js: hergebruikt
+                 dezelfde absMs-berekening als de tijdlijn-playhead hierboven. -->
+            <div class="playback-transport">
+              <button id="playbackPlayPause" class="playback-transport-btn" type="button" title="Afspelen/pauzeren">
+                <svg class="icon"><use href="#icon-play"></use></svg>
+              </button>
+              <span id="playbackTimeLabel" class="playback-time-label">00:00 / 00:00</span>
+              <input id="playbackScrubber" class="playback-scrubber" type="range" min="0" max="1000" value="0" step="100">
+              <svg class="icon playback-volume-icon"><use href="#icon-volume"></use></svg>
+              <input id="playbackVolume" class="playback-volume" type="range" min="0" max="1" value="1" step="0.05">
+            </div>
           </div>
           <div id="liveTranscript" class="transcript-box">
             <div class="empty-state">
