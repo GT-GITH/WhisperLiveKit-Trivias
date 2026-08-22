@@ -182,6 +182,15 @@ select:focus-visible,
   flex-wrap: wrap;
 }
 
+.app-header-tags {
+  display: flex;
+  gap: 8px;
+}
+
+.app-header-tags.hidden {
+  display: none;
+}
+
 .tag {
   font-size: 11px;
   padding: 4px 10px;
@@ -944,32 +953,20 @@ select:focus-visible,
   gap: 10px;
 }
 
-.session-item-heading {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
 .session-item-title {
   font-size: 16px;
   font-weight: 600;
   color: var(--text);
+  min-width: 0;
 }
 
-.session-item-id {
-  font-size: 12px;
-  color: var(--text-soft);
-  font-family: monospace;
-}
-
-/* Bescheiden aanduiding, geen waarschuwing -- een zaaknummer is optioneel,
-   dit is een normale staat, geen fout (zie createSessionItemEl()). */
-.session-item-nocase {
+/* Technische sessie-id + evt. "Geen zaaknummer" -- verplaatst uit de kop
+   (stond eerder direct naast de titel) naar een eigen, gedempte regel bij de
+   overige sessiedetails; die informatie is er nog steeds, vraagt alleen geen
+   aandacht meer die het niet verdient. */
+.session-item-meta-line {
   font-size: 11px;
   color: var(--text-soft);
-  font-style: italic;
 }
 
 /* Puur visuele affordance ("dit is klikbaar") -- de hele kaart is al het
@@ -986,13 +983,21 @@ select:focus-visible,
   pointer-events: none;
 }
 
-.session-item-disabled .session-item-open {
-  display: none;
+/* Kaart zonder transcriptie is niet klikbaar -- i.p.v. gewoon niets tonen,
+   expliciet uitleggen waarom (i.p.v. impliciet laten raden). */
+.session-item-action-note {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-soft);
+  flex-shrink: 0;
 }
 
+/* Eén doorlopende, met "·" gescheiden tekstregel (zie createSessionItemEl())
+   i.p.v. losse blokjes die eerder tegen elkaar aan stonden. */
 .session-item-detail {
   display: flex;
-  gap: 16px;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
   font-size: 13px;
   color: var(--text-soft);

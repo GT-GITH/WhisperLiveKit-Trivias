@@ -1248,6 +1248,18 @@ async function loadLandingData() {
   }
 }
 
+// Een héél korte opname (test/per ongeluk gestarte sessie) telt niet mee als
+// "moet nog een gehoorverslag krijgen" -- anders ontstaat een permanente
+// lijst met schijnproblemen zodra er testfragmenten tussen de echte sessies
+// staan. Er is geen "dit was een afgerond gehoor"-vlag, dus duur is de enige
+// eerlijke, al beschikbare proxy hiervoor. Onbekende duur (oudere sessies
+// zonder wav-header-uitlezing) telt voorzichtigheidshalve WEL mee.
+const REPORT_MIN_DURATION_MS = 2 * 60 * 1000;
+function isReportWorthy(s) {
+  return s.has_transcript && !s.gehoorverslag_generated_at
+    && (!Number.isFinite(s.duration_ms) || s.duration_ms >= REPORT_MIN_DURATION_MS);
+}
+
 // Bescheiden oriëntatie, geen dashboard -- platte tekst, geen grote
 // getal-kaarten.
 function renderLandingStats() {
@@ -1255,9 +1267,9 @@ function renderLandingStats() {
   if (!statsEl) return;
   const total = landingSessionsCache.length;
   if (!total) { statsEl.innerHTML = ""; return; }
-  const needsReport = landingSessionsCache.filter(s => s.has_transcript && !s.gehoorverslag_generated_at).length;
+  const needsReport = landingSessionsCache.filter(isReportWorthy).length;
   const noTranscript = landingSessionsCache.filter(s => !s.has_transcript).length;
-  const parts = [`<span><strong>${total}</strong> recente sessies</span>`, `<span><strong>${needsReport}</strong> zonder verslag</span>`];
+  const parts = [`<span><strong>${total}</strong> sessies</span>`, `<span><strong>${needsReport}</strong> zonder verslag</span>`];
   // "Zonder transcriptie" i.p.v. "wordt verwerkt" -- we weten uit deze data
   // niet of er nu daadwerkelijk een achtergrondtaak loopt, alleen dat er
   // (nog) geen transcript-bestand is. "Wordt verwerkt" suggereert actieve
@@ -1270,14 +1282,15 @@ function renderLandingStats() {
 // vragen -- geen "niet aan zaak gekoppeld"-rij: een zaaknummer is bewust
 // optioneel (zie Configuratie-tab), dus veel/alle sessies zonder zaaknummer
 // is normaal, geen probleem om te melden. Elke rij is klikbaar en filtert
-// de hoofdlijst.
+// de hoofdlijst (zelfde definitie als hier, zie matchesFilter in
+// renderLandingList()).
 function renderLandingAttention() {
   const el = document.getElementById("landingAttentionList");
   if (!el) return;
 
   const rows = [
     { count: landingSessionsCache.filter(s => !s.has_transcript).length, label: "sessies zonder transcriptie", filter: "no_transcript" },
-    { count: landingSessionsCache.filter(s => s.has_transcript && !s.gehoorverslag_generated_at).length, label: "zonder gehoorverslag", filter: "needs_report" },
+    { count: landingSessionsCache.filter(isReportWorthy).length, label: "zonder gehoorverslag", filter: "needs_report" },
   ].filter(r => r.count > 0);
 
   if (rows.length === 0) {
@@ -1328,7 +1341,7 @@ function renderLandingList() {
     || (s.case_ref || "").toLowerCase().includes(query);
   const matchesFilter = s => {
     if (landingActiveFilter === "no_transcript") return !s.has_transcript;
-    if (landingActiveFilter === "needs_report") return s.has_transcript && !s.gehoorverslag_generated_at;
+    if (landingActiveFilter === "needs_report") return isReportWorthy(s);
     if (landingActiveFilter === "has_report") return !!s.gehoorverslag_generated_at;
     return true;
   };
@@ -1357,70 +1370,92 @@ function humanRoleLabels(channels) {
 
 const DUTCH_MONTHS = ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september", "oktober", "november", "december"];
 
-// "22 augustus" -- voor de titel van een sessie zonder zaaknummer, zodat die
-// niet allemaal identiek "geen zaaknummer" heten (zie createSessionItemEl()).
-function formatDutchDateShort(createdAt) {
-  const m = createdAt && createdAt.match(/^(\d{4})(\d{2})(\d{2})T/);
+function parseCreatedAt(createdAt) {
+  const m = createdAt && createdAt.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/);
   if (!m) return null;
-  const day = parseInt(m[3], 10);
   const month = DUTCH_MONTHS[parseInt(m[2], 10) - 1];
-  return month ? `${day} ${month}` : null;
+  if (!month) return null;
+  return { day: parseInt(m[3], 10), month, year: m[1], hour: m[4], minute: m[5] };
+}
+
+// "22 augustus 2026, 07:18" -- volledige datum/tijd voor de detailregel.
+function formatDutchDateTime(createdAt) {
+  const p = parseCreatedAt(createdAt);
+  return p ? `${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute}` : "onbekende datum";
+}
+
+// "22 augustus, 07:18" -- kortere variant + tijd (i.p.v. alleen de datum) voor
+// de titel van een sessie zonder zaaknummer: de tijd is nodig om meerdere
+// gesprekken op dezelfde dag uit elkaar te houden (zie createSessionItemEl()).
+function formatDutchDateTimeShort(createdAt) {
+  const p = parseCreatedAt(createdAt);
+  return p ? `${p.day} ${p.month}, ${p.hour}:${p.minute}` : null;
 }
 
 function createSessionItemEl(s) {
-  const date = s.created_at
-    ? s.created_at.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, "$3-$2-$1 $4:$5")
-    : "onbekend";
   // Zaaknummer is het hoofdonderwerp van de rij als het er is. Zonder
-  // zaaknummer is dat bewust GEEN waarschuwing ("niet gekoppeld") -- een
-  // zaaknummer is optioneel, dus dit is een normale, geen foutieve staat.
-  // "Gesprek van {datum}" i.p.v. steeds dezelfde generieke tekst zeven keer
-  // onder elkaar; "Geen zaaknummer" blijft alleen als bescheiden aanduiding
-  // naast de sessie-id staan.
+  // zaaknummer is dat bewust GEEN waarschuwing -- een zaaknummer is
+  // optioneel, dus dit is een normale, geen foutieve staat. "Gesprek ·
+  // {datum, tijd}" i.p.v. steeds dezelfde generieke tekst (met tijd, anders
+  // onderscheiden meerdere gesprekken op één dag zich niet); "Geen
+  // zaaknummer" blijft alleen als bescheiden aanduiding staan, niet meer
+  // naast de titel maar bij de overige sessiedetails.
   const hasCase = !!s.case_ref;
   const title = hasCase
     ? `Zaak ${escapeHtml(s.case_ref)}`
-    : `Gesprek van ${escapeHtml(formatDutchDateShort(s.created_at) || "onbekende datum")}`;
+    : `Gesprek · ${escapeHtml(formatDutchDateTimeShort(s.created_at) || "onbekende datum")}`;
   const shortId = `${s.session_id.substring(0, 8)}…`;
   const duration = Number.isFinite(s.duration_ms) ? formatMs(s.duration_ms) : null;
 
-  const detailParts = [
-    `<svg class="icon"><use href="#icon-calendar"></use></svg> ${date}`,
-    escapeHtml(humanRoleLabels(s.channels)),
-  ];
-  if (duration) detailParts.push(duration);
+  // Eén doorlopende, met "·" gescheiden regel i.p.v. losse blokjes die tegen
+  // elkaar aan stonden.
+  const detailBits = [formatDutchDateTime(s.created_at)];
+  if (duration) detailBits.push(duration);
+  const roles = humanRoleLabels(s.channels);
+  if (roles) detailBits.push(roles);
+
+  // Secundaire regel: technische sessie-id (klein/gedempt, alleen relevant
+  // voor support/verwijzing) + eventueel "Geen zaaknummer".
+  const metaBits = [`sessie ${shortId}`];
+  if (!hasCase) metaBits.push("Geen zaaknummer");
+  const metaLine = metaBits.map(escapeHtml).join(" · ");
 
   // Drie eerlijke statussen, geen 4e "klaar voor controle" -- daar is geen
   // echt bijgehouden gegeven voor (zie mark_gehoorverslag_generated() in
-  // TriviasServer.py). De feitelijke tijdstempel blijft zichtbaar, alleen
-  // als aparte detailregel i.p.v. in de badge zelf.
+  // TriviasServer.py). De feitelijke tijdstempel wordt aan detailBits
+  // toegevoegd (niet in de badge zelf) -- vandaar dat detailLine pas hierna
+  // wordt opgebouwd.
   let badge;
+  let rightSlot;
   const item = document.createElement("div");
   item.className = "session-item";
   if (!s.has_transcript) {
     // "Geen transcriptie" i.p.v. "wordt verwerkt" -- we weten hier niet of
     // er nu echt een achtergrondtaak loopt, alleen dat het bestand ontbreekt.
     badge = `<span class="session-item-badge session-item-badge-pending">Geen transcriptie</span>`;
+    // Geen "Open"-aanduiding voor een kaart die niet te openen is -- i.p.v.
+    // gewoon leeg, expliciet uitleggen waarom.
+    rightSlot = `<span class="session-item-action-note">Nog niet te openen</span>`;
     item.classList.add("session-item-disabled");
-  } else if (s.gehoorverslag_generated_at) {
-    badge = `<span class="session-item-badge session-item-badge-done">Verslag gegenereerd</span>`;
-    detailParts.push(`gegenereerd op ${escapeHtml(new Date(s.gehoorverslag_generated_at).toLocaleString("nl-NL"))}`);
   } else {
-    badge = `<span class="session-item-badge session-item-badge-missing">Verslag nog niet gegenereerd</span>`;
+    rightSlot = `<span class="session-item-open">Open →</span>`;
+    if (s.gehoorverslag_generated_at) {
+      badge = `<span class="session-item-badge session-item-badge-done">Verslag gegenereerd</span>`;
+      detailBits.push(`gegenereerd op ${new Date(s.gehoorverslag_generated_at).toLocaleString("nl-NL")}`);
+    } else {
+      badge = `<span class="session-item-badge session-item-badge-missing">Verslag nog niet gegenereerd</span>`;
+    }
   }
 
-  const noCaseNote = hasCase ? "" : `<span class="session-item-nocase">Geen zaaknummer</span>`;
+  const detailLine = `<svg class="icon"><use href="#icon-calendar"></use></svg> ${detailBits.map(escapeHtml).join(" · ")}`;
 
   item.innerHTML = `
     <div class="session-item-main">
-      <div class="session-item-heading">
-        <span class="session-item-title">${title}</span>
-        <span class="session-item-id">${shortId}</span>
-        ${noCaseNote}
-      </div>
-      <span class="session-item-open">Open →</span>
+      <span class="session-item-title">${title}</span>
+      ${rightSlot}
     </div>
-    <div class="session-item-detail">${detailParts.map(p => `<span>${p}</span>`).join("")}</div>
+    <div class="session-item-detail">${detailLine}</div>
+    <div class="session-item-meta-line">${metaLine}</div>
     ${badge}`;
 
   if (s.has_transcript) {
@@ -1436,6 +1471,8 @@ function showLandingPage() {
   if (landingPage) landingPage.classList.remove("hidden");
   if (workspaceMain) workspaceMain.classList.add("hidden");
   if (backToLandingBtn) backToLandingBtn.classList.add("hidden");
+  // Model/taal zijn relevant in de werkomgeving, niet op de startpagina.
+  document.getElementById("appHeaderTags")?.classList.add("hidden");
   loadLandingData();
 }
 
@@ -1443,6 +1480,7 @@ function showWorkspace() {
   if (landingPage) landingPage.classList.add("hidden");
   if (workspaceMain) workspaceMain.classList.remove("hidden");
   if (backToLandingBtn) backToLandingBtn.classList.remove("hidden");
+  document.getElementById("appHeaderTags")?.classList.remove("hidden");
 }
 
 // Haalt altijd het gemergde transcript van ALLE kanalen van een sessie op

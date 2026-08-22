@@ -98,8 +98,12 @@
           </span>
         </div>
         <div class="app-header-right">
-          <span class="tag tag-model">model: large-v3</span>
-          <span class="tag tag-lang">taal: NL</span>
+          <!-- Alleen relevant in de werkomgeving, niet op de startpagina
+               (zie showLandingPage()/showWorkspace() in app.js). -->
+          <div id="appHeaderTags" class="app-header-tags hidden">
+            <span class="tag tag-model">model: large-v3</span>
+            <span class="tag tag-lang">taal: NL</span>
+          </div>
           <button id="backToLandingBtn" class="tag tag-sessions hidden">
             <svg class="icon"><use href="#icon-folder"></use></svg> ◄ Overzicht
           </button>
