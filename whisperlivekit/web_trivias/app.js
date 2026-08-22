@@ -1446,10 +1446,11 @@ function getPlaybackDurationMs() {
 }
 
 function renderPlaybackTimeline() {
-  const wrap = document.getElementById("playbackTimeline");
-  const list = document.getElementById("playbackTimelineLanesList");
+  const wrap   = document.getElementById("playbackTimeline");
+  const labels = document.getElementById("playbackTimelineLabels");
+  const list   = document.getElementById("playbackTimelineLanesList");
   const player = document.getElementById("playbackAudioPlayer");
-  if (!wrap || !list) return;
+  if (!wrap || !list || !labels) return;
 
   if (!isPlaybackMode || playbackChannels.length === 0) {
     hidePlaybackTimeline();
@@ -1459,10 +1460,18 @@ function renderPlaybackTimeline() {
   const segments   = getAllPlaybackSegmentsFlat();
   const durationMs = getPlaybackDurationMs();
 
+  labels.innerHTML = "";
   list.innerHTML = "";
   for (const channelId of playbackChannels) {
     const roleId = channelIdToRoleId(channelId);
     const color  = getRoleColor(roleId);
+
+    const labelEl = document.createElement("div");
+    labelEl.className = "playback-timeline-label";
+    labelEl.style.color = color;
+    labelEl.textContent = getRoleLabel(roleId);
+    labels.appendChild(labelEl);
+
     const lane = document.createElement("div");
     lane.className = "playback-timeline-lane";
     lane.dataset.channel = channelId;
@@ -1500,10 +1509,12 @@ function renderPlaybackTimeline() {
 
 function hidePlaybackTimeline() {
   const wrap   = document.getElementById("playbackTimeline");
+  const labels = document.getElementById("playbackTimelineLabels");
   const list   = document.getElementById("playbackTimelineLanesList");
   const player = document.getElementById("playbackAudioPlayer");
   if (player) player.pause();
   if (wrap) wrap.classList.add("hidden");
+  if (labels) labels.innerHTML = "";
   if (list) list.innerHTML = "";
   playbackAudioChannel = null;
   movePlayheadTo(-1);

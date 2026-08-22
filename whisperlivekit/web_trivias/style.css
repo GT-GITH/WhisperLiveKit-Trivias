@@ -1144,7 +1144,37 @@ select:focus-visible,
 }
 
 .playback-timeline-lanes {
+  display: flex;
+  gap: 8px;
+}
+
+/* Rolnamen links van elke band -- zonder dit las de tijdlijn als abstracte
+   losse kleurblokjes zonder duiding; nu is elke rij direct herkenbaar
+   zonder heen-en-weer kijken naar de "Toon:"-filterchips erboven. */
+.playback-timeline-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 0;
+  flex: 0 0 auto;
+  width: 84px;
+}
+
+.playback-timeline-label {
+  height: 14px;
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playback-timeline-tracks {
   position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .playback-timeline-lanes-list {
@@ -1157,19 +1187,22 @@ select:focus-visible,
 
 .playback-timeline-lane {
   position: relative;
-  height: 12px;
-  border-radius: 3px;
+  height: 14px;
+  border-radius: 2px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
 }
 
+/* Amper afgeronde hoeken (i.p.v. de vorige 2px, die bij smalle segmenten --
+   korte spreekbeurten -- als volle capsule/snoepje oogde) en iets minder
+   verzadigde vulling, zodat dit leest als een dataspoor i.p.v. speelgoedblokjes. */
 .playback-timeline-segment {
   position: absolute;
   top: 0;
   bottom: 0;
-  border-radius: 2px;
+  border-radius: 1px;
   min-width: 2px;
-  opacity: 0.85;
+  opacity: 0.78;
 }
 
 .playback-timeline-segment.seg-playing {
