@@ -160,6 +160,36 @@ const STORAGE_KEY = "trivias_channel_config";
 let channelConfigs = [];
 let availableMics = [];
 
+// === Sessie-brede referenties (zaaknummer, cliëntreferentie) ===
+// Bewust GEEN localStorage (i.t.t. channelConfigs hierboven, dat legitieme
+// apparaatinstellingen bevat): op een gedeeld werkstation mag een zaaknummer
+// nooit blijven staan voor de volgende gebruiker. Kale in-memory state,
+// expliciet leeggemaakt via resetSessionRefs() bij Stop en bij het starten
+// van een nieuwe opname vanaf de startpagina.
+let sessionCaseRef = "";
+let sessionPersonRef = "";
+
+const sessionCaseRefInput   = document.getElementById("sessionCaseRefInput");
+const sessionPersonRefInput = document.getElementById("sessionPersonRefInput");
+
+if (sessionCaseRefInput) {
+  sessionCaseRefInput.addEventListener("input", () => {
+    sessionCaseRef = sessionCaseRefInput.value.trim();
+  });
+}
+if (sessionPersonRefInput) {
+  sessionPersonRefInput.addEventListener("input", () => {
+    sessionPersonRef = sessionPersonRefInput.value.trim();
+  });
+}
+
+function resetSessionRefs() {
+  sessionCaseRef = "";
+  sessionPersonRef = "";
+  if (sessionCaseRefInput) sessionCaseRefInput.value = "";
+  if (sessionPersonRefInput) sessionPersonRefInput.value = "";
+}
+
 function loadChannelConfigs() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -466,10 +496,10 @@ const asrStatusDot         = document.getElementById("asrStatusDot");
 const timerSpan            = document.getElementById("recordingTimer");
 const hintText             = document.getElementById("hintText");
 
-const sessionsBtn        = document.getElementById("sessionsBtn");
-const sessionsModal      = document.getElementById("sessionsModal");
-const sessionsModalClose = document.getElementById("sessionsModalClose");
-const sessionsList       = document.getElementById("sessionsList");
+const landingPage        = document.getElementById("landingPage");
+const workspaceMain      = document.querySelector(".app-main");
+const newSessionBtn      = document.getElementById("newSessionBtn");
+const landingSearchInput = document.getElementById("landingSearchInput");
 
 // === Status UI helpers ===
 
@@ -514,6 +544,7 @@ function setAsrStatus(text) {
 }
 
 function updateRecordButtonUI() {
+  const startFromConfigBtn = document.getElementById("startFromConfigBtn");
   if (!recordButton) return;
   if (!isRecording) {
     recordButton.classList.remove("hidden");
@@ -528,8 +559,17 @@ function updateRecordButtonUI() {
     if (pauseButton) pauseButton.classList.add("hidden");
     if (stopButton) stopButton.classList.add("hidden");
     if (refreshButton) refreshButton.classList.add("hidden");
+    if (startFromConfigBtn) {
+      // Zelfde label-logica als recordButton hierboven, voor consistentie
+      // tussen de twee knoppen die allebei startRecording() aanroepen.
+      startFromConfigBtn.innerHTML = isViewingStoredSession()
+        ? '<svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe opname starten'
+        : '<svg class="icon"><use href="#icon-mic"></use></svg> Start opname';
+      startFromConfigBtn.classList.remove("hidden");
+    }
   } else {
     recordButton.classList.add("hidden");
+    if (startFromConfigBtn) startFromConfigBtn.classList.add("hidden");
     if (pauseButton) {
       pauseButton.classList.remove("hidden");
       pauseButton.innerHTML = isPaused
@@ -664,6 +704,11 @@ function buildWebSocketUrl(sessionId, channelId, cfg) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({ session_id: sessionId, channel_id: channelId, lang: cfg.language || "nl", gate_framed: "1" });
   if (cfg.language2) params.set("lang2", cfg.language2);
+  // Elk kanaal opent zijn eigen WS-verbinding maar deelt dezelfde session_id;
+  // de backend merget case_ref/person_ref per sessie (SessionManager.create_or_update),
+  // dus het is onschadelijk dat elk kanaal dezelfde waarde meestuurt.
+  if (sessionCaseRef) params.set("case_ref", sessionCaseRef);
+  if (sessionPersonRef) params.set("person_ref", sessionPersonRef);
   return `${proto}//${location.host}/ws?${params}`;
 }
 
@@ -928,6 +973,7 @@ async function stopRecording() {
   }
 
   setConnectionStatus(0, channelConfigs.length);
+  resetSessionRefs();
 }
 
 async function confirmAndStop() {
@@ -1346,41 +1392,337 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
   }
 }
 
-// === Sessie browser ===
+// === Startpagina ===
+// Georganiseerd rondom zaken/gesprekken, niet rondom bestanden: één lijst
+// waarin elke sessie precies één keer voorkomt (i.p.v. drie parallelle
+// kolommen met dezelfde sessies), gefilterd via knoppen + een zoekveld.
+// Zaaknummer is de primaire identiteit van een rij, niet de technische
+// sessie-id. Vervangt ook de vorige sessie-browser-modal.
 
-async function loadSessionsList() {
-  if (!sessionsList) return;
-  sessionsList.innerHTML = '<p class="sessions-loading">Laden…</p>';
+let landingSessionsCache = [];
+let landingActiveFilter = "all";
+let landingSortMode = "newest";
+let landingPageIndex = 0;
+let landingCurrentView = "overview"; // "overview" | "sessions"
+const SESSIONS_PER_PAGE = 15;
+const OVERVIEW_RECENT_COUNT = 5;
+
+// Bewust geen naam in de begroeting ("Goedemorgen, {naam}") -- er is nog
+// geen echt account-systeem (zie CLAUDE.md/de login-discussie), dus een
+// naam tonen zou een niet-bestaande login voorwenden. Het tijdstip komt
+// gewoon van de systeemklok, geen gebruikersgegeven.
+function landingGreetingText() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Goedemorgen";
+  if (hour < 18) return "Goedemiddag";
+  return "Goedenavond";
+}
+
+async function loadLandingData() {
+  const greetingEl = document.getElementById("landingGreeting");
+  if (greetingEl) greetingEl.textContent = landingGreetingText();
   try {
     const resp = await fetch("/sessions/list");
     const data = await resp.json();
-    if (!data.sessions || data.sessions.length === 0) {
-      sessionsList.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
-      return;
-    }
-    sessionsList.innerHTML = "";
-    for (const s of data.sessions) {
-      const date = s.created_at
-        ? s.created_at.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, "$3-$2-$1 $4:$5")
-        : "onbekend";
-      const item = document.createElement("div");
-      item.className = "session-item";
-      item.innerHTML = `
-        <div class="session-item-meta">
-          <span class="session-item-id">${s.session_id.substring(0, 18)}…</span>
-          <span class="session-item-date"><svg class="icon"><use href="#icon-calendar"></use></svg> ${date} · <svg class="icon"><use href="#icon-mic"></use></svg> ${s.channels.join(", ")} · ${s.wav_size_mb} MB</span>
-        </div>
-        <span class="session-item-badge ${s.has_transcript ? "" : "no-transcript"}">
-          ${s.has_transcript ? '<svg class="icon"><use href="#icon-check"></use></svg> transcript' : "geen transcript"}
-        </span>`;
-      if (s.has_transcript) {
-        item.addEventListener("click", () => loadSessionTranscript(s.session_id));
-      }
-      sessionsList.appendChild(item);
-    }
+    landingSessionsCache = data.sessions || [];
   } catch (e) {
-    sessionsList.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
+    landingSessionsCache = [];
   }
+  landingPageIndex = 0;
+  renderLandingStats();
+  renderLandingAttention();
+  renderOverviewRecent();
+  renderLandingList();
+}
+
+// Klikbare navigatie tussen Werkoverzicht en Sessies -- beide leunen op
+// dezelfde landingSessionsCache/renderfuncties, dus geen nieuwe fetch nodig
+// om te wisselen.
+function setLandingView(view) {
+  landingCurrentView = view;
+  document.getElementById("overviewView")?.classList.toggle("hidden", view !== "overview");
+  document.getElementById("sessionsView")?.classList.toggle("hidden", view !== "sessions");
+  document.querySelectorAll(".app-nav-item[data-view]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.view === view);
+  });
+}
+
+// Een héél korte opname (test/per ongeluk gestarte sessie) telt niet mee als
+// "moet nog een gehoorverslag krijgen" -- anders ontstaat een permanente
+// lijst met schijnproblemen zodra er testfragmenten tussen de echte sessies
+// staan. Er is geen "dit was een afgerond gehoor"-vlag, dus duur is de enige
+// eerlijke, al beschikbare proxy hiervoor. Onbekende duur (oudere sessies
+// zonder wav-header-uitlezing) telt voorzichtigheidshalve WEL mee.
+const REPORT_MIN_DURATION_MS = 2 * 60 * 1000;
+function isReportWorthy(s) {
+  return s.has_transcript && !s.gehoorverslag_generated_at
+    && (!Number.isFinite(s.duration_ms) || s.duration_ms >= REPORT_MIN_DURATION_MS);
+}
+
+// Bescheiden oriëntatie, geen dashboard -- platte tekst, geen grote
+// getal-kaarten.
+function renderLandingStats() {
+  const statsEl = document.getElementById("landingStats");
+  if (!statsEl) return;
+  const total = landingSessionsCache.length;
+  if (!total) { statsEl.innerHTML = ""; return; }
+  const needsReport = landingSessionsCache.filter(isReportWorthy).length;
+  const noTranscript = landingSessionsCache.filter(s => !s.has_transcript).length;
+  const parts = [`<span><strong>${total}</strong> sessies</span>`, `<span><strong>${needsReport}</strong> zonder verslag</span>`];
+  // "Zonder transcriptie" i.p.v. "wordt verwerkt" -- we weten uit deze data
+  // niet of er nu daadwerkelijk een achtergrondtaak loopt, alleen dat er
+  // (nog) geen transcript-bestand is. "Wordt verwerkt" suggereert actieve
+  // voortgang die er misschien allang niet meer is (bv. oude testdata).
+  if (noTranscript) parts.push(`<span><strong>${noTranscript}</strong> zonder transcriptie</span>`);
+  statsEl.innerHTML = parts.join("");
+}
+
+// Zijkolom "Aandacht nodig": alleen categorieën die daadwerkelijk actie
+// vragen -- geen "niet aan zaak gekoppeld"-rij: een zaaknummer is bewust
+// optioneel (zie Configuratie-tab), dus veel/alle sessies zonder zaaknummer
+// is normaal, geen probleem om te melden. Elke rij is klikbaar en filtert
+// de hoofdlijst (zelfde definitie als hier, zie matchesFilter in
+// renderLandingList()).
+function renderLandingAttention() {
+  const el = document.getElementById("landingAttentionList");
+  if (!el) return;
+
+  const rows = [
+    { count: landingSessionsCache.filter(s => !s.has_transcript).length, label: "sessies zonder transcriptie", filter: "no_transcript" },
+    { count: landingSessionsCache.filter(isReportWorthy).length, label: "zonder gehoorverslag", filter: "needs_report" },
+  ].filter(r => r.count > 0);
+
+  if (rows.length === 0) {
+    el.innerHTML = '<li class="landing-attention-empty">Niets dat aandacht vraagt.</li>';
+    return;
+  }
+  el.innerHTML = rows.map(r =>
+    `<li><button type="button" class="landing-attention-item" data-filter="${r.filter}"><strong>${r.count}</strong> ${escapeHtml(r.label)}</button></li>`
+  ).join("");
+  el.querySelectorAll(".landing-attention-item").forEach(btn => {
+    btn.addEventListener("click", () => applyLandingFilter(btn.dataset.filter));
+  });
+}
+
+// Gedeeld tussen de filterknoppen in de toolbar en de klikbare rijen in
+// "Aandacht nodig" (die nu op Werkoverzicht staan) -- filteren betekent dus
+// ook naar de Sessies-pagina navigeren, want daar leeft de gefilterde lijst.
+function applyLandingFilter(filter) {
+  landingActiveFilter = filter;
+  landingPageIndex = 0;
+  document.querySelectorAll(".landing-filter").forEach(b => b.classList.toggle("active", b.dataset.filter === filter));
+  setLandingView("sessions");
+  renderLandingList();
+}
+
+function sortLandingSessions(list) {
+  const arr = [...list];
+  if (landingSortMode === "oldest") {
+    arr.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || ""));
+  } else if (landingSortMode === "case_ref") {
+    arr.sort((a, b) => {
+      if (!a.case_ref && !b.case_ref) return 0;
+      if (!a.case_ref) return 1;
+      if (!b.case_ref) return -1;
+      return a.case_ref.localeCompare(b.case_ref);
+    });
+  } else {
+    arr.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  }
+  return arr;
+}
+
+// Werkoverzicht: enkele recente gesprekken, altijd nieuwste-eerst ongeacht de
+// sorteerkeuze op de Sessies-pagina (onafhankelijke context) -- geen
+// zoeken/filteren hier, dat hoort bij het volledige archief.
+function renderOverviewRecent() {
+  const el = document.getElementById("overviewRecentList");
+  if (!el) return;
+  const recent = [...landingSessionsCache]
+    .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
+    .slice(0, OVERVIEW_RECENT_COUNT);
+  el.innerHTML = "";
+  if (recent.length === 0) {
+    el.innerHTML = '<p class="sessions-loading">Nog geen sessies.</p>';
+    return;
+  }
+  for (const s of recent) el.appendChild(createSessionItemEl(s));
+}
+
+// Sessies-pagina: het volledige, doorzoekbare/filterbare/sorteerbare archief
+// met echte paginering (i.p.v. de vorige "alles tonen"-toggle -- dit IS nu
+// het volledige-lijst-scherm, geen samenvatting meer).
+function renderLandingList() {
+  const listEl = document.getElementById("landingSessionsList");
+  const paginationEl = document.getElementById("landingPagination");
+  if (!listEl) return;
+
+  const query = (landingSearchInput?.value || "").trim().toLowerCase();
+  const matchesQuery = s => !query
+    || s.session_id.toLowerCase().includes(query)
+    || (s.case_ref || "").toLowerCase().includes(query);
+  const matchesFilter = s => {
+    if (landingActiveFilter === "no_transcript") return !s.has_transcript;
+    if (landingActiveFilter === "needs_report") return isReportWorthy(s);
+    if (landingActiveFilter === "has_report") return !!s.gehoorverslag_generated_at;
+    return true;
+  };
+
+  const filtered = sortLandingSessions(landingSessionsCache.filter(s => matchesQuery(s) && matchesFilter(s)));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / SESSIONS_PER_PAGE));
+  if (landingPageIndex >= totalPages) landingPageIndex = totalPages - 1;
+  if (landingPageIndex < 0) landingPageIndex = 0;
+  const start = landingPageIndex * SESSIONS_PER_PAGE;
+  const visible = filtered.slice(start, start + SESSIONS_PER_PAGE);
+
+  listEl.innerHTML = "";
+  if (filtered.length === 0) {
+    listEl.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
+  } else {
+    for (const s of visible) listEl.appendChild(createSessionItemEl(s));
+  }
+
+  if (paginationEl) {
+    if (filtered.length <= SESSIONS_PER_PAGE) {
+      paginationEl.innerHTML = "";
+    } else {
+      paginationEl.innerHTML = `
+        <button type="button" id="landingPrevBtn"${landingPageIndex === 0 ? " disabled" : ""}>← Vorige</button>
+        <span>Pagina ${landingPageIndex + 1} van ${totalPages}</span>
+        <button type="button" id="landingNextBtn"${landingPageIndex >= totalPages - 1 ? " disabled" : ""}>Volgende →</button>`;
+      document.getElementById("landingPrevBtn")?.addEventListener("click", () => { landingPageIndex--; renderLandingList(); });
+      document.getElementById("landingNextBtn")?.addEventListener("click", () => { landingPageIndex++; renderLandingList(); });
+    }
+  }
+}
+
+// "employee"/"foreign_tr"/... zijn interne kanaal-id's -- getRoleLabel()/
+// channelIdToRoleId() (al bestaand, ook gebruikt door de live transcriptie
+// zelf) vertalen dat naar wat een gebruiker daar ook al ziet staan
+// ("Medewerker", "Vreemdeling", ...), hier gededupliceerd.
+function humanRoleLabels(channels) {
+  const labels = (channels || []).map(ch => getRoleLabel(channelIdToRoleId(ch)));
+  return [...new Set(labels)].join(", ");
+}
+
+const DUTCH_MONTHS = ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september", "oktober", "november", "december"];
+
+function parseCreatedAt(createdAt) {
+  const m = createdAt && createdAt.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/);
+  if (!m) return null;
+  const month = DUTCH_MONTHS[parseInt(m[2], 10) - 1];
+  if (!month) return null;
+  return { day: parseInt(m[3], 10), month, year: m[1], hour: m[4], minute: m[5] };
+}
+
+// "22 augustus 2026, 07:18" -- volledige datum/tijd voor de detailregel.
+function formatDutchDateTime(createdAt) {
+  const p = parseCreatedAt(createdAt);
+  return p ? `${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute}` : "onbekende datum";
+}
+
+// "22 augustus, 07:18" -- kortere variant + tijd (i.p.v. alleen de datum) voor
+// de titel van een sessie zonder zaaknummer: de tijd is nodig om meerdere
+// gesprekken op dezelfde dag uit elkaar te houden (zie createSessionItemEl()).
+function formatDutchDateTimeShort(createdAt) {
+  const p = parseCreatedAt(createdAt);
+  return p ? `${p.day} ${p.month}, ${p.hour}:${p.minute}` : null;
+}
+
+function createSessionItemEl(s) {
+  // Zaaknummer is het hoofdonderwerp van de rij als het er is. Zonder
+  // zaaknummer is dat bewust GEEN waarschuwing -- een zaaknummer is
+  // optioneel, dus dit is een normale, geen foutieve staat. "Gesprek ·
+  // {datum, tijd}" i.p.v. steeds dezelfde generieke tekst (met tijd, anders
+  // onderscheiden meerdere gesprekken op één dag zich niet); "Geen
+  // zaaknummer" blijft alleen als bescheiden aanduiding staan, niet meer
+  // naast de titel maar bij de overige sessiedetails.
+  const hasCase = !!s.case_ref;
+  const title = hasCase
+    ? `Zaak ${escapeHtml(s.case_ref)}`
+    : `Gesprek · ${escapeHtml(formatDutchDateTimeShort(s.created_at) || "onbekende datum")}`;
+  const shortId = `${s.session_id.substring(0, 8)}…`;
+  const duration = Number.isFinite(s.duration_ms) ? formatMs(s.duration_ms) : null;
+
+  // Eén doorlopende, met "·" gescheiden regel i.p.v. losse blokjes die tegen
+  // elkaar aan stonden. Datum/tijd alleen hier tonen als de titel die nog
+  // niet al bevat (bij "Gesprek · {datum, tijd}" zou dat dubbelop zijn).
+  const detailBits = hasCase ? [formatDutchDateTime(s.created_at)] : [];
+  if (duration) detailBits.push(duration);
+  const roles = humanRoleLabels(s.channels);
+  if (roles) detailBits.push(roles);
+
+  // Secundaire regel: technische sessie-id (klein/gedempt, alleen relevant
+  // voor support/verwijzing) + eventueel "Geen zaaknummer".
+  const metaBits = [`sessie ${shortId}`];
+  if (!hasCase) metaBits.push("Geen zaaknummer");
+  const metaLine = metaBits.map(escapeHtml).join(" · ");
+
+  // Drie eerlijke statussen, geen 4e "klaar voor controle" -- daar is geen
+  // echt bijgehouden gegeven voor (zie mark_gehoorverslag_generated() in
+  // TriviasServer.py). De feitelijke tijdstempel wordt aan detailBits
+  // toegevoegd (niet in de badge zelf) -- vandaar dat detailLine pas hierna
+  // wordt opgebouwd.
+  let badge;
+  let rightSlot;
+  const item = document.createElement("div");
+  item.className = "session-item";
+  if (!s.has_transcript) {
+    // "Geen transcriptie" i.p.v. "wordt verwerkt" -- we weten hier niet of
+    // er nu echt een achtergrondtaak loopt, alleen dat het bestand ontbreekt.
+    badge = `<span class="session-item-badge session-item-badge-pending">Geen transcriptie</span>`;
+    // Geen "Open"-aanduiding voor een kaart die niet te openen is -- i.p.v.
+    // gewoon leeg, expliciet uitleggen waarom.
+    rightSlot = `<span class="session-item-action-note">Nog niet te openen</span>`;
+    item.classList.add("session-item-disabled");
+  } else {
+    rightSlot = `<span class="session-item-open">Open →</span>`;
+    if (s.gehoorverslag_generated_at) {
+      badge = `<span class="session-item-badge session-item-badge-done">Verslag gegenereerd</span>`;
+      detailBits.push(`gegenereerd op ${new Date(s.gehoorverslag_generated_at).toLocaleString("nl-NL")}`);
+    } else {
+      badge = `<span class="session-item-badge session-item-badge-missing">Verslag nog niet gegenereerd</span>`;
+    }
+  }
+
+  const detailLine = `<svg class="icon"><use href="#icon-calendar"></use></svg> ${detailBits.map(escapeHtml).join(" · ")}`;
+
+  item.innerHTML = `
+    <div class="session-item-main">
+      <span class="session-item-title">${title}</span>
+      ${rightSlot}
+    </div>
+    <div class="session-item-detail">${detailLine}</div>
+    <div class="session-item-meta-line">${metaLine}</div>
+    ${badge}`;
+
+  if (s.has_transcript) {
+    item.addEventListener("click", () => {
+      if (!confirmLeaveActiveRecording()) return;
+      showWorkspace();
+      loadSessionTranscript(s.session_id);
+    });
+  }
+  return item;
+}
+
+function showLandingPage() {
+  if (landingPage) landingPage.classList.remove("hidden");
+  if (workspaceMain) workspaceMain.classList.add("hidden");
+  // Model/taal zijn relevant in de werkomgeving, niet op de startpagina.
+  document.getElementById("appHeaderTags")?.classList.add("hidden");
+  setLandingView("overview");
+  loadLandingData();
+}
+
+function showWorkspace() {
+  if (landingPage) landingPage.classList.add("hidden");
+  if (workspaceMain) workspaceMain.classList.remove("hidden");
+  document.getElementById("appHeaderTags")?.classList.remove("hidden");
+  // Geen navitem blijft "actief" ogen als je hier via een sessiekaart bent
+  // beland (i.p.v. via "Nieuwe opname") -- startNewSessionFlow() zet die
+  // markering zelf terug aan wanneer dat wél de aanleiding was.
+  document.querySelectorAll(".app-nav-item").forEach(b => b.classList.remove("active"));
 }
 
 // Haalt altijd het gemergde transcript van ALLE kanalen van een sessie op
@@ -1392,8 +1734,6 @@ async function loadSessionTranscript(sessionId) {
     const resp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/transcript?channel_id=all`);
     if (!resp.ok) { alert("Transcript niet gevonden."); return; }
     const data = await resp.json();
-
-    sessionsModal.classList.add("hidden");
 
     currentSessionId   = data.session_id;
     isPlaybackMode     = true;
@@ -1813,18 +2153,87 @@ function insertTranslationLine(seg, translation, errorMessage) {
 // === Event wiring ===
 
 if (recordButton) recordButton.addEventListener("click", startRecording);
+
+const startFromConfigBtn = document.getElementById("startFromConfigBtn");
+if (startFromConfigBtn) {
+  startFromConfigBtn.addEventListener("click", async () => {
+    await startRecording();
+    // Springt na het starten zelf naar Bediening, zodat de live-status en
+    // Pauze/Stop meteen zichtbaar zijn i.p.v. dat je handmatig moet wisselen.
+    document.querySelector('.tab-btn[data-tab="control"]')?.click();
+  });
+}
 if (pauseButton) pauseButton.addEventListener("click", togglePause);
 if (stopButton) stopButton.addEventListener("click", confirmAndStop);
 if (refreshButton) refreshButton.addEventListener("click", refreshTranscript);
 if (refreshPlaybackButton) refreshPlaybackButton.addEventListener("click", refreshTranscript);
 if (gehoorverslagButton) gehoorverslagButton.addEventListener("click", downloadGehoorverslag);
 
-if (sessionsBtn) sessionsBtn.addEventListener("click", () => {
-  sessionsModal.classList.remove("hidden");
-  loadSessionsList();
+// Een lopende opname mag niet ongemerkt buiten beeld raken: de WebSocket-
+// verbindingen zijn onafhankelijk van welke view zichtbaar is, dus wegnavigeren
+// stopt de opname NIET -- maar Pauze/Stop zijn dan niet meer bereikbaar zonder
+// terug te navigeren. Risicovol tijdens een gehoor, dus expliciete bevestiging
+// i.p.v. stilzwijgend wegklikken (zelfde confirm()-patroon als confirmAndStop()).
+function confirmLeaveActiveRecording() {
+  if (!isRecording) return true;
+  return confirm(
+    "Er loopt nog een actieve opname.\n\n" +
+    "Wegnavigeren stopt de opname niet, maar Pauze/Stop zijn dan niet meer " +
+    "in beeld totdat je terugkeert naar de werkomgeving.\n\nToch doorgaan?"
+  );
+}
+
+// Gedeeld door de hero-knop op Werkoverzicht en de "Nieuwe opname"-navitem.
+function startNewSessionFlow() {
+  if (!confirmLeaveActiveRecording()) return;
+  resetSessionRefs();
+  showWorkspace();
+  document.querySelectorAll('.app-nav-item[data-view="new"]').forEach(b => b.classList.add("active"));
+  document.querySelector('.tab-btn[data-tab="config"]')?.click();
+}
+
+if (newSessionBtn) newSessionBtn.addEventListener("click", startNewSessionFlow);
+
+// Hoofdnavigatie: Werkoverzicht/Sessies wisselen binnen de startpagina (geen
+// nieuwe fetch nodig, zie setLandingView()); "Nieuwe opname" gaat naar de
+// werkomgeving. Vervangt de vorige losse "◄ Overzicht"-knop -- die had geen
+// functie meer nu de navigatie er is.
+document.querySelectorAll(".app-nav-item[data-view]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const view = btn.dataset.view;
+    if (view === "new") { startNewSessionFlow(); return; }
+    if (!confirmLeaveActiveRecording()) return;
+    showLandingPage();
+    setLandingView(view);
+  });
 });
-if (sessionsModalClose) sessionsModalClose.addEventListener("click", () => sessionsModal.classList.add("hidden"));
-if (sessionsModal) sessionsModal.addEventListener("click", e => { if (e.target === sessionsModal) sessionsModal.classList.add("hidden"); });
+
+const viewAllSessionsBtn = document.getElementById("viewAllSessionsBtn");
+if (viewAllSessionsBtn) {
+  viewAllSessionsBtn.addEventListener("click", () => {
+    document.querySelector('.app-nav-item[data-view="sessions"]')?.click();
+  });
+}
+
+if (landingSearchInput) {
+  landingSearchInput.addEventListener("input", () => {
+    landingPageIndex = 0;
+    renderLandingList();
+  });
+}
+
+document.querySelectorAll(".landing-filter").forEach(btn => {
+  btn.addEventListener("click", () => applyLandingFilter(btn.dataset.filter));
+});
+
+const landingSortSelect = document.getElementById("landingSortSelect");
+if (landingSortSelect) {
+  landingSortSelect.addEventListener("change", () => {
+    landingSortMode = landingSortSelect.value;
+    landingPageIndex = 0;
+    renderLandingList();
+  });
+}
 
 const addChannelBtn = document.getElementById("addChannelBtn");
 if (addChannelBtn) addChannelBtn.addEventListener("click", addChannelConfig);
@@ -1868,3 +2277,8 @@ updateRecordButtonUI();
 updateHint();
 setConnectionStatus(0, channelConfigs.length);
 setAsrStatus("Wachten op opname");
+
+// Startpagina is de landingsplek i.p.v. direct het live-scherm (index.html
+// toont #landingPage al zichtbaar / .app-main al hidden by default -- dit
+// vult 'm alleen met data, wisselt geen zichtbaarheid).
+loadLandingData();

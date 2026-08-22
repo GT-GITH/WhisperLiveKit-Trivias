@@ -108,16 +108,85 @@
             <span class="app-subtitle">Audio-first evidence platform</span>
           </span>
         </div>
+        <!-- Bescheiden hoofdnavigatie: elke sectie krijgt een eigen taak
+             i.p.v. alles op één pagina (werkoverzicht = kort en glanceable,
+             sessies = het volledige doorzoekbare archief, nieuwe opname =
+             de bestaande werkomgeving). Zie app.js setLandingView()/
+             startNewSessionFlow(). -->
+        <nav class="app-nav" id="appNav">
+          <button class="app-nav-item active" data-view="overview">Werkoverzicht</button>
+          <button class="app-nav-item" data-view="sessions">Sessies</button>
+          <button class="app-nav-item" data-view="new">Nieuwe opname</button>
+        </nav>
         <div class="app-header-right">
-          <span class="tag tag-model">model: large-v3</span>
-          <span class="tag tag-lang">taal: NL</span>
-          <button id="sessionsBtn" class="tag tag-sessions">
-            <svg class="icon"><use href="#icon-folder"></use></svg> Sessies
-          </button>
+          <!-- Alleen relevant in de werkomgeving, niet op de startpagina
+               (zie showLandingPage()/showWorkspace() in app.js). -->
+          <div id="appHeaderTags" class="app-header-tags hidden">
+            <span class="tag tag-model">model: large-v3</span>
+            <span class="tag tag-lang">taal: NL</span>
+          </div>
         </div>
       </header>
 
-      <main class="app-main">
+      <!-- Startpagina: krijgt via #appNav twee eigen secties i.p.v. alles op
+           één lange lijst -- Werkoverzicht (glanceable: enkele recente
+           gesprekken + wat aandacht vraagt) en Sessies (het volledige
+           doorzoekbare/sorteerbare/gepagineerde archief). -->
+      <div id="landingPage" class="landing-page">
+
+        <!-- Werkoverzicht -->
+        <div id="overviewView" class="landing-view">
+          <div class="landing-hero">
+            <div class="landing-greeting">
+              <p class="landing-greeting-small" id="landingGreeting">Welkom</p>
+              <h1>Werkoverzicht</h1>
+            </div>
+            <button id="newSessionBtn" class="record-button">
+              <svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe opname starten
+            </button>
+          </div>
+
+          <div id="landingStats" class="landing-stats"></div>
+
+          <div class="landing-grid">
+            <section class="landing-main-col">
+              <h2>Recente gesprekken</h2>
+              <div id="overviewRecentList" class="sessions-list"></div>
+              <button type="button" id="viewAllSessionsBtn" class="landing-view-all-link" data-view="sessions">Alle sessies bekijken →</button>
+            </section>
+
+            <aside class="landing-side-col">
+              <h2>Aandacht nodig</h2>
+              <ul id="landingAttentionList" class="landing-attention-list"></ul>
+            </aside>
+          </div>
+        </div>
+
+        <!-- Sessies -->
+        <div id="sessionsView" class="landing-view hidden">
+          <h1>Sessies</h1>
+          <div class="landing-toolbar">
+            <input type="text" id="landingSearchInput" placeholder="Zoeken op zaaknummer of sessie-id…" autocomplete="off">
+            <div class="landing-toolbar-row">
+              <div class="landing-filters" id="landingFilters">
+                <button class="landing-filter active" data-filter="all">Alle sessies</button>
+                <button class="landing-filter" data-filter="no_transcript">Zonder transcriptie</button>
+                <button class="landing-filter" data-filter="needs_report">Nog geen verslag</button>
+                <button class="landing-filter" data-filter="has_report">Verslag gegenereerd</button>
+              </div>
+              <select id="landingSortSelect" class="landing-sort-select">
+                <option value="newest">Nieuwste eerst</option>
+                <option value="oldest">Oudste eerst</option>
+                <option value="case_ref">Zaaknummer</option>
+              </select>
+            </div>
+          </div>
+          <div id="landingSessionsList" class="sessions-list"><p class="sessions-loading">Laden…</p></div>
+          <div id="landingPagination" class="landing-pagination"></div>
+        </div>
+      </div>
+
+      <main class="app-main hidden">
         <section class="panel panel-main">
           <div class="panel-header">
             <div class="panel-title-group">
@@ -194,30 +263,44 @@
 
           <!-- Configuratie tab -->
           <div id="tab-config" class="tab-pane hidden">
+            <h3 class="config-section-heading">Sessiegegevens</h3>
+            <!-- Sessie-brede (niet per-kanaal) referenties -- bewust NIET
+                 opgeslagen in localStorage, i.t.t. de kanaalconfiguratie
+                 hieronder: op een gedeeld werkstation mag een zaaknummer nooit
+                 blijven staan voor de volgende gebruiker. Zie app.js
+                 resetSessionRefs(). -->
+            <div class="session-refs">
+              <div class="session-ref-field">
+                <label for="sessionCaseRefInput">Zaaknummer</label>
+                <input type="text" id="sessionCaseRefInput" placeholder="Optioneel" autocomplete="off">
+              </div>
+              <div class="session-ref-field">
+                <label for="sessionPersonRefInput">Cliëntreferentie</label>
+                <input type="text" id="sessionPersonRefInput" placeholder="Optioneel" autocomplete="off">
+              </div>
+            </div>
+
+            <h3 class="config-section-heading">Audiokanalen</h3>
             <div id="channelConfigList" class="channel-config-list"></div>
             <button id="addChannelBtn" class="add-channel-btn">+ Kanaal toevoegen</button>
             <label class="cross-gate-toggle">
               <input type="checkbox" id="crossGateToggle" checked>
               Cross-kanaal anti-lek (aanbevolen)
             </label>
+
+            <!-- Vaste Start-knop hier i.p.v. alleen op het Bediening-tabblad --
+                 zonder deze moest je na het configureren van kanalen eerst
+                 handmatig terugwisselen om de opname te kunnen starten. Zelfde
+                 startRecording()-actie, wisselt daarna zelf naar Bediening
+                 zodat de live-status/Pauze/Stop direct zichtbaar zijn. -->
+            <button id="startFromConfigBtn" class="record-button start-from-config">
+              <svg class="icon"><use href="#icon-mic"></use></svg> Start opname
+            </button>
           </div>
         </aside>
       </main>
     </div>
 
     <script type="module" src="app.js"></script>
-
-    <!-- Sessie browser modal -->
-    <div id="sessionsModal" class="sessions-modal hidden">
-      <div class="sessions-modal-inner">
-        <div class="sessions-modal-header">
-          <h2>Opgeslagen sessies</h2>
-          <button id="sessionsModalClose" class="sessions-close"><svg class="icon"><use href="#icon-close"></use></svg></button>
-        </div>
-        <div id="sessionsList" class="sessions-list">
-          <p class="sessions-loading">Laden...</p>
-        </div>
-      </div>
-    </div>
   </body>
 </html>

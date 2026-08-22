@@ -75,18 +75,66 @@ if _existing_file_handler is None:
 args = parse_args()
 
 
-# ====== Session manager (v0.1: alleen in-memory + logging) ======
+# ====== Session manager ======
 class SessionManager:
-    """Eenvoudige in-memory session registry voor debug/doeleinden.
+    """Session registry: in-memory voor snelheid binnen de levensduur van dit
+    serverproces, met een lichte JSON-sidecar per sessie op disk
+    (recordings/session_{uuid}.meta.json) zodat zaaknummer/cliëntreferentie/
+    gebruiker en gehoorverslag_generated_at een serverherstart overleven.
+
+    Bewust géén losse read-modify-write per caller op die file -- dat zou bij
+    meerdere gelijktijdig verbindende kanaal-WebSockets van dezelfde sessie
+    een race-conditie kunnen geven (bv. een net gezette
+    gehoorverslag_generated_at die door een laat kanaal weer overschreven
+    wordt). In plaats daarvan is dit in-memory dict de enige bron van
+    waarheid: elke schrijfactie (create_or_update, mark_gehoorverslag_generated)
+    hydrateert eerst vanaf disk als de sessie in dit procesgeheugen nog
+    onbekend is, merget daarna in-memory, en persisteert pas als laatste stap.
+    Zolang deze methodes geen `await` bevatten tussen hydrateren en
+    persisteren blijft dat atomisch t.o.v. de single-threaded asyncio
+    event loop -- geen file-locking nodig.
 
     Later kun je hier:
-    - persistente opslag (DB, S3, etc.) aan koppelen
-    - metadata uitbreiden (tolk, vreemdeling, gehoormedewerker, enz.)
+    - metadata verder uitbreiden (tolk, vreemdeling, gehoormedewerker, enz.)
     - transcript / diarization / inconsistency resultaten aan vastmaken
     """
 
     def __init__(self) -> None:
         self._sessions: Dict[str, Dict[str, Any]] = {}
+
+    def _meta_path(self, session_id: str) -> Path:
+        # Bewust zonder kanaal/timestamp-suffix (i.t.t. de wav/json-
+        # transcriptbestanden) zodat _parse_session_wav_name()'s
+        # session_*_*_*-glob dit bestand nooit oppikt.
+        return Path("recordings") / f"session_{session_id}.meta.json"
+
+    def _hydrate(self, session_id: str) -> None:
+        """Laadt eerder gepersisteerde metadata van disk in het in-memory
+        dict, alleen als deze sessie in dit serverproces nog niet gezien is
+        (bv. vlak na een herstart). Fail-safe: ontbrekend/kapot bestand
+        betekent gewoon "geen eerdere metadata bekend", geen harde fout."""
+        if session_id in self._sessions:
+            return
+        path = self._meta_path(session_id)
+        if not path.exists():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                self._sessions[session_id] = json.load(f)
+        except Exception as e:
+            logger.warning(f"[SESSION] kon metadata niet laden voor {session_id}: {e}")
+
+    def _persist(self, session_id: str) -> None:
+        meta = self._sessions.get(session_id)
+        if meta is None:
+            return
+        try:
+            recordings_dir = Path("recordings")
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            with open(self._meta_path(session_id), "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"[SESSION] kon metadata niet opslaan voor {session_id}: {e}")
 
     def create_or_update(
         self,
@@ -98,6 +146,7 @@ class SessionManager:
         language: Optional[str] = None,
         language2: Optional[str] = None,
     ) -> Dict[str, Any]:
+        self._hydrate(session_id)
         now = datetime.utcnow().isoformat() + "Z"
         meta = self._sessions.get(session_id, {})
         meta.update(
@@ -106,7 +155,10 @@ class SessionManager:
                 "source_system": source_system or meta.get("source_system"),
                 "external_references": {
                     **meta.get("external_references", {}),
-                    **external_references,
+                    # Alleen niet-lege waarden mergen -- anders zou een kanaal
+                    # dat toevallig zonder case_ref/person_ref verbindt een al
+                    # gezette waarde van een eerder kanaal overschrijven met None.
+                    **{k: v for k, v in external_references.items() if v},
                 },
                 "user_id": user_id or meta.get("user_id"),
                 "last_seen": now,
@@ -115,20 +167,28 @@ class SessionManager:
         )
         # Per-kanaal taalconfiguratie zoals meegegeven bij WS-connect (lang/lang2
         # query-params) -- vooral relevant voor de tolk (Taal 2), die anders
-        # nergens buiten de levende AudioProcessor-instance bekend is. Puur
-        # in-memory (zelfde levenscyclus als de rest van deze registry, zie
-        # klasse-docstring) -- gaat verloren bij een serverherstart, maar dat is
-        # een acceptabele v1-beperking (fail-safe: /translate valt dan terug op
-        # "brontaal onbekend", niet op een gok).
+        # nergens buiten de levende AudioProcessor-instance bekend is.
         if channel_id:
             channels = meta.setdefault("channels", {})
             channels[channel_id] = {"language": language, "language2": language2}
         self._sessions[session_id] = meta
+        self._persist(session_id)
         logger.info(f"[SESSION] {session_id} ÔåÆ {meta}")
         return meta
 
     def get(self, session_id: str) -> Optional[Dict[str, Any]]:
+        self._hydrate(session_id)
         return self._sessions.get(session_id)
+
+    def mark_gehoorverslag_generated(self, session_id: str) -> None:
+        """Feitelijke tijdstempel -- betekent alleen dat er op dit moment een
+        export is gegenereerd, geen afhandel-status (zegt niets over of het
+        gecontroleerd, opgeslagen of in INDiGO verwerkt is)."""
+        self._hydrate(session_id)
+        meta = self._sessions.get(session_id, {"session_id": session_id})
+        meta["gehoorverslag_generated_at"] = datetime.utcnow().isoformat() + "Z"
+        self._sessions[session_id] = meta
+        self._persist(session_id)
 
     def get_channel_language2(self, session_id: str, channel_id: str) -> Optional[str]:
         """De daadwerkelijk geconfigureerde Taal 2 (brontaal-hint bij een
@@ -534,8 +594,28 @@ async def list_sessions_from_disk():
                 "created_at": timestamp_part,
                 "wav_size_mb": round(wav_file.stat().st_size / 1024 / 1024, 2),
                 "has_transcript": wav_file.with_suffix(".json").exists(),
+                "duration_ms": None,
             }
         sessions[key]["channels"].append(channel_part)
+        # Sessieduur = langste kanaal-WAV (kanalen starten niet altijd op
+        # exact hetzelfde moment). Alleen de WAV-header wordt gelezen, geen
+        # audio-transfer.
+        duration = _wav_duration_ms(wav_file)
+        if duration is not None:
+            sessions[key]["duration_ms"] = max(duration, sessions[key]["duration_ms"] or 0)
+
+    # Zaaknummer/cliëntreferentie/gebruiker/gehoorverslag-status komen niet uit
+    # bestandsnamen maar uit de gepersisteerde SessionManager-metadata (die zelf
+    # van disk hydrateert als deze sessie sinds een herstart nog niet is
+    # aangeraakt) -- ontbreekt die (oudere sessies van vóór deze feature), dan
+    # blijven de velden gewoon None, geen harde fout.
+    for session_id, entry in sessions.items():
+        meta = session_manager.get(session_id) or {}
+        external_refs = meta.get("external_references") or {}
+        entry["case_ref"] = external_refs.get("case_ref")
+        entry["person_ref"] = external_refs.get("person_ref")
+        entry["user_id"] = meta.get("user_id")
+        entry["gehoorverslag_generated_at"] = meta.get("gehoorverslag_generated_at")
 
     return JSONResponse({"sessions": list(sessions.values())})
 
@@ -890,6 +970,10 @@ async def generate_gehoorverslag(session_id: str):
     except Exception as e:
         logger.warning(f"[GEHOORVERSLAG] session={session_id} generatie mislukt: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+    # Feitelijke tijdstempel voor de startpagina ("Nog geen gehoorverslag" vs.
+    # "Eerder gegenereerd") -- geen afhandel-status, zie SessionManager-docstring.
+    session_manager.mark_gehoorverslag_generated(session_id)
 
     logger.info(f"[GEHOORVERSLAG] session={session_id} gegenereerd, {len(merged['segments'])} segmenten in bron")
     return StreamingResponse(
