@@ -2404,6 +2404,30 @@ function confirmLeaveActiveRecording() {
 function startNewSessionFlow() {
   if (!confirmLeaveActiveRecording()) return;
   resetSessionRefs();
+
+  // Kwam je hier vanuit "Sessie terugluisteren" (isPlaybackMode nog true),
+  // dan moet het hoofdpaneel eerst terug naar de live-weergave voordat we
+  // naar Configuratie schakelen -- anders bleven titel/subtitel, Ververs
+  // Transcriptie/Genereer gehoorverslag, de tijdlijn en de oude transcript-
+  // regels van de bekeken sessie zichtbaar staan, én bleef de tab-bar zelf
+  // verborgen (die wordt tijdens terugluisteren bewust weggehaald, zie
+  // updateLiveVsPlaybackUI()). isRecording is hier altijd al false (anders
+  // was confirmLeaveActiveRecording() hierboven al gestopt), dus dit start
+  // geen opname en verstoort er ook geen.
+  isPlaybackMode = false;
+  hidePlaybackChannelFilter();
+  hidePlaybackTimeline();
+  updateRefreshPlaybackButtonUI();
+  updateLiveVsPlaybackUI();
+  if (liveTranscriptDiv) {
+    liveTranscriptDiv.classList.remove("doc-view");
+    liveTranscriptDiv.innerHTML = `<div class="empty-state">
+      <svg class="icon empty-state-icon"><use href="#icon-mic"></use></svg>
+      <p class="empty-state-title">Klaar voor een nieuwe opname</p>
+      <p class="empty-state-subtitle">Configureer de audiokanalen en start de opname.</p>
+    </div>`;
+  }
+
   showWorkspace();
   document.querySelectorAll('.app-nav-item[data-view="new"]').forEach(b => b.classList.add("active"));
   document.querySelector('.tab-btn[data-tab="config"]')?.click();
