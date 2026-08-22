@@ -343,47 +343,10 @@ select:focus-visible,
   flex: 1;
 }
 
-/* === Lege-staat "Live transcriptie" (vóór de eerste Start-klik) ===
-   Lichter dan de gevulde staat (die blijft var(--bg-subtle)) en
-   overflow-y:hidden i.p.v. het overervende auto: er valt in deze staat
-   sowieso nooit iets te scrollen (vaste inhoud), maar sommige Windows-
-   scrollbar-thema's tekenen bij overflow:auto toch een volledige track+
-   pijltjes ongeacht of er echt overflow is. */
-.transcript-box:has(.empty-state) {
-  background: var(--bg-elevated);
-  overflow-y: hidden;
-}
-
-.empty-state {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  padding-top: 14%;
-  text-align: center;
-  gap: 4px;
-  color: var(--text-soft);
-}
-
-.empty-state-icon {
-  width: 30px;
-  height: 30px;
-  margin-bottom: 6px;
-  color: var(--border-strong);
-}
-
-.empty-state-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.empty-state-subtitle {
-  margin: 0;
-  font-size: 12px;
-}
+/* Lege-staat "Live transcriptie" (vóór de eerste Start-klik) staat verderop
+   in dit bestand (zoek naar .empty-state) -- twee onafhankelijke feature-
+   branches voegden 'm allebei toe; de merge liet beide staan, dit was de
+   duplicaat-kopie. */
 
 .final-box {
   max-height: 260px;

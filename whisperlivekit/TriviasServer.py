@@ -445,20 +445,6 @@ def _parse_session_wav_name(stem: str) -> Optional[tuple[str, str, str]]:
     return session_uuid, channel_part, timestamp_part
 
 
-def _wav_duration_ms(wav_path: Path) -> Optional[int]:
-    """Leest alleen de WAV-header (frames/samplerate) voor de duur -- geen
-    audio-transfer/decode nodig. None als het bestand ontbreekt/niet leesbaar
-    is; de caller valt dan gewoon terug op geen duur-weergave."""
-    try:
-        with wave.open(str(wav_path), "rb") as wf:
-            rate = wf.getframerate()
-            if rate <= 0:
-                return None
-            return int(wf.getnframes() / rate * 1000)
-    except Exception:
-        return None
-
-
 def _resolve_channel_language(channel_id: str) -> str:
     """Bepaal de taal voor een kanaal zonder levende sessie nodig te hebben.
 

@@ -559,7 +559,14 @@ function updateRecordButtonUI() {
     if (pauseButton) pauseButton.classList.add("hidden");
     if (stopButton) stopButton.classList.add("hidden");
     if (refreshButton) refreshButton.classList.add("hidden");
-    if (startFromConfigBtn) startFromConfigBtn.classList.remove("hidden");
+    if (startFromConfigBtn) {
+      // Zelfde label-logica als recordButton hierboven, voor consistentie
+      // tussen de twee knoppen die allebei startRecording() aanroepen.
+      startFromConfigBtn.innerHTML = isViewingStoredSession()
+        ? '<svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe opname starten'
+        : '<svg class="icon"><use href="#icon-mic"></use></svg> Start opname';
+      startFromConfigBtn.classList.remove("hidden");
+    }
   } else {
     recordButton.classList.add("hidden");
     if (startFromConfigBtn) startFromConfigBtn.classList.add("hidden");
