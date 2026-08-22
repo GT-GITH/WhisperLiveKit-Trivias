@@ -423,6 +423,7 @@ let playbackActiveChannels = new Set(); // welke channel_id's momenteel getoond 
 let playbackDurationMs = 0;
 let playbackAudioChannel = null;
 let playbackAudioSliceStartMs = 0;
+let playbackSessionDate = null; // leesbare datum uit de server, voor de "Sessie bekijken"-subtitel
 
 // === Opname state ===
 
@@ -516,7 +517,13 @@ function updateRecordButtonUI() {
   if (!recordButton) return;
   if (!isRecording) {
     recordButton.classList.remove("hidden");
-    recordButton.innerHTML = '<svg class="icon"><use href="#icon-mic"></use></svg> Start';
+    // Bij het bekijken van een opgeslagen sessie is "Start" misleidend (lijkt
+    // deze sessie te hervatten) -- de knop doet functioneel nog steeds
+    // hetzelfde (startRecording() reset playback-state al correct), alleen
+    // het label maakt duidelijk dat dit een NIEUWE opname begint.
+    recordButton.innerHTML = isViewingStoredSession()
+      ? '<svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe opname starten'
+      : '<svg class="icon"><use href="#icon-mic"></use></svg> Start';
     recordButton.classList.remove("recording");
     if (pauseButton) pauseButton.classList.add("hidden");
     if (stopButton) stopButton.classList.add("hidden");
@@ -542,13 +549,67 @@ function updateRecordButtonUI() {
 
 function updateHint() {
   if (!hintText) return;
-  if (!isRecording) {
+  if (isViewingStoredSession()) {
+    hintText.innerHTML = "Je bekijkt een opgeslagen sessie. Klik <strong>Nieuwe opname starten</strong> voor een nieuwe opname.";
+  } else if (!isRecording) {
     hintText.innerHTML = "Stel kanalen in via <strong>Configuratie</strong>, dan klik <strong>Start</strong>.";
   } else if (isPaused) {
     hintText.textContent = "Gepauzeerd. Klik Hervatten om door te gaan, of Stop om te beëindigen.";
   } else {
     hintText.textContent = "Opname loopt. Spreek in de microfoon(s).";
   }
+}
+
+// Onderscheidt "écht een opgeslagen/afgeronde sessie bekijken" van "Ververs
+// Transcriptie tijdens Pauze" -- dat laatste zet isPlaybackMode ook tijdelijk
+// op true voor een statische snapshot van de HUIDIGE, nog actieve sessie, en
+// moet dus gewoon Hervatten/Stop blijven tonen i.p.v. de sessie-infoweergave.
+function isViewingStoredSession() {
+  return !isRecording && isPlaybackMode && !!currentSessionId;
+}
+
+// Centrale schakelaar tussen de live- en playback-weergave: titel/subtitel,
+// live-verbindingsstatus (betekenisloos zonder actieve sessie) en het
+// sessie-infopaneel i.p.v. de losse Start-knop. Aangeroepen op elk van de 3
+// plekken waar isRecording/isPlaybackMode al wijzigen -- geen nieuwe state.
+function updateLiveVsPlaybackUI() {
+  const viewing = isViewingStoredSession();
+
+  const titleEl    = document.getElementById("mainPanelTitle");
+  const subtitleEl = document.getElementById("mainPanelSubtitle");
+  if (titleEl) titleEl.textContent = viewing ? "Sessie bekijken" : "Live transcriptie";
+  if (subtitleEl) {
+    const parts = [];
+    if (viewing) {
+      if (playbackSessionDate) parts.push(playbackSessionDate);
+      if (currentSessionId) parts.push(`sessie ${currentSessionId.substring(0, 12)}…`);
+    }
+    subtitleEl.textContent = parts.join(" · ");
+    subtitleEl.classList.toggle("hidden", parts.length === 0);
+  }
+
+  const connectionRow = document.getElementById("connectionStatusRow");
+  const modeRow        = document.getElementById("modeStatusRow");
+  if (connectionRow) connectionRow.classList.toggle("hidden", viewing);
+  if (modeRow) modeRow.classList.toggle("hidden", viewing);
+
+  const infoPanel = document.getElementById("sessionInfoPanel");
+  const infoList  = document.getElementById("sessionInfoList");
+  if (infoPanel) infoPanel.classList.toggle("hidden", !viewing);
+  if (infoList && viewing) {
+    const rows = [
+      ["Datum", playbackSessionDate || "onbekend"],
+      ["Sessie-id", currentSessionId ? `${currentSessionId.substring(0, 12)}…` : "-"],
+      ["Duur", formatMs(getPlaybackDurationMs())],
+      ["Kanalen", playbackChannels.map(ch => getRoleLabel(channelIdToRoleId(ch))).join(", ") || "-"],
+    ];
+    infoList.innerHTML = rows.map(([label, value]) =>
+      `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`
+    ).join("");
+  }
+
+  updateRecordButtonUI();
+  updateHint();
 }
 
 // === Timer ===
@@ -832,8 +893,7 @@ async function startRecording() {
   }
 
   isRecording = true;
-  updateRecordButtonUI();
-  updateHint();
+  updateLiveVsPlaybackUI();
   startTimer();
   startChannelMeterLoop();
   setAsrStatus("Live transcriptie actief");
@@ -846,8 +906,7 @@ async function stopRecording() {
   stopKeepAlive();
 
   resetTimer();
-  updateRecordButtonUI();
-  updateHint();
+  updateLiveVsPlaybackUI();
   stopChannelMeterLoop();
   setAsrStatus("Opname gestopt. Server rondt af…");
 
@@ -963,8 +1022,7 @@ async function resumeRecording() {
   hidePlaybackTimeline();
   updateRefreshPlaybackButtonUI();
   await resumeAllConnections();
-  updateRecordButtonUI();
-  updateHint();
+  updateLiveVsPlaybackUI();
   setAsrStatus("Live transcriptie actief");
 }
 
@@ -1335,6 +1393,7 @@ async function loadSessionTranscript(sessionId) {
     playbackChannels   = data.channels || [];
     playbackActiveChannels = new Set(playbackChannels);
     playbackDurationMs = data.duration_ms || 0;
+    playbackSessionDate = data.date || null;
 
     playbackLines       = [];
     playbackLineById    = new Map();
@@ -1374,6 +1433,7 @@ async function loadSessionTranscript(sessionId) {
     renderPlaybackFiltered();
     renderPlaybackTimeline();
     updateRefreshPlaybackButtonUI();
+    updateLiveVsPlaybackUI();
     setAsrStatus(`Sessie geladen: ${sessionId.substring(0, 12)}…`);
   } catch (e) {
     alert("Fout bij laden transcript: " + e.message);
@@ -1490,6 +1550,7 @@ function renderPlaybackTimeline() {
       block.style.left  = left + "%";
       block.style.width = width + "%";
       block.style.background = color;
+      block.title = `[${formatMs(startMs)}] ${getRoleLabel(roleId)}`;
       lane.appendChild(block);
     }
     list.appendChild(lane);

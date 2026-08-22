@@ -664,6 +664,7 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
             "segments": merged["segments"],
             "duration_ms": merged["duration_ms"],
             "channel_durations_ms": merged["channel_durations_ms"],
+            "date": merged["date"],
         })
 
     # Zoek JSON bestand voor deze sessie + channel
