@@ -701,7 +701,7 @@ select:focus-visible,
 
 .landing-greeting h1 {
   margin: 0;
-  font-size: 24px;
+  font-size: 27px;
   font-weight: 700;
   color: var(--text);
 }
@@ -711,8 +711,8 @@ select:focus-visible,
    verdienen. */
 .landing-stats {
   display: flex;
-  gap: 16px;
-  font-size: 12px;
+  gap: 18px;
+  font-size: 13px;
   color: var(--text-soft);
 }
 
@@ -750,21 +750,30 @@ select:focus-visible,
   min-height: 200px;
 }
 
+/* Zoekveld op zijn eigen regel, filters+sortering eronder -- stonden eerder
+   te dicht op elkaar. */
 .landing-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.landing-toolbar-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
 }
 
 .landing-toolbar input {
-  flex: 1 1 220px;
-  padding: 8px 14px;
+  width: 100%;
+  padding: 10px 16px;
   border-radius: var(--radius-control);
   border: 1px solid var(--border-strong);
   background: var(--bg-elevated);
   color: var(--text);
-  font-size: 13px;
+  font-size: 14px;
   outline: none;
 }
 
@@ -794,8 +803,8 @@ select:focus-visible,
   border: 1px solid var(--border-strong);
   background: var(--bg-elevated);
   color: var(--text-soft);
-  font-size: 12px;
-  padding: 6px 12px;
+  font-size: 13px;
+  padding: 7px 14px;
   border-radius: 999px;
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -833,7 +842,7 @@ select:focus-visible,
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 /* Zijkolom: bescheiden, klikbare tellers die de hoofdlijst filteren --
@@ -905,8 +914,8 @@ select:focus-visible,
 .session-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px 16px;
+  gap: 8px;
+  padding: 16px 20px;
   border-radius: var(--radius-xl);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
@@ -944,26 +953,34 @@ select:focus-visible,
 }
 
 .session-item-title {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text);
 }
 
 .session-item-id {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
   font-family: monospace;
+}
+
+/* Bescheiden aanduiding, geen waarschuwing -- een zaaknummer is optioneel,
+   dit is een normale staat, geen fout (zie createSessionItemEl()). */
+.session-item-nocase {
+  font-size: 11px;
+  color: var(--text-soft);
+  font-style: italic;
 }
 
 /* Puur visuele affordance ("dit is klikbaar") -- de hele kaart is al het
    klikdoel (zie createSessionItemEl() in app.js), dus dit vangt zelf geen
    eigen klikken op. */
 .session-item-open {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--accent-strong);
   background: var(--accent-soft);
-  padding: 4px 12px;
+  padding: 5px 14px;
   border-radius: 999px;
   flex-shrink: 0;
   pointer-events: none;
@@ -975,9 +992,9 @@ select:focus-visible,
 
 .session-item-detail {
   display: flex;
-  gap: 14px;
+  gap: 16px;
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-soft);
 }
 
@@ -991,9 +1008,9 @@ select:focus-visible,
   display: inline-flex;
   align-self: flex-start;
   align-items: center;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 3px 10px;
+  padding: 4px 12px;
   border-radius: var(--radius-control);
   border: 1px solid transparent;
 }

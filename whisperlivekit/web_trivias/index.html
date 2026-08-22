@@ -128,17 +128,19 @@
           <section class="landing-main-col">
             <div class="landing-toolbar">
               <input type="text" id="landingSearchInput" placeholder="Zoeken op zaaknummer of sessie-id…" autocomplete="off">
-              <div class="landing-filters" id="landingFilters">
-                <button class="landing-filter active" data-filter="all">Alle sessies</button>
-                <button class="landing-filter" data-filter="processing">Wordt verwerkt</button>
-                <button class="landing-filter" data-filter="needs_report">Nog geen verslag</button>
-                <button class="landing-filter" data-filter="has_report">Verslag gegenereerd</button>
+              <div class="landing-toolbar-row">
+                <div class="landing-filters" id="landingFilters">
+                  <button class="landing-filter active" data-filter="all">Alle sessies</button>
+                  <button class="landing-filter" data-filter="no_transcript">Zonder transcriptie</button>
+                  <button class="landing-filter" data-filter="needs_report">Nog geen verslag</button>
+                  <button class="landing-filter" data-filter="has_report">Verslag gegenereerd</button>
+                </div>
+                <select id="landingSortSelect" class="landing-sort-select">
+                  <option value="newest">Nieuwste eerst</option>
+                  <option value="oldest">Oudste eerst</option>
+                  <option value="case_ref">Zaaknummer</option>
+                </select>
               </div>
-              <select id="landingSortSelect" class="landing-sort-select">
-                <option value="newest">Nieuwste eerst</option>
-                <option value="oldest">Oudste eerst</option>
-                <option value="case_ref">Zaaknummer</option>
-              </select>
             </div>
             <div id="landingSessionsList" class="sessions-list"><p class="sessions-loading">Laden…</p></div>
             <button id="landingShowAllBtn" class="landing-show-all hidden">Alle sessies bekijken</button>
