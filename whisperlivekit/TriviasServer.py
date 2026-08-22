@@ -540,6 +540,23 @@ async def list_sessions_from_disk():
     return JSONResponse({"sessions": list(sessions.values())})
 
 
+def _wav_duration_ms(wav_path: Path) -> Optional[int]:
+    """Leest alleen de WAV-header (frames/samplerate) voor de duur -- geen
+    audio-transfer/decode nodig, zelfde leesstrategie als serve_audio_slice()
+    hieronder. None als het bestand ontbreekt of niet leesbaar is; de caller
+    valt dan terug op het laatste segment-eindtijdstip uit de transcript-data."""
+    if not wav_path.exists():
+        return None
+    try:
+        with wave.open(str(wav_path), "rb") as wf:
+            rate = wf.getframerate()
+            if rate <= 0:
+                return None
+            return int(wf.getnframes() / rate * 1000)
+    except Exception:
+        return None
+
+
 def _load_merged_transcript(session_id: str) -> Optional[Dict[str, Any]]:
     """Laad en merge alle kanaal-transcripten van een sessie, chronologisch
     gesorteerd en elk segment getagd met channel_id. Gedeeld tussen
@@ -572,6 +589,7 @@ def _load_merged_transcript(session_id: str) -> Optional[Dict[str, Any]]:
             date_str = None
 
     merged_segments = []
+    channel_durations_ms: Dict[str, int] = {}
     for ch, json_path in by_channel.items():
         try:
             with open(json_path, "r", encoding="utf-8") as f:
@@ -582,9 +600,24 @@ def _load_merged_transcript(session_id: str) -> Optional[Dict[str, Any]]:
             seg = dict(seg)
             seg["channel_id"] = ch
             merged_segments.append(seg)
+        duration = _wav_duration_ms(json_path.with_suffix(".wav"))
+        if duration is not None:
+            channel_durations_ms[ch] = duration
     merged_segments.sort(key=lambda s: s.get("start_ms") or 0)
 
-    return {"channels": sorted(by_channel.keys()), "segments": merged_segments, "date": date_str}
+    # Sessieduur = langste kanaal-WAV (kanalen starten niet altijd op exact
+    # hetzelfde moment en kunnen licht verschillen in lengte). Ontbreken alle
+    # WAV's (bv. handmatig verwijderd) dan valt de caller terug op het laatste
+    # segment-eindtijdstip uit de transcript-data -- vandaar None i.p.v. 0 hier.
+    duration_ms = max(channel_durations_ms.values()) if channel_durations_ms else None
+
+    return {
+        "channels": sorted(by_channel.keys()),
+        "segments": merged_segments,
+        "date": date_str,
+        "duration_ms": duration_ms,
+        "channel_durations_ms": channel_durations_ms,
+    }
 
 
 def _find_session_foreign_language(session_id: str) -> Optional[str]:
@@ -629,6 +662,8 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
             "channel_id": "all",
             "channels": merged["channels"],
             "segments": merged["segments"],
+            "duration_ms": merged["duration_ms"],
+            "channel_durations_ms": merged["channel_durations_ms"],
         })
 
     # Zoek JSON bestand voor deze sessie + channel
@@ -651,6 +686,7 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
             "channel_id": channel_id,
             "wav_available": wav_path.exists(),
             "segments": segments,
+            "duration_ms": _wav_duration_ms(wav_path),
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)

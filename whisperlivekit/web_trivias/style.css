@@ -304,19 +304,62 @@ select:focus-visible,
 .status-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   font-size: 13px;
   padding: 6px 0;
 }
 
+.status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-subtle);
+  color: var(--text-soft);
+  flex-shrink: 0;
+}
+
+.status-icon .icon {
+  width: 13px;
+  height: 13px;
+}
+
 .status-label {
   color: var(--text-soft);
+  flex: 1 1 auto;
 }
 
 .status-value {
   font-weight: 500;
   color: var(--text-muted);
+}
+
+/* Gekleurde statusstip naast de tekstwaarde -- zelfde betekenis als de
+   bestaande tekstkleur-klassen (status-connected e.d.), maar ook op afstand
+   in één oogopslag te lezen zonder de tekst te hoeven lezen. */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-connected {
+  background: var(--success);
+}
+
+.dot-disconnected {
+  background: var(--danger);
+}
+
+.dot-recording {
+  background: var(--danger);
+}
+
+.dot-neutral {
+  background: var(--border-strong);
 }
 .status-row-mic {
   align-items: center;
@@ -882,7 +925,7 @@ select:focus-visible,
 
 .channel-row {
   display: grid;
-  grid-template-columns: 4px 1fr auto;
+  grid-template-columns: 26px 1fr auto;
   gap: 8px;
   align-items: start;
   padding: 10px 10px 10px 8px;
@@ -896,10 +939,23 @@ select:focus-visible,
   border-color: var(--accent);
 }
 
-.channel-color-bar {
-  border-radius: 2px;
-  align-self: stretch;
-  min-height: 36px;
+/* Genummerde kanaalbadge -- i.p.v. de vorige platte kleurbalk, zodat een
+   kanaal ("Kanaal 1/2/3") ook los van de rolnaam op te merken/te noemen is
+   (bv. tijdens een zitting: "kanaal 2 valt weg"). Nummer = volgorde in
+   channelConfigs, dezelfde badge wordt hergebruikt in de live meter
+   (.channel-meter-chip) zodat "kanaal N" overal dezelfde kleur+cijfer heeft. */
+.channel-badge {
+  align-self: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
 }
 
 .channel-row-fields {
@@ -997,3 +1053,151 @@ select:focus-visible,
 .seg-role-lawyer      { color: var(--role-lawyer); }
 .seg-role-foreign     { color: var(--role-foreign); }
 .seg-role-default     { color: var(--role-default); }
+
+/* === Lege-staat "Live transcriptie" (vóór de eerste Start-klik) === */
+
+.empty-state {
+  height: 100%;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 4px;
+  color: var(--text-soft);
+}
+
+.empty-state-icon {
+  width: 30px;
+  height: 30px;
+  margin-bottom: 6px;
+  color: var(--border-strong);
+}
+
+.empty-state-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.empty-state-subtitle {
+  margin: 0;
+  font-size: 12px;
+}
+
+/* === Live meter per kanaal (tijdens opname) ===
+   Visualiseert data die al bestond maar nergens getoond werd
+   (channelAudioState: rms + combinedGateOpen uit de cross-kanaal
+   anti-lek-arbitrage) -- geen decoratieve golfvorm, functioneel: je ziet nu
+   welk kanaal geluid oppikt én welk kanaal live onderdrukt wordt. */
+
+.channel-meters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.channel-meter-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 3px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  transition: opacity var(--transition-fast);
+}
+
+.channel-meter-chip.gate-closed {
+  opacity: 0.4;
+}
+
+.channel-meter-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+}
+
+.channel-meter-bars span {
+  width: 3px;
+  min-height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  transition: height 0.08s linear;
+}
+
+/* === Playback-tijdlijn (terugluisteren van een sessie) ===
+   Kleurbanden per kanaal op basis van de al-bekende segment-timestamps
+   (geen echte waveform-peaks -- bewust functioneel i.p.v. decoratief, zie
+   Log/AUDIOTIMELINE.png en CLAUDE.md "live vs. batch"). Klik = springen naar
+   dat moment; afspelen highlight het bijbehorende transcriptiesegment. */
+
+.playback-timeline {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-xl);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+.playback-timeline-lanes {
+  position: relative;
+}
+
+.playback-timeline-lanes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.playback-timeline-lane {
+  position: relative;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+
+.playback-timeline-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  min-width: 2px;
+  opacity: 0.85;
+}
+
+.playback-timeline-segment.seg-playing {
+  opacity: 1;
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 0;
+}
+
+.playback-timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--accent-strong);
+  pointer-events: none;
+  display: none;
+}
+
+.playback-audio-player {
+  width: 100%;
+  margin-top: 8px;
+  height: 32px;
+}
+
+/* Transcriptsegment dat overeenkomt met de huidige afspeelpositie in de
+   playback-tijdlijn. */
+.seg-clickable.seg-now-playing {
+  background: var(--accent-soft);
+  border-radius: 4px;
+}

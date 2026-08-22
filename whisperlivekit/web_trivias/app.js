@@ -38,6 +38,13 @@ function getRoleColor(roleId) {
   return getRoleById(roleId).color;
 }
 
+// Genummerde, gekleurde kanaalbadge -- gedeeld tussen de Configuratie-kaarten
+// en de live meter-chips, zodat "kanaal N" overal hetzelfde nummer+kleur
+// draagt (i.p.v. alleen een losse kleurbalk zonder nummer).
+function channelBadgeHTML(index, role) {
+  return `<span class="channel-badge" style="background:${role.color}">${index}</span>`;
+}
+
 // "foreign_ar" → "foreign", "interpreter" → "interpreter"
 function channelIdToRoleId(channelId) {
   if (!channelId) return "default";
@@ -233,7 +240,7 @@ function renderChannelConfigs() {
   if (!list) return;
   list.innerHTML = "";
 
-  for (const cfg of channelConfigs) {
+  channelConfigs.forEach((cfg, idx) => {
     const role = getRoleById(cfg.roleId);
     const isInterpreter = cfg.roleId === "interpreter";
 
@@ -241,7 +248,7 @@ function renderChannelConfigs() {
     div.className = "channel-row";
     div.dataset.uid = cfg.uid;
     div.innerHTML = `
-      <div class="channel-color-bar" style="background:${role.color}"></div>
+      ${channelBadgeHTML(idx + 1, role)}
       <div class="channel-row-fields">
         <div class="channel-field">
           <label>Rol</label>
@@ -277,7 +284,7 @@ function renderChannelConfigs() {
       <button class="ch-remove" title="Kanaal verwijderen"><svg class="icon"><use href="#icon-close"></use></svg></button>
     `;
 
-    const colorBar   = div.querySelector(".channel-color-bar");
+    const badge      = div.querySelector(".channel-badge");
     const roleSelect = div.querySelector(".ch-role");
     const lang2Field = div.querySelector(".ch-lang2-field");
     const langLabel  = div.querySelector(".ch-lang-label");
@@ -287,7 +294,7 @@ function renderChannelConfigs() {
       if (!c) return;
       c.roleId = roleSelect.value;
       const newRole = getRoleById(c.roleId);
-      colorBar.style.background = newRole.color;
+      badge.style.background = newRole.color;
       const isInterp = c.roleId === "interpreter";
       lang2Field.classList.toggle("hidden", !isInterp);
       langLabel.textContent = isInterp ? "Taal 1" : "Taal";
@@ -317,7 +324,79 @@ function renderChannelConfigs() {
     div.querySelector(".ch-remove").addEventListener("click", () => removeChannelConfig(cfg.uid));
 
     list.appendChild(div);
+  });
+}
+
+// === Live meter per kanaal (tijdens opname) ===
+// Visualiseert channelAudioState (app.js:75-140, al gevuld door de
+// AudioWorklet t.b.v. de cross-kanaal anti-lek-arbitrage, maar tot nu toe
+// nergens getoond) -- geen decoratieve golfvorm, maar zichtbaar maken welk
+// kanaal geluid oppikt en welk kanaal de anti-lek-gate live onderdrukt.
+
+let channelMeterRafId = null;
+
+// rms is sqrt(mean(sample^2)) op genormaliseerde PCM (-1..1, zie
+// pcm_worklet.js); normale spraak zit ruwweg in de orde 0.02-0.1, dus x140
+// laat dat prettig uitslaan binnen de 14px-balkhoogte. Eerste-orde kalibratie,
+// desgewenst bijstellen na testen met echte microfoons.
+const METER_RMS_SCALE = 140;
+
+function renderChannelMeters() {
+  const el = document.getElementById("channelMeters");
+  if (!el) return;
+  el.innerHTML = "";
+  channelConfigs.forEach((cfg, idx) => {
+    const role = getRoleById(cfg.roleId);
+    const chip = document.createElement("div");
+    chip.className = "channel-meter-chip";
+    chip.dataset.uid = cfg.uid;
+    chip.innerHTML = `
+      ${channelBadgeHTML(idx + 1, role)}
+      <span class="channel-meter-bars" style="color:${role.color}">
+        <span></span><span></span><span></span><span></span>
+      </span>
+    `;
+    el.appendChild(chip);
+  });
+}
+
+function updateChannelMeterLevels() {
+  const el = document.getElementById("channelMeters");
+  if (!el) return;
+  for (const cfg of channelConfigs) {
+    const chip = el.querySelector(`.channel-meter-chip[data-uid="${cfg.uid}"]`);
+    if (!chip) continue;
+    const state = channelAudioState.get(cfg.uid);
+    const rms = state?.rms || 0;
+    const gateOpen = state ? state.combinedGateOpen !== false : true;
+    chip.classList.toggle("gate-closed", !gateOpen);
+    const bars = chip.querySelectorAll(".channel-meter-bars span");
+    bars.forEach((bar, i) => {
+      const jitter = 1 - i * 0.12; // balkjes iets aflopend, oogt als eq i.p.v. vlakke blokjes
+      const h = Math.min(14, Math.max(2, rms * METER_RMS_SCALE * jitter));
+      bar.style.height = h + "px";
+    });
   }
+}
+
+function startChannelMeterLoop() {
+  renderChannelMeters();
+  const el = document.getElementById("channelMeters");
+  if (el) el.classList.remove("hidden");
+  const tick = () => {
+    updateChannelMeterLevels();
+    channelMeterRafId = requestAnimationFrame(tick);
+  };
+  if (channelMeterRafId == null) channelMeterRafId = requestAnimationFrame(tick);
+}
+
+function stopChannelMeterLoop() {
+  if (channelMeterRafId != null) {
+    cancelAnimationFrame(channelMeterRafId);
+    channelMeterRafId = null;
+  }
+  const el = document.getElementById("channelMeters");
+  if (el) { el.classList.add("hidden"); el.innerHTML = ""; }
 }
 
 // === Multi-channel transcript state ===
@@ -336,6 +415,14 @@ let playbackChannelId = "default";
 let isPlaybackMode = false;
 let playbackChannels = [];        // alle channel_id's aanwezig in deze sessie
 let playbackActiveChannels = new Set(); // welke channel_id's momenteel getoond worden
+
+// Voor de playback-tijdlijn: totale sessieduur (van de server, of anders
+// afgeleid uit het laatste segment) + welk kanaal/vanaf-welk-tijdstip er nu
+// in de ingebouwde <audio>-speler geladen is (nodig om currentTime terug te
+// rekenen naar sessie-absolute tijd, zie highlightSegmentAt()).
+let playbackDurationMs = 0;
+let playbackAudioChannel = null;
+let playbackAudioSliceStartMs = 0;
 
 // === Opname state ===
 
@@ -372,6 +459,9 @@ if (liveTranscriptDiv) liveTranscriptDiv.style.whiteSpace = "pre-wrap";
 const connectionStatusSpan = document.getElementById("connectionStatus");
 const modeStatusSpan       = document.getElementById("modeStatus");
 const asrStatusSpan        = document.getElementById("asrStatus");
+const connectionStatusDot  = document.getElementById("connectionStatusDot");
+const modeStatusDot        = document.getElementById("modeStatusDot");
+const asrStatusDot         = document.getElementById("asrStatusDot");
 const timerSpan            = document.getElementById("recordingTimer");
 const hintText             = document.getElementById("hintText");
 
@@ -382,26 +472,44 @@ const sessionsList       = document.getElementById("sessionsList");
 
 // === Status UI helpers ===
 
+function setStatusDot(el, state) {
+  if (!el) return;
+  el.className = `status-dot dot-${state}`;
+}
+
 function setConnectionStatus(connectedCount, totalCount) {
   if (!connectionStatusSpan) return;
   if (connectedCount === 0) {
     connectionStatusSpan.textContent = "Niet verbonden";
     connectionStatusSpan.className = "status-value status-disconnected";
+    setStatusDot(connectionStatusDot, "disconnected");
   } else if (connectedCount < totalCount) {
     connectionStatusSpan.textContent = `${connectedCount}/${totalCount} verbonden`;
     connectionStatusSpan.className = "status-value status-recording";
+    setStatusDot(connectionStatusDot, "recording");
   } else {
     connectionStatusSpan.textContent = totalCount === 1 ? "Verbonden" : `${connectedCount} kanalen verbonden`;
     connectionStatusSpan.className = "status-value status-connected";
+    setStatusDot(connectionStatusDot, "connected");
   }
 }
 
 function setModeStatus(text) {
   if (modeStatusSpan) modeStatusSpan.textContent = text;
+  setStatusDot(modeStatusDot, text && text !== "–" ? "connected" : "neutral");
 }
 
+// Ruwe heuristiek op de tekst zelf i.p.v. elke bestaande aanroepplek van
+// setAsrStatus (tientallen, verspreid door dit bestand) te moeten voorzien
+// van een expliciete status-parameter -- goed genoeg voor een puur visuele stip.
 function setAsrStatus(text) {
   if (asrStatusSpan) asrStatusSpan.textContent = text;
+  const t = (text || "").toLowerCase();
+  let dot = "neutral";
+  if (t.includes("actief")) dot = "connected";
+  else if (t.includes("gepauzeerd") || t.includes("ververst")) dot = "recording";
+  else if (t.includes("gestopt") || t.includes("mislukt") || t.includes("geen audio") || t.includes("verbroken") || t.includes("fout")) dot = "disconnected";
+  setStatusDot(asrStatusDot, dot);
 }
 
 function updateRecordButtonUI() {
@@ -690,6 +798,7 @@ async function startRecording() {
 
   isPlaybackMode = false;
   hidePlaybackChannelFilter();
+  hidePlaybackTimeline();
   updateRefreshPlaybackButtonUI();
   currentSessionId = crypto.randomUUID();
   console.log("[DIAG][START_RECORDING] nieuwe sessie", currentSessionId);
@@ -726,6 +835,7 @@ async function startRecording() {
   updateRecordButtonUI();
   updateHint();
   startTimer();
+  startChannelMeterLoop();
   setAsrStatus("Live transcriptie actief");
 }
 
@@ -738,6 +848,7 @@ async function stopRecording() {
   resetTimer();
   updateRecordButtonUI();
   updateHint();
+  stopChannelMeterLoop();
   setAsrStatus("Opname gestopt. Server rondt af…");
 
   for (const [uid, conn] of activeConnections.entries()) {
@@ -849,6 +960,7 @@ async function resumeRecording() {
   // "vast" te zitten na hervatten.
   isPlaybackMode = false;
   hidePlaybackChannelFilter();
+  hidePlaybackTimeline();
   updateRefreshPlaybackButtonUI();
   await resumeAllConnections();
   updateRecordButtonUI();
@@ -1222,6 +1334,7 @@ async function loadSessionTranscript(sessionId) {
     isPlaybackMode     = true;
     playbackChannels   = data.channels || [];
     playbackActiveChannels = new Set(playbackChannels);
+    playbackDurationMs = data.duration_ms || 0;
 
     playbackLines       = [];
     playbackLineById    = new Map();
@@ -1259,6 +1372,7 @@ async function loadSessionTranscript(sessionId) {
 
     renderPlaybackChannelFilter();
     renderPlaybackFiltered();
+    renderPlaybackTimeline();
     updateRefreshPlaybackButtonUI();
     setAsrStatus(`Sessie geladen: ${sessionId.substring(0, 12)}…`);
   } catch (e) {
@@ -1305,6 +1419,160 @@ function renderPlaybackChannelFilter() {
 function hidePlaybackChannelFilter() {
   const el = document.getElementById("playbackChannelFilter");
   if (el) { el.classList.add("hidden"); el.innerHTML = ""; }
+}
+
+// === Playback-tijdlijn (terugluisteren van een sessie) ===
+// Kleurbanden per kanaal op basis van de al-bekende segment-timestamps --
+// bewust géén canvas/echte waveform-peaks, zie CLAUDE.md "live vs. batch" en
+// de mockup-discussie in Log/AUDIOTIMELINE.png: functioneel (transcriptiesegment
+// ↔ tijdstip ↔ audiofragment koppelen), niet decoratief.
+
+// Zelfde flattening als renderPlaybackFiltered(), maar zonder het
+// kanaalfilter -- de tijdlijn toont altijd alle kanalen voor oriëntatie,
+// los van welke kanalen momenteel als tekst zichtbaar zijn.
+function getAllPlaybackSegmentsFlat() {
+  return playbackLines
+    .map(l => {
+      const sents = playbackSentenceMap.get(l.id);
+      return sents ? sents : [l];
+    })
+    .flat();
+}
+
+function getPlaybackDurationMs() {
+  if (playbackDurationMs > 0) return playbackDurationMs;
+  const segments = getAllPlaybackSegmentsFlat();
+  return Math.max(1000, ...segments.map(s => s.end_ms || 0), 1000);
+}
+
+function renderPlaybackTimeline() {
+  const wrap = document.getElementById("playbackTimeline");
+  const list = document.getElementById("playbackTimelineLanesList");
+  const player = document.getElementById("playbackAudioPlayer");
+  if (!wrap || !list) return;
+
+  if (!isPlaybackMode || playbackChannels.length === 0) {
+    hidePlaybackTimeline();
+    return;
+  }
+
+  const segments   = getAllPlaybackSegmentsFlat();
+  const durationMs = getPlaybackDurationMs();
+
+  list.innerHTML = "";
+  for (const channelId of playbackChannels) {
+    const roleId = channelIdToRoleId(channelId);
+    const color  = getRoleColor(roleId);
+    const lane = document.createElement("div");
+    lane.className = "playback-timeline-lane";
+    lane.dataset.channel = channelId;
+
+    for (const seg of segments) {
+      if (seg.channelId !== channelId) continue;
+      const startMs = seg.start_ms || 0;
+      const endMs   = Math.max(seg.end_ms || 0, startMs + 200); // minimale zichtbare breedte
+      const left  = Math.min(100, (startMs / durationMs) * 100);
+      const width = Math.max(0.3, ((endMs - startMs) / durationMs) * 100);
+      const block = document.createElement("div");
+      block.className = "playback-timeline-segment";
+      block.dataset.segId   = seg.id || "";
+      block.dataset.startMs = String(startMs);
+      block.dataset.endMs   = String(endMs);
+      block.style.left  = left + "%";
+      block.style.width = width + "%";
+      block.style.background = color;
+      lane.appendChild(block);
+    }
+    list.appendChild(lane);
+  }
+
+  wrap.classList.remove("hidden");
+  if (player && player.dataset.wired !== "1") {
+    player.dataset.wired = "1";
+    player.addEventListener("timeupdate", () => {
+      if (!isPlaybackMode || !playbackAudioChannel) return;
+      const absMs = playbackAudioSliceStartMs + player.currentTime * 1000;
+      movePlayheadTo(absMs);
+      highlightSegmentAt(playbackAudioChannel, absMs);
+    });
+  }
+}
+
+function hidePlaybackTimeline() {
+  const wrap   = document.getElementById("playbackTimeline");
+  const list   = document.getElementById("playbackTimelineLanesList");
+  const player = document.getElementById("playbackAudioPlayer");
+  if (player) player.pause();
+  if (wrap) wrap.classList.add("hidden");
+  if (list) list.innerHTML = "";
+  playbackAudioChannel = null;
+  movePlayheadTo(-1);
+}
+
+// Laadt (een deel van) de WAV van `channelId` vanaf `atMs` in de ingebouwde
+// speler en start afspelen -- geen sleepbaar scrubben over de hele sessie
+// (zie plan: /audio ondersteunt geen HTTP Range, dus vooraf de volledige WAV
+// van elk kanaal laden zou bij lange zittingen te veel data zijn). Klikken
+// vraagt telkens een nieuwe slice op vanaf het gekozen moment tot het einde.
+function playFromChannelAt(channelId, atMs) {
+  if (!currentSessionId || !channelId) return;
+  const player = document.getElementById("playbackAudioPlayer");
+  if (!player) return;
+  const ms = Math.max(0, Math.round(atMs));
+  playbackAudioChannel = channelId;
+  playbackAudioSliceStartMs = ms;
+  player.src = `/audio/${encodeURIComponent(currentSessionId)}/${encodeURIComponent(channelId)}?start_ms=${ms}`;
+  player.play().catch(() => {});
+  movePlayheadTo(ms);
+}
+
+function movePlayheadTo(atMs) {
+  const playhead = document.getElementById("playbackTimelinePlayhead");
+  if (!playhead) return;
+  if (atMs < 0) { playhead.style.display = "none"; return; }
+  const durationMs = getPlaybackDurationMs();
+  const pct = Math.min(100, Math.max(0, (atMs / durationMs) * 100));
+  playhead.style.left = pct + "%";
+  playhead.style.display = "block";
+}
+
+// Highlight het transcriptiesegment (en het bijbehorende blokje op de
+// tijdlijn) dat overeenkomt met de huidige afspeelpositie -- gebruikt
+// dezelfde data-start-ms/data-end-ms/data-channel attributen die
+// renderTranscript() al op elk .seg-clickable-element zet, en de identieke
+// start/end-tijden die renderPlaybackTimeline() op elk tijdlijn-blokje zet.
+function highlightSegmentAt(channelId, absMs) {
+  if (liveTranscriptDiv) {
+    const prev = liveTranscriptDiv.querySelector(".seg-now-playing");
+    if (prev) prev.classList.remove("seg-now-playing");
+    for (const el of liveTranscriptDiv.querySelectorAll(".seg-clickable")) {
+      if (el.dataset.channel !== channelId) continue;
+      const s  = parseInt(el.dataset.startMs || "0", 10);
+      const en = parseInt(el.dataset.endMs || "0", 10) || (s + 1);
+      if (absMs >= s && absMs < en) {
+        el.classList.add("seg-now-playing");
+        el.scrollIntoView({ block: "nearest" });
+        break;
+      }
+    }
+  }
+
+  const list = document.getElementById("playbackTimelineLanesList");
+  if (list) {
+    const prevBlock = list.querySelector(".seg-playing");
+    if (prevBlock) prevBlock.classList.remove("seg-playing");
+    const lane = list.querySelector(`.playback-timeline-lane[data-channel="${CSS.escape(channelId)}"]`);
+    if (lane) {
+      for (const block of lane.querySelectorAll(".playback-timeline-segment")) {
+        const s  = parseInt(block.dataset.startMs || "0", 10);
+        const en = parseInt(block.dataset.endMs || "0", 10) || (s + 1);
+        if (absMs >= s && absMs < en) {
+          block.classList.add("seg-playing");
+          break;
+        }
+      }
+    }
+  }
 }
 
 // Toont de "Ververs Transcriptie"-knop boven het transcript alleen wanneer we
@@ -1359,6 +1627,15 @@ if (liveTranscriptDiv) {
     const channel = seg.dataset.channel;
     if (!session) return;
 
+    // In playback-mode hergebruiken we de ingebouwde speler + tijdlijn-playhead
+    // uit #playbackTimeline (zie renderPlaybackTimeline()) i.p.v. steeds een
+    // nieuwe losse popup te spawnen -- zelfde klik-to-listen, maar nu zichtbaar
+    // gekoppeld aan de kanaalbanden en met transcript-highlight tijdens afspelen.
+    if (isPlaybackMode) {
+      playFromChannelAt(channel, startMs);
+      return;
+    }
+
     const prev = document.getElementById("trivias-audio-player");
     if (prev) prev.remove();
     const audio = document.createElement("audio");
@@ -1368,6 +1645,20 @@ if (liveTranscriptDiv) {
     audio.src = `/audio/${encodeURIComponent(session)}/${encodeURIComponent(channel)}?start_ms=${startMs}&end_ms=${endMs}`;
     audio.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:9999;background:#1e293b;border-radius:8px;";
     document.body.appendChild(audio);
+  });
+}
+
+// Klik op de tijdlijn zelf (niet op een transcriptsegment) -- springt naar
+// dat moment op het aangeklikte kanaal.
+const playbackTimelineLanesList = document.getElementById("playbackTimelineLanesList");
+if (playbackTimelineLanesList) {
+  playbackTimelineLanesList.addEventListener("click", e => {
+    const lane = e.target.closest(".playback-timeline-lane");
+    if (!lane) return;
+    const rect = lane.getBoundingClientRect();
+    const frac = rect.width > 0 ? Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)) : 0;
+    const targetMs = Math.round(frac * getPlaybackDurationMs());
+    playFromChannelAt(lane.dataset.channel, targetMs);
   });
 }
 
