@@ -423,7 +423,7 @@ let playbackActiveChannels = new Set(); // welke channel_id's momenteel getoond 
 let playbackDurationMs = 0;
 let playbackAudioChannel = null;
 let playbackAudioSliceStartMs = 0;
-let playbackSessionDate = null; // leesbare datum uit de server, voor de "Sessie bekijken"-subtitel
+let playbackSessionDate = null; // leesbare datum uit de server, voor de "Sessie terugluisteren"-subtitel
 
 // === Opname state ===
 
@@ -577,7 +577,7 @@ function updateLiveVsPlaybackUI() {
 
   const titleEl    = document.getElementById("mainPanelTitle");
   const subtitleEl = document.getElementById("mainPanelSubtitle");
-  if (titleEl) titleEl.textContent = viewing ? "Sessie bekijken" : "Live transcriptie";
+  if (titleEl) titleEl.textContent = viewing ? "Sessie terugluisteren" : "Live transcriptie";
   if (subtitleEl) {
     const parts = [];
     if (viewing) {
