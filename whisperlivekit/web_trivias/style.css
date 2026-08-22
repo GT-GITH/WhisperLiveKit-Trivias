@@ -1325,14 +1325,28 @@ select:focus-visible,
 }
 
 /* Bij meer dan ~3 kanalen paste de Configuratie-tab niet meer in het
-   zijpaneel -- niets in deze keten had overflow-y, dus de Start-knop
-   onderaan werd onbereikbaar i.p.v. gewoon bereikbaar via een scrollbalk.
-   .panel (flex column) begrenst nu al de hoogte; de actieve tab-pane (de
-   andere heeft altijd .hidden, telt dus niet mee als flex-item) vult de
-   resterende ruimte en scrollt zelf intern. */
+   zijpaneel -- niets in deze keten had overflow-y. .panel (flex column)
+   begrenst nu al de hoogte; de actieve tab-pane (de andere heeft altijd
+   .hidden, telt dus niet mee als flex-item) vult de resterende ruimte. */
 .tab-pane {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
+}
+
+/* Configuratie specifiek: NIET de hele tab laten scrollen (dat liet ook
+   Sessiegegevens en de Start-knop uit beeld schuiven) -- alleen de
+   kanaallijst zelf scrollt, Sessiegegevens/de kop/"+ Kanaal toevoegen"/de
+   toggle/Start-knop blijven altijd zichtbaar erboven en eronder. */
+#tab-config {
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+}
+
+#channelConfigList {
+  flex: 1;
+  min-height: 60px;
   overflow-y: auto;
 }
 
