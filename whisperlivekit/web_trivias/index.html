@@ -64,6 +64,17 @@
         <line x1="8" y1="2" x2="8" y2="6"/>
         <line x1="3" y1="10" x2="21" y2="10"/>
       </symbol>
+      <symbol id="icon-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07L11.5 4.5"/>
+        <path d="M14 11a5 5 0 0 0-7.07 0L4.1 13.83a5 5 0 0 0 7.07 7.07L12.5 19.5"/>
+      </symbol>
+      <symbol id="icon-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="2 12 7 12 10 20 14 4 17 12 22 12"/>
+      </symbol>
+      <symbol id="icon-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="12 2 2 8 12 14 22 8 12 2"/>
+        <polyline points="2 14 12 20 22 14"/>
+      </symbol>
     </svg>
 
     <div class="app-shell">
@@ -109,14 +120,32 @@
       <main class="app-main">
         <section class="panel panel-main">
           <div class="panel-header">
-            <h2>Live transcriptie</h2>
-            <button id="refreshPlaybackButton" class="refresh-button hidden"><svg class="icon"><use href="#icon-refresh"></use></svg> Ververs Transcriptie</button>
+            <div class="panel-title-group">
+              <h2 id="mainPanelTitle">Live transcriptie</h2>
+              <span id="mainPanelSubtitle" class="panel-subtitle hidden"></span>
+            </div>
+            <div id="channelMeters" class="channel-meters hidden"></div>
+            <button id="refreshPlaybackButton" class="refresh-button button-secondary hidden"><svg class="icon"><use href="#icon-refresh"></use></svg> Ververs Transcriptie</button>
             <button id="gehoorverslagButton" class="refresh-button hidden"><svg class="icon"><use href="#icon-document"></use></svg> Genereer gehoorverslag</button>
             <span id="recordingTimer" class="timer">00:00</span>
           </div>
           <div id="playbackChannelFilter" class="channel-filter hidden"></div>
+          <div id="playbackTimeline" class="playback-timeline hidden">
+            <div id="playbackTimelineLanes" class="playback-timeline-lanes">
+              <div id="playbackTimelineLabels" class="playback-timeline-labels"></div>
+              <div class="playback-timeline-tracks">
+                <div id="playbackTimelineLanesList" class="playback-timeline-lanes-list"></div>
+                <div id="playbackTimelinePlayhead" class="playback-timeline-playhead"></div>
+              </div>
+            </div>
+            <audio id="playbackAudioPlayer" class="playback-audio-player" controls></audio>
+          </div>
           <div id="liveTranscript" class="transcript-box">
-            Nog geen tekst… Configureer kanalen en klik op <strong>Start</strong>.
+            <div class="empty-state">
+              <svg class="icon empty-state-icon"><use href="#icon-mic"></use></svg>
+              <p class="empty-state-title">Klaar voor een nieuwe opname</p>
+              <p class="empty-state-subtitle">Configureer de audiokanalen en start de opname.</p>
+            </div>
           </div>
         </section>
 
@@ -130,23 +159,33 @@
 
           <!-- Bediening tab -->
           <div id="tab-control" class="tab-pane">
-            <div class="status-row">
+            <div id="connectionStatusRow" class="status-row">
+              <span class="status-icon"><svg class="icon"><use href="#icon-link"></use></svg></span>
               <span class="status-label">Verbinding</span>
               <span id="connectionStatus" class="status-value status-disconnected">Niet verbonden</span>
+              <span id="connectionStatusDot" class="status-dot dot-disconnected"></span>
             </div>
-            <div class="status-row">
+            <div id="modeStatusRow" class="status-row">
+              <span class="status-icon"><svg class="icon"><use href="#icon-layers"></use></svg></span>
               <span class="status-label">Server-modus</span>
               <span id="modeStatus" class="status-value">–</span>
+              <span id="modeStatusDot" class="status-dot dot-neutral"></span>
             </div>
             <div class="status-row">
+              <span class="status-icon"><svg class="icon"><use href="#icon-activity"></use></svg></span>
               <span class="status-label">ASR-status</span>
               <span id="asrStatus" class="status-value">Wachten op opname…</span>
+              <span id="asrStatusDot" class="status-dot dot-neutral"></span>
+            </div>
+            <div id="sessionInfoPanel" class="session-info-panel hidden">
+              <p class="session-info-title">Opgeslagen sessie</p>
+              <dl id="sessionInfoList" class="session-info-list"></dl>
             </div>
             <div class="controls">
               <button id="recordButton" class="record-button"><svg class="icon"><use href="#icon-mic"></use></svg> Start</button>
               <button id="pauseButton" class="pause-button hidden"><svg class="icon"><use href="#icon-pause"></use></svg> Pauze</button>
               <button id="stopButton" class="stop-button hidden"><svg class="icon"><use href="#icon-stop"></use></svg> Stop</button>
-              <button id="refreshButton" class="refresh-button hidden"><svg class="icon"><use href="#icon-refresh"></use></svg> Ververs Transcriptie</button>
+              <button id="refreshButton" class="refresh-button button-secondary hidden"><svg class="icon"><use href="#icon-refresh"></use></svg> Ververs Transcriptie</button>
               <p id="hintText" class="hint">
                 Stel kanalen in via <strong>Configuratie</strong>, dan klik <strong>Start</strong>.
               </p>
