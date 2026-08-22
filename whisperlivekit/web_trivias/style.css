@@ -1135,10 +1135,15 @@ select:focus-visible,
 /* === Lege-staat "Live transcriptie" (vóór de eerste Start-klik) === */
 
 /* Lichter dan de gevulde staat (die blijft var(--bg-subtle)) -- oogt anders
-   als een zware grijze kaart zonder inhoud. Degradeert onschuldig naar de
+   als een zware grijze kaart zonder inhoud. overflow-y:hidden i.p.v. het
+   overervende auto van .transcript-box: er valt in deze staat sowieso nooit
+   iets te scrollen (vaste inhoud), maar sommige Windows-scrollbar-thema's
+   tekenen bij overflow:auto toch een volledige track+pijltjes, ongeacht of
+   er echt overflow is -- dat oogde als kapot. Degradeert onschuldig naar de
    gewone --bg-subtle-tint op zeer oude browsers zonder :has()-support. */
 .transcript-box:has(.empty-state) {
   background: var(--bg-elevated);
+  overflow-y: hidden;
 }
 
 .empty-state {
