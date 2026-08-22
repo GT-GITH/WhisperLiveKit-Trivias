@@ -588,6 +588,13 @@ function updateLiveVsPlaybackUI() {
     subtitleEl.classList.toggle("hidden", parts.length === 0);
   }
 
+  // Verduidelijkt tijdens terugluisteren dat dit tabblad de configuratie voor
+  // een VOLGENDE opname is, niet voor de sessie die je nu bekijkt -- de tab
+  // blijft wel gewoon bruikbaar (config aanpassen terwijl je terugluistert
+  // kost niets), alleen het label maakt het ondubbelzinnig.
+  const configTabBtn = document.querySelector('.tab-btn[data-tab="config"]');
+  if (configTabBtn) configTabBtn.textContent = viewing ? "Opnameconfiguratie" : "Configuratie";
+
   const connectionRow = document.getElementById("connectionStatusRow");
   const modeRow        = document.getElementById("modeStatusRow");
   if (connectionRow) connectionRow.classList.toggle("hidden", viewing);

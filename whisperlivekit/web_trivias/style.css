@@ -205,7 +205,10 @@ select:focus-visible,
 
 .app-main {
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(260px, 0.9fr);
+  /* Zijkolom was krap bij 3-4 kanalen (labels/velden in de Configuratie-kaarten
+     verdrukten elkaar) -- iets breder zonder het hoofdpaneel te veel te laten
+     inleveren. */
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
   gap: 16px;
   /* Groeit mee met de resterende hoogte in .app-shell (i.p.v. alleen zo
      hoog als de inhoud, met een lege vlakte eronder) -- min-height: 0 is
@@ -1131,13 +1134,26 @@ select:focus-visible,
 
 /* === Lege-staat "Live transcriptie" (vóór de eerste Start-klik) === */
 
+/* Lichter dan de gevulde staat (die blijft var(--bg-subtle)) -- oogt anders
+   als een zware grijze kaart zonder inhoud. Degradeert onschuldig naar de
+   gewone --bg-subtle-tint op zeer oude browsers zonder :has()-support. */
+.transcript-box:has(.empty-state) {
+  background: var(--bg-elevated);
+}
+
 .empty-state {
   height: 100%;
-  min-height: 160px;
+  /* Bewust géén eigen min-height meer -- die stapelde bovenop de
+     min-height:160px van de buitenste .transcript-box zelf, waardoor deze
+     bij een wat kortere paneelhoogte een paar pixels moest overflowen en er
+     een scrollbar verscheen terwijl er niets te scrollen viel. */
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* Iets boven het verticale midden i.p.v. exact gecentreerd -- oogt minder
+     "verloren" in een groot leeg vlak. */
+  justify-content: flex-start;
+  padding-top: 14%;
   text-align: center;
   gap: 4px;
   color: var(--text-soft);
