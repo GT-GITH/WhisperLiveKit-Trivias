@@ -113,7 +113,15 @@ select:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: calc(100vh - 32px);
+  /* Was min-height: dat is een vloer, geen plafond -- bij een korte sessie
+     vult het scherm net zo goed netjes (identiek resultaat), maar bij een
+     lange transcriptie groeide de hele pagina gewoon door voorbij de
+     viewport i.p.v. dat het transcript-vak zelf ging scrollen. Met een
+     echt plafond (height) krijgt .transcript-box (flex:1 + min-height:0 +
+     overflow-y:auto, zie hieronder) eindelijk een begrensde hoogte om
+     tegenaan te scrollen -- de rest van het scherm (tijdlijn, sessie-info)
+     blijft dan zichtbaar terwijl je door een lang transcript scrollt. */
+  height: calc(100vh - 32px);
 }
 
 .app-header {
@@ -645,6 +653,16 @@ select:focus-visible,
 
   .panel-side {
     max-height: none;
+  }
+
+  /* Op dit breakpoint staan de panelen onder elkaar gestapeld -- een vast
+     height-plafond op .app-shell (desktop-fix hierboven) zou de zijkolom dan
+     kunnen laten dichtklappen zonder scrollmogelijkheid, omdat alleen
+     .transcript-box zijn eigen overflow-y:auto heeft. Hier dus terug naar de
+     oude, veilige min-height: de hele pagina mag weer meegroeien/scrollen. */
+  .app-shell {
+    height: auto;
+    min-height: calc(100vh - 32px);
   }
 }
 
