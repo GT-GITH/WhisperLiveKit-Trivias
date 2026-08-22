@@ -332,6 +332,48 @@ select:focus-visible,
   flex: 1;
 }
 
+/* === Lege-staat "Live transcriptie" (vóór de eerste Start-klik) ===
+   Lichter dan de gevulde staat (die blijft var(--bg-subtle)) en
+   overflow-y:hidden i.p.v. het overervende auto: er valt in deze staat
+   sowieso nooit iets te scrollen (vaste inhoud), maar sommige Windows-
+   scrollbar-thema's tekenen bij overflow:auto toch een volledige track+
+   pijltjes ongeacht of er echt overflow is. */
+.transcript-box:has(.empty-state) {
+  background: var(--bg-elevated);
+  overflow-y: hidden;
+}
+
+.empty-state {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 14%;
+  text-align: center;
+  gap: 4px;
+  color: var(--text-soft);
+}
+
+.empty-state-icon {
+  width: 30px;
+  height: 30px;
+  margin-bottom: 6px;
+  color: var(--border-strong);
+}
+
+.empty-state-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.empty-state-subtitle {
+  margin: 0;
+  font-size: 12px;
+}
+
 .final-box {
   max-height: 260px;
 }
@@ -743,13 +785,16 @@ select:focus-visible,
   padding: 8px 0;
 }
 
-/* Enige "titel" van het werkoverzicht -- geen aparte grote kop meer, want
-   #appNav labelt de sectie al ("Werkoverzicht"), een tweede identieke kop
-   zou overbodig zijn. */
 .landing-greeting-small {
+  margin: 0 0 2px;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.landing-greeting h1 {
   margin: 0;
-  font-size: 17px;
-  font-weight: 500;
+  font-size: 24px;
+  font-weight: 700;
   color: var(--text);
 }
 
@@ -804,6 +849,22 @@ select:focus-visible,
   font-size: 15px;
   font-weight: 600;
   color: var(--text);
+}
+
+.landing-view-all-link {
+  align-self: center;
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px;
+  cursor: pointer;
+}
+
+.landing-view-all-link:hover {
+  text-decoration: underline;
 }
 
 .landing-main-col .sessions-list {
@@ -1200,6 +1261,17 @@ select:focus-visible,
 
 /* === Configuratie tab: sessie-brede referenties (zaaknummer e.d.) === */
 
+/* Onderscheidt Sessiegegevens (zaaknummer/cliëntreferentie) duidelijk van
+   Audiokanalen -- stonden eerder zonder enige scheiding in dezelfde kolom. */
+.config-section-heading {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
 .session-refs {
   display: flex;
   flex-direction: column;
@@ -1351,6 +1423,12 @@ select:focus-visible,
 
 .cross-gate-toggle input {
   cursor: pointer;
+}
+
+.start-from-config {
+  width: 100%;
+  justify-content: center;
+  margin-top: 16px;
 }
 
 /* === Rol-badge kleuren in transcript === */

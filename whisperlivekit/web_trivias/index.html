@@ -126,7 +126,10 @@
         <!-- Werkoverzicht -->
         <div id="overviewView" class="landing-view">
           <div class="landing-hero">
-            <p class="landing-greeting-small" id="landingGreeting">Welkom</p>
+            <div class="landing-greeting">
+              <p class="landing-greeting-small" id="landingGreeting">Welkom</p>
+              <h1>Werkoverzicht</h1>
+            </div>
             <button id="newSessionBtn" class="record-button">
               <svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe opname starten
             </button>
@@ -138,6 +141,7 @@
             <section class="landing-main-col">
               <h2>Recente gesprekken</h2>
               <div id="overviewRecentList" class="sessions-list"></div>
+              <button type="button" id="viewAllSessionsBtn" class="landing-view-all-link" data-view="sessions">Alle sessies bekijken →</button>
             </section>
 
             <aside class="landing-side-col">
@@ -181,7 +185,11 @@
           </div>
           <div id="playbackChannelFilter" class="channel-filter hidden"></div>
           <div id="liveTranscript" class="transcript-box">
-            Nog geen tekst… Configureer kanalen en klik op <strong>Start</strong>.
+            <div class="empty-state">
+              <svg class="icon empty-state-icon"><use href="#icon-mic"></use></svg>
+              <p class="empty-state-title">Klaar voor een nieuwe opname</p>
+              <p class="empty-state-subtitle">Configureer de audiokanalen en start de opname.</p>
+            </div>
           </div>
         </section>
 
@@ -220,6 +228,7 @@
 
           <!-- Configuratie tab -->
           <div id="tab-config" class="tab-pane hidden">
+            <h3 class="config-section-heading">Sessiegegevens</h3>
             <!-- Sessie-brede (niet per-kanaal) referenties -- bewust NIET
                  opgeslagen in localStorage, i.t.t. de kanaalconfiguratie
                  hieronder: op een gedeeld werkstation mag een zaaknummer nooit
@@ -235,12 +244,23 @@
                 <input type="text" id="sessionPersonRefInput" placeholder="Optioneel" autocomplete="off">
               </div>
             </div>
+
+            <h3 class="config-section-heading">Audiokanalen</h3>
             <div id="channelConfigList" class="channel-config-list"></div>
             <button id="addChannelBtn" class="add-channel-btn">+ Kanaal toevoegen</button>
             <label class="cross-gate-toggle">
               <input type="checkbox" id="crossGateToggle" checked>
               Cross-kanaal anti-lek (aanbevolen)
             </label>
+
+            <!-- Vaste Start-knop hier i.p.v. alleen op het Bediening-tabblad --
+                 zonder deze moest je na het configureren van kanalen eerst
+                 handmatig terugwisselen om de opname te kunnen starten. Zelfde
+                 startRecording()-actie, wisselt daarna zelf naar Bediening
+                 zodat de live-status/Pauze/Stop direct zichtbaar zijn. -->
+            <button id="startFromConfigBtn" class="record-button start-from-config">
+              <svg class="icon"><use href="#icon-mic"></use></svg> Start opname
+            </button>
           </div>
         </aside>
       </main>

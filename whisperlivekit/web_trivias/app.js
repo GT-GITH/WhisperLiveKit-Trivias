@@ -435,6 +435,7 @@ function setAsrStatus(text) {
 }
 
 function updateRecordButtonUI() {
+  const startFromConfigBtn = document.getElementById("startFromConfigBtn");
   if (!recordButton) return;
   if (!isRecording) {
     recordButton.classList.remove("hidden");
@@ -443,8 +444,10 @@ function updateRecordButtonUI() {
     if (pauseButton) pauseButton.classList.add("hidden");
     if (stopButton) stopButton.classList.add("hidden");
     if (refreshButton) refreshButton.classList.add("hidden");
+    if (startFromConfigBtn) startFromConfigBtn.classList.remove("hidden");
   } else {
     recordButton.classList.add("hidden");
+    if (startFromConfigBtn) startFromConfigBtn.classList.add("hidden");
     if (pauseButton) {
       pauseButton.classList.remove("hidden");
       pauseButton.innerHTML = isPaused
@@ -1511,6 +1514,7 @@ function createSessionItemEl(s) {
 
   if (s.has_transcript) {
     item.addEventListener("click", () => {
+      if (!confirmLeaveActiveRecording()) return;
       showWorkspace();
       loadSessionTranscript(s.session_id);
     });
@@ -1772,14 +1776,39 @@ function insertTranslationLine(seg, translation, errorMessage) {
 // === Event wiring ===
 
 if (recordButton) recordButton.addEventListener("click", startRecording);
+
+const startFromConfigBtn = document.getElementById("startFromConfigBtn");
+if (startFromConfigBtn) {
+  startFromConfigBtn.addEventListener("click", async () => {
+    await startRecording();
+    // Springt na het starten zelf naar Bediening, zodat de live-status en
+    // Pauze/Stop meteen zichtbaar zijn i.p.v. dat je handmatig moet wisselen.
+    document.querySelector('.tab-btn[data-tab="control"]')?.click();
+  });
+}
 if (pauseButton) pauseButton.addEventListener("click", togglePause);
 if (stopButton) stopButton.addEventListener("click", confirmAndStop);
 if (refreshButton) refreshButton.addEventListener("click", refreshTranscript);
 if (refreshPlaybackButton) refreshPlaybackButton.addEventListener("click", refreshTranscript);
 if (gehoorverslagButton) gehoorverslagButton.addEventListener("click", downloadGehoorverslag);
 
+// Een lopende opname mag niet ongemerkt buiten beeld raken: de WebSocket-
+// verbindingen zijn onafhankelijk van welke view zichtbaar is, dus wegnavigeren
+// stopt de opname NIET -- maar Pauze/Stop zijn dan niet meer bereikbaar zonder
+// terug te navigeren. Risicovol tijdens een gehoor, dus expliciete bevestiging
+// i.p.v. stilzwijgend wegklikken (zelfde confirm()-patroon als confirmAndStop()).
+function confirmLeaveActiveRecording() {
+  if (!isRecording) return true;
+  return confirm(
+    "Er loopt nog een actieve opname.\n\n" +
+    "Wegnavigeren stopt de opname niet, maar Pauze/Stop zijn dan niet meer " +
+    "in beeld totdat je terugkeert naar de werkomgeving.\n\nToch doorgaan?"
+  );
+}
+
 // Gedeeld door de hero-knop op Werkoverzicht en de "Nieuwe opname"-navitem.
 function startNewSessionFlow() {
+  if (!confirmLeaveActiveRecording()) return;
   resetSessionRefs();
   showWorkspace();
   document.querySelectorAll('.app-nav-item[data-view="new"]').forEach(b => b.classList.add("active"));
@@ -1796,10 +1825,18 @@ document.querySelectorAll(".app-nav-item[data-view]").forEach(btn => {
   btn.addEventListener("click", () => {
     const view = btn.dataset.view;
     if (view === "new") { startNewSessionFlow(); return; }
+    if (!confirmLeaveActiveRecording()) return;
     showLandingPage();
     setLandingView(view);
   });
 });
+
+const viewAllSessionsBtn = document.getElementById("viewAllSessionsBtn");
+if (viewAllSessionsBtn) {
+  viewAllSessionsBtn.addEventListener("click", () => {
+    document.querySelector('.app-nav-item[data-view="sessions"]')?.click();
+  });
+}
 
 if (landingSearchInput) {
   landingSearchInput.addEventListener("input", () => {
