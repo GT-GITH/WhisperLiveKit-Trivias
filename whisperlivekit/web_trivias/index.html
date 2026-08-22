@@ -106,14 +106,16 @@
         </div>
       </header>
 
-      <!-- Startpagina: overzicht + startpunt, i.p.v. direct het live-scherm.
-           Georganiseerd rondom zaken/gesprekken (één lijst, elke sessie één
-           keer, met filters) i.p.v. rondom bestanden/technische metadata. -->
+      <!-- Startpagina: werkoverzicht i.p.v. direct het live-scherm. Georganiseerd
+           rondom zaken/gesprekken: hoofdkolom = doorzoekbare/sorteerbare
+           sessielijst, zijkolom = "Aandacht nodig" (klikbare tellers die de
+           hoofdlijst filteren) -- vertelt niet alleen wat er is, maar ook wat
+           de eerstvolgende handeling zou moeten zijn. -->
       <div id="landingPage" class="landing-page">
         <div class="landing-hero">
           <div class="landing-greeting">
-            <h1 id="landingGreeting">Welkom</h1>
-            <p>Wat wil je vandaag doen?</p>
+            <p class="landing-greeting-small" id="landingGreeting">Welkom</p>
+            <h1>Werkoverzicht</h1>
           </div>
           <button id="newSessionBtn" class="record-button">
             <svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe sessie starten
@@ -122,18 +124,31 @@
 
         <div id="landingStats" class="landing-stats"></div>
 
-        <div class="landing-toolbar">
-          <input type="text" id="landingSearchInput" placeholder="Zoeken op zaaknummer of sessie-id…" autocomplete="off">
-          <div class="landing-filters" id="landingFilters">
-            <button class="landing-filter active" data-filter="all">Alle sessies</button>
-            <button class="landing-filter" data-filter="needs_report">Nog geen verslag</button>
-            <button class="landing-filter" data-filter="has_report">Verslag gegenereerd</button>
-          </div>
-        </div>
+        <div class="landing-grid">
+          <section class="landing-main-col">
+            <div class="landing-toolbar">
+              <input type="text" id="landingSearchInput" placeholder="Zoeken op zaaknummer of sessie-id…" autocomplete="off">
+              <div class="landing-filters" id="landingFilters">
+                <button class="landing-filter active" data-filter="all">Alle sessies</button>
+                <button class="landing-filter" data-filter="processing">Wordt verwerkt</button>
+                <button class="landing-filter" data-filter="needs_report">Nog geen verslag</button>
+                <button class="landing-filter" data-filter="has_report">Verslag gegenereerd</button>
+              </div>
+              <select id="landingSortSelect" class="landing-sort-select">
+                <option value="newest">Nieuwste eerst</option>
+                <option value="oldest">Oudste eerst</option>
+                <option value="case_ref">Zaaknummer</option>
+              </select>
+            </div>
+            <div id="landingSessionsList" class="sessions-list"><p class="sessions-loading">Laden…</p></div>
+            <button id="landingShowAllBtn" class="landing-show-all hidden">Alle sessies bekijken</button>
+          </section>
 
-        <section class="landing-section-full">
-          <div id="landingSessionsList" class="sessions-list"><p class="sessions-loading">Laden…</p></div>
-        </section>
+          <aside class="landing-side-col">
+            <h2>Aandacht nodig</h2>
+            <ul id="landingAttentionList" class="landing-attention-list"></ul>
+          </aside>
+        </div>
       </div>
 
       <main class="app-main hidden">

@@ -1215,6 +1215,9 @@ function renderTranscript(lines, bufferTranscription, bufferTranslation, status)
 
 let landingSessionsCache = [];
 let landingActiveFilter = "all";
+let landingSortMode = "newest";
+let landingShowAll = false;
+const LANDING_PAGE_SIZE = 8;
 
 // Bewust geen naam in de begroeting ("Goedemorgen, {naam}") -- er is nog
 // geen echt account-systeem (zie CLAUDE.md/de login-discussie), dus een
@@ -1238,6 +1241,7 @@ async function loadLandingData() {
     const data = await resp.json();
     landingSessionsCache = data.sessions || [];
     renderLandingStats();
+    renderLandingAttention();
     renderLandingList();
   } catch (e) {
     listEl.innerHTML = '<p class="sessions-loading">Fout bij laden sessies.</p>';
@@ -1252,11 +1256,67 @@ function renderLandingStats() {
   const total = landingSessionsCache.length;
   if (!total) { statsEl.innerHTML = ""; return; }
   const needsReport = landingSessionsCache.filter(s => s.has_transcript && !s.gehoorverslag_generated_at).length;
-  statsEl.innerHTML = `<span><strong>${total}</strong> recente sessies</span><span><strong>${needsReport}</strong> zonder verslag</span>`;
+  const processing = landingSessionsCache.filter(s => !s.has_transcript).length;
+  const parts = [`<span><strong>${total}</strong> recente sessies</span>`, `<span><strong>${needsReport}</strong> zonder verslag</span>`];
+  if (processing) parts.push(`<span><strong>${processing}</strong> wordt verwerkt</span>`);
+  statsEl.innerHTML = parts.join("");
+}
+
+// Zijkolom "Aandacht nodig": alleen categorieën die daadwerkelijk actie
+// vragen (dus geen "verslag gegenereerd"-rij) -- elke rij is klikbaar en
+// filtert de hoofdlijst, zodat de pagina niet alleen vertelt wat er is maar
+// ook direct doorlinkt naar de bijbehorende actie.
+function renderLandingAttention() {
+  const el = document.getElementById("landingAttentionList");
+  if (!el) return;
+
+  const rows = [
+    { count: landingSessionsCache.filter(s => !s.has_transcript).length, label: "transcripties worden verwerkt", filter: "processing" },
+    { count: landingSessionsCache.filter(s => s.has_transcript && !s.gehoorverslag_generated_at).length, label: "zonder gehoorverslag", filter: "needs_report" },
+    { count: landingSessionsCache.filter(s => !s.case_ref).length, label: "niet aan een zaak gekoppeld", filter: "no_case" },
+  ].filter(r => r.count > 0);
+
+  if (rows.length === 0) {
+    el.innerHTML = '<li class="landing-attention-empty">Niets dat aandacht vraagt.</li>';
+    return;
+  }
+  el.innerHTML = rows.map(r =>
+    `<li><button type="button" class="landing-attention-item" data-filter="${r.filter}"><strong>${r.count}</strong> ${escapeHtml(r.label)}</button></li>`
+  ).join("");
+  el.querySelectorAll(".landing-attention-item").forEach(btn => {
+    btn.addEventListener("click", () => applyLandingFilter(btn.dataset.filter));
+  });
+}
+
+// Gedeeld tussen de filterknoppen in de toolbar en de klikbare rijen in
+// "Aandacht nodig" -- "no_case" heeft bewust geen eigen toolbar-pil (matcht
+// dan geen van de knoppen, dus die tonen alle als niet-actief).
+function applyLandingFilter(filter) {
+  landingActiveFilter = filter;
+  document.querySelectorAll(".landing-filter").forEach(b => b.classList.toggle("active", b.dataset.filter === filter));
+  renderLandingList();
+}
+
+function sortLandingSessions(list) {
+  const arr = [...list];
+  if (landingSortMode === "oldest") {
+    arr.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || ""));
+  } else if (landingSortMode === "case_ref") {
+    arr.sort((a, b) => {
+      if (!a.case_ref && !b.case_ref) return 0;
+      if (!a.case_ref) return 1;
+      if (!b.case_ref) return -1;
+      return a.case_ref.localeCompare(b.case_ref);
+    });
+  } else {
+    arr.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  }
+  return arr;
 }
 
 function renderLandingList() {
   const listEl = document.getElementById("landingSessionsList");
+  const showAllBtn = document.getElementById("landingShowAllBtn");
   if (!listEl) return;
 
   const query = (landingSearchInput?.value || "").trim().toLowerCase();
@@ -1264,18 +1324,24 @@ function renderLandingList() {
     || s.session_id.toLowerCase().includes(query)
     || (s.case_ref || "").toLowerCase().includes(query);
   const matchesFilter = s => {
+    if (landingActiveFilter === "processing") return !s.has_transcript;
     if (landingActiveFilter === "needs_report") return s.has_transcript && !s.gehoorverslag_generated_at;
     if (landingActiveFilter === "has_report") return !!s.gehoorverslag_generated_at;
+    if (landingActiveFilter === "no_case") return !s.case_ref;
     return true;
   };
 
-  const filtered = landingSessionsCache.filter(s => matchesQuery(s) && matchesFilter(s));
+  const filtered = sortLandingSessions(landingSessionsCache.filter(s => matchesQuery(s) && matchesFilter(s)));
+  const visible = landingShowAll ? filtered : filtered.slice(0, LANDING_PAGE_SIZE);
+
   listEl.innerHTML = "";
   if (filtered.length === 0) {
     listEl.innerHTML = '<p class="sessions-loading">Geen sessies gevonden.</p>';
-    return;
+  } else {
+    for (const s of visible) listEl.appendChild(createSessionItemEl(s));
   }
-  for (const s of filtered) listEl.appendChild(createSessionItemEl(s));
+
+  if (showAllBtn) showAllBtn.classList.toggle("hidden", landingShowAll || filtered.length <= LANDING_PAGE_SIZE);
 }
 
 // "employee"/"foreign_tr"/... zijn interne kanaal-id's -- getRoleLabel()/
@@ -1294,7 +1360,7 @@ function createSessionItemEl(s) {
   // Zaaknummer is het hoofdonderwerp van de rij, niet de technische id --
   // die blijft klein/gedempt zichtbaar (support/verwijzing), maar is nooit
   // meer de kop.
-  const title = s.case_ref ? escapeHtml(s.case_ref) : "Sessie zonder zaaknummer";
+  const title = s.case_ref ? `Zaak ${escapeHtml(s.case_ref)}` : "Niet aan een zaak gekoppeld";
   const shortId = `${s.session_id.substring(0, 8)}…`;
   const duration = Number.isFinite(s.duration_ms) ? formatMs(s.duration_ms) : null;
 
@@ -1304,28 +1370,33 @@ function createSessionItemEl(s) {
   ];
   if (duration) detailParts.push(duration);
 
-  let statusLine;
+  // Drie eerlijke statussen, geen 4e "klaar voor controle" -- daar is geen
+  // echt bijgehouden gegeven voor (zie mark_gehoorverslag_generated() in
+  // TriviasServer.py). De feitelijke tijdstempel blijft zichtbaar, alleen
+  // als aparte detailregel i.p.v. in de badge zelf.
+  let badge;
   const item = document.createElement("div");
   item.className = "session-item";
   if (!s.has_transcript) {
-    statusLine = `<span class="session-item-status session-item-status-pending">Transcript wordt nog verwerkt</span>`;
+    badge = `<span class="session-item-badge session-item-badge-pending">Transcriptie wordt verwerkt</span>`;
     item.classList.add("session-item-disabled");
   } else if (s.gehoorverslag_generated_at) {
-    // Feitelijke tijdstempel, geen afhandel-status -- zie
-    // mark_gehoorverslag_generated() in TriviasServer.py: gegenereerd-zijn
-    // betekent niet automatisch gecontroleerd/in INDiGO verwerkt.
-    statusLine = `<span class="session-item-status">Gehoorverslag: laatst gegenereerd op ${escapeHtml(new Date(s.gehoorverslag_generated_at).toLocaleString("nl-NL"))}</span>`;
+    badge = `<span class="session-item-badge session-item-badge-done">Verslag gegenereerd</span>`;
+    detailParts.push(`gegenereerd op ${escapeHtml(new Date(s.gehoorverslag_generated_at).toLocaleString("nl-NL"))}`);
   } else {
-    statusLine = `<span class="session-item-status session-item-status-missing">Gehoorverslag: nog niet gegenereerd</span>`;
+    badge = `<span class="session-item-badge session-item-badge-missing">Verslag nog niet gegenereerd</span>`;
   }
 
   item.innerHTML = `
     <div class="session-item-main">
-      <span class="session-item-title">${title}</span>
-      <span class="session-item-id">${shortId}</span>
+      <div class="session-item-heading">
+        <span class="session-item-title">${title}</span>
+        <span class="session-item-id">${shortId}</span>
+      </div>
+      <span class="session-item-open">Open →</span>
     </div>
     <div class="session-item-detail">${detailParts.map(p => `<span>${p}</span>`).join("")}</div>
-    ${statusLine}`;
+    ${badge}`;
 
   if (s.has_transcript) {
     item.addEventListener("click", () => {
@@ -1599,12 +1670,24 @@ if (backToLandingBtn) backToLandingBtn.addEventListener("click", showLandingPage
 if (landingSearchInput) landingSearchInput.addEventListener("input", renderLandingList);
 
 document.querySelectorAll(".landing-filter").forEach(btn => {
-  btn.addEventListener("click", () => {
-    landingActiveFilter = btn.dataset.filter;
-    document.querySelectorAll(".landing-filter").forEach(b => b.classList.toggle("active", b === btn));
+  btn.addEventListener("click", () => applyLandingFilter(btn.dataset.filter));
+});
+
+const landingSortSelect = document.getElementById("landingSortSelect");
+if (landingSortSelect) {
+  landingSortSelect.addEventListener("change", () => {
+    landingSortMode = landingSortSelect.value;
     renderLandingList();
   });
-});
+}
+
+const landingShowAllBtn = document.getElementById("landingShowAllBtn");
+if (landingShowAllBtn) {
+  landingShowAllBtn.addEventListener("click", () => {
+    landingShowAll = true;
+    renderLandingList();
+  });
+}
 
 const addChannelBtn = document.getElementById("addChannelBtn");
 if (addChannelBtn) addChannelBtn.addEventListener("click", addChannelConfig);
