@@ -1324,6 +1324,18 @@ select:focus-visible,
   color: var(--text-muted);
 }
 
+/* Bij meer dan ~3 kanalen paste de Configuratie-tab niet meer in het
+   zijpaneel -- niets in deze keten had overflow-y, dus de Start-knop
+   onderaan werd onbereikbaar i.p.v. gewoon bereikbaar via een scrollbalk.
+   .panel (flex column) begrenst nu al de hoogte; de actieve tab-pane (de
+   andere heeft altijd .hidden, telt dus niet mee als flex-item) vult de
+   resterende ruimte en scrollt zelf intern. */
+.tab-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .tab-pane.hidden,
 .hidden {
   display: none !important;
