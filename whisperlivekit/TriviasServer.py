@@ -796,7 +796,7 @@ async def get_session(session_id: str):
         return JSONResponse({"error": "unknown session_id"}, status_code=404)
     return JSONResponse(meta)
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 import io
 
 @app.get("/audio/{session_id}/{channel_id}")
@@ -842,10 +842,16 @@ async def serve_audio_slice(
             out.setsampwidth(sampwidth)
             out.setframerate(sample_rate)
             out.writeframes(raw)
-        buf.seek(0)
 
-        return StreamingResponse(
-            buf,
+        # Response i.p.v. StreamingResponse: buf is hier al volledig in het
+        # geheugen opgebouwd, dus er valt niets te "streamen" -- StreamingResponse
+        # zet daardoor geen Content-Length, waardoor de browser de duur van de
+        # <audio>-speler pas kent zodra de hele download binnen is en de
+        # voortgangsbalk zichtbaar "corrigeert" zodra dat gebeurt. Een gewone
+        # Response met de kant-en-klare bytes laat Starlette Content-Length
+        # gewoon meteen correct zetten.
+        return Response(
+            content=buf.getvalue(),
             media_type="audio/wav",
             headers={"Content-Disposition": "inline"},
         )
