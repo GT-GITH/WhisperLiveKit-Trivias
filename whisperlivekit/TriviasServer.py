@@ -737,6 +737,14 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
         if merged is None:
             return JSONResponse({"error": "transcript not found"}, status_code=404)
 
+        # Zaaknummer/cliëntreferentie/gehoorverslag-status/talen komen niet uit
+        # het transcript zelf maar uit de gepersisteerde SessionManager-metadata
+        # resp. de bestaande taal-resolutie -- zelfde patroon als /sessions/list
+        # en het gehoorverslag-endpoint hieronder, geen nieuwe berekeningen.
+        meta = session_manager.get(session_id) or {}
+        external_refs = meta.get("external_references") or {}
+        languages = {ch: _resolve_channel_language(ch) for ch in merged["channels"]}
+
         return JSONResponse({
             "session_id": session_id,
             "channel_id": "all",
@@ -745,6 +753,10 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
             "duration_ms": merged["duration_ms"],
             "channel_durations_ms": merged["channel_durations_ms"],
             "date": merged["date"],
+            "case_ref": external_refs.get("case_ref"),
+            "person_ref": external_refs.get("person_ref"),
+            "gehoorverslag_generated_at": meta.get("gehoorverslag_generated_at"),
+            "languages": languages,
         })
 
     # Zoek JSON bestand voor deze sessie + channel

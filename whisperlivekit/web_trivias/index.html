@@ -220,7 +220,7 @@
 
         <aside class="panel panel-side">
           <div class="panel-header panel-header-tabs">
-            <div class="tab-bar">
+            <div id="tabBar" class="tab-bar">
               <button class="tab-btn active" data-tab="control">Bediening</button>
               <button class="tab-btn" data-tab="config">Configuratie</button>
             </div>
@@ -240,15 +240,14 @@
               <span id="modeStatus" class="status-value">–</span>
               <span id="modeStatusDot" class="status-dot dot-neutral"></span>
             </div>
-            <div class="status-row">
+            <div id="asrStatusRow" class="status-row">
               <span class="status-icon"><svg class="icon"><use href="#icon-activity"></use></svg></span>
               <span class="status-label">ASR-status</span>
               <span id="asrStatus" class="status-value">Wachten op opname…</span>
               <span id="asrStatusDot" class="status-dot dot-neutral"></span>
             </div>
             <div id="sessionInfoPanel" class="session-info-panel hidden">
-              <p class="session-info-title">Opgeslagen sessie</p>
-              <dl id="sessionInfoList" class="session-info-list"></dl>
+              <div id="sessionInfoCards" class="session-info-cards"></div>
             </div>
             <div class="controls">
               <button id="recordButton" class="record-button"><svg class="icon"><use href="#icon-mic"></use></svg> Start</button>

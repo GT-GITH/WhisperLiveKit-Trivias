@@ -2,12 +2,18 @@
 
 // === Rol- en taaldefinities ===
 
+// Kleuren wijzen naar de --role-*-variabelen in style.css (:root) i.p.v. hier
+// eigen hexwaarden te hardcoden -- vroeger stonden hier fellere, ongerelateerde
+// tinten los van die CSS-variabelen (die zelf nergens gebruikt werden). Nu is
+// style.css:root de enige plek om het rolpalet ooit nog bij te stellen; elke
+// plek die getRoleColor()/role.color gebruikt (rollabels, kanaalbadges,
+// live-meter, playback-tijdlijn, filterchips) volgt automatisch mee.
 const ROLES = [
-  { id: "employee",    label: "Medewerker",  color: "#3b82f6" },
-  { id: "interpreter", label: "Tolk",        color: "#a855f7", hasLanguage2: true },
-  { id: "lawyer",      label: "Advocaat",    color: "#22c55e" },
-  { id: "foreign",     label: "Vreemdeling", color: "#f97316" },
-  { id: "default",     label: "Spreker",     color: "#9ca3af" },
+  { id: "employee",    label: "Medewerker",  color: "var(--role-employee)" },
+  { id: "interpreter", label: "Tolk",        color: "var(--role-interpreter)", hasLanguage2: true },
+  { id: "lawyer",      label: "Advocaat",    color: "var(--role-lawyer)" },
+  { id: "foreign",     label: "Vreemdeling", color: "var(--role-foreign)" },
+  { id: "default",     label: "Spreker",     color: "var(--role-default)" },
 ];
 
 const LANGUAGES = [
@@ -455,6 +461,15 @@ let playbackAudioChannel = null;
 let playbackAudioSliceStartMs = 0;
 let playbackSessionDate = null; // leesbare datum uit de server, voor de "Sessie terugluisteren"-subtitel
 
+// Voor de read-only sessiesamenvatting (Sessiegegevens/Sprekers/Documenten)
+// die tijdens terugluisteren het Bediening/Configuratie-tabbladstelsel
+// vervangt, zie updateLiveVsPlaybackUI(). Komen rechtstreeks uit de
+// transcript?channel_id=all-respons, geen aparte fetch nodig.
+let playbackCaseRef = null;
+let playbackPersonRef = null;
+let playbackLanguages = {}; // { channel_id: taalcode }
+let playbackGehoorverslagGeneratedAt = null;
+
 // === Opname state ===
 
 // uid → { ws, channelId, audioContext, mediaStream, workletNode, recorderWorker, mediaRecorder, watchdog }
@@ -556,6 +571,10 @@ function updateRecordButtonUI() {
       ? '<svg class="icon"><use href="#icon-mic"></use></svg> Nieuwe opname starten'
       : '<svg class="icon"><use href="#icon-mic"></use></svg> Start';
     recordButton.classList.remove("recording");
+    // In de sessiesamenvatting is dit de secundaire "verlaat het overzicht"-
+    // actie, niet de hoofdhandeling van dit scherm (zie .button-secondary,
+    // eerder gebruikt voor "Ververs Transcriptie").
+    recordButton.classList.toggle("button-secondary", isViewingStoredSession());
     if (pauseButton) pauseButton.classList.add("hidden");
     if (stopButton) stopButton.classList.add("hidden");
     if (refreshButton) refreshButton.classList.add("hidden");
@@ -628,35 +647,84 @@ function updateLiveVsPlaybackUI() {
     subtitleEl.classList.toggle("hidden", parts.length === 0);
   }
 
-  // Verduidelijkt tijdens terugluisteren dat dit tabblad de configuratie voor
-  // een VOLGENDE opname is, niet voor de sessie die je nu bekijkt -- de tab
-  // blijft wel gewoon bruikbaar (config aanpassen terwijl je terugluistert
-  // kost niets), alleen het label maakt het ondubbelzinnig.
-  const configTabBtn = document.querySelector('.tab-btn[data-tab="config"]');
-  if (configTabBtn) configTabBtn.textContent = viewing ? "Opnameconfiguratie" : "Configuratie";
+  // Tijdens terugluisteren vervangt de vaste, read-only sessiesamenvatting
+  // (hieronder) het hele Bediening/Configuratie-tabbladstelsel -- niet omdat
+  // bijconfigureren de bekeken sessie zou beschadigen (dat gebeurt niet),
+  // maar omdat zichtbare tabbladen anders suggereren dat je iets van de
+  // bekeken sessie aanpast, wat verwarrend is in een juridische context.
+  // "Nieuwe opname starten" (in de samenvatting) brengt de normale
+  // werkomgeving mét tabbladen weer terug.
+  const tabBar = document.getElementById("tabBar");
+  if (tabBar) tabBar.classList.toggle("hidden", viewing);
+  if (viewing) {
+    // Forceer terug naar het Bediening-paneel als Configuratie nog actief
+    // stond -- dat paneel bevat de samenvatting hieronder, Configuratie zelf
+    // is nu onbereikbaar (tab-bar is immers verborgen).
+    document.querySelector('.tab-btn[data-tab="control"]')?.click();
+  }
 
   const connectionRow = document.getElementById("connectionStatusRow");
   const modeRow        = document.getElementById("modeStatusRow");
+  const asrRow         = document.getElementById("asrStatusRow");
   if (connectionRow) connectionRow.classList.toggle("hidden", viewing);
   if (modeRow) modeRow.classList.toggle("hidden", viewing);
+  if (asrRow) asrRow.classList.toggle("hidden", viewing);
 
   const infoPanel = document.getElementById("sessionInfoPanel");
-  const infoList  = document.getElementById("sessionInfoList");
+  const cardsEl   = document.getElementById("sessionInfoCards");
   if (infoPanel) infoPanel.classList.toggle("hidden", !viewing);
-  if (infoList && viewing) {
-    const rows = [
-      ["Datum", playbackSessionDate || "onbekend"],
-      ["Sessie-id", currentSessionId ? `${currentSessionId.substring(0, 12)}…` : "-"],
-      ["Duur", formatMs(getPlaybackDurationMs())],
-      ["Kanalen", playbackChannels.map(ch => getRoleLabel(channelIdToRoleId(ch))).join(", ") || "-"],
-    ];
-    infoList.innerHTML = rows.map(([label, value]) =>
-      `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`
-    ).join("");
+  if (cardsEl && viewing) {
+    cardsEl.innerHTML = buildSessionInfoCardsHTML();
   }
 
   updateRecordButtonUI();
   updateHint();
+}
+
+// Bouwt de drie read-only samenvattingskaarten (Sessiegegevens/Sprekers/
+// Documenten) die tijdens terugluisteren het tabbladstelsel vervangen, zie
+// updateLiveVsPlaybackUI() hierboven. "Microfoon" per spreker is bewust
+// weggelaten -- dat is pure client-side apparaatkeuze, nooit naar de server
+// gestuurd of opgeslagen, en dus niet betrouwbaar bekend voor een sessie die
+// (mogelijk na een herstart) van disk geladen is.
+function buildSessionInfoCardsHTML() {
+  const sessieRows = [
+    ["Datum", playbackSessionDate || "onbekend"],
+  ];
+  if (playbackCaseRef) sessieRows.push(["Zaaknummer", playbackCaseRef]);
+  sessieRows.push(["Sessie-id", currentSessionId ? `${currentSessionId.substring(0, 12)}…` : "-"]);
+  sessieRows.push(["Duur", formatMs(getPlaybackDurationMs())]);
+
+  const sessieCard = `<div class="session-info-card">
+    <p class="session-info-title">Sessiegegevens</p>
+    <dl class="session-info-list">${sessieRows.map(([label, value]) =>
+      `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`
+    ).join("")}</dl>
+  </div>`;
+
+  const sprekersRows = playbackChannels.map(ch => {
+    const roleId = channelIdToRoleId(ch);
+    const color = getRoleColor(roleId);
+    const label = getRoleLabel(roleId);
+    const lang = playbackLanguages[ch] || "-";
+    return [`<span class="channel-filter-dot" style="background:${color}"></span>${escapeHtml(label)}`, lang.toUpperCase()];
+  });
+  const sprekersCard = `<div class="session-info-card">
+    <p class="session-info-title">Sprekers</p>
+    <dl class="session-info-list">${sprekersRows.map(([label, value]) =>
+      `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`
+    ).join("") || `<div><dd>Geen kanalen bekend</dd></div>`}</dl>
+  </div>`;
+
+  const gehoorverslagStatus = playbackGehoorverslagGeneratedAt
+    ? `Laatst gegenereerd op ${new Date(playbackGehoorverslagGeneratedAt).toLocaleString("nl-NL")}`
+    : "Nog niet gegenereerd";
+  const documentenCard = `<div class="session-info-card">
+    <p class="session-info-title">Documenten</p>
+    <dl class="session-info-list"><div><dt>Gehoorverslag</dt><dd>${escapeHtml(gehoorverslagStatus)}</dd></div></dl>
+  </div>`;
+
+  return sessieCard + sprekersCard + documentenCard;
 }
 
 // === Timer ===
@@ -1741,6 +1809,10 @@ async function loadSessionTranscript(sessionId) {
     playbackActiveChannels = new Set(playbackChannels);
     playbackDurationMs = data.duration_ms || 0;
     playbackSessionDate = data.date || null;
+    playbackCaseRef = data.case_ref || null;
+    playbackPersonRef = data.person_ref || null;
+    playbackLanguages = data.languages || {};
+    playbackGehoorverslagGeneratedAt = data.gehoorverslag_generated_at || null;
 
     playbackLines       = [];
     playbackLineById    = new Map();
@@ -1804,9 +1876,10 @@ function renderPlaybackChannelFilter() {
     const label = getRoleLabel(roleId);
     const color = getRoleColor(roleId);
     const checked = playbackActiveChannels.has(ch) ? "checked" : "";
-    return `<label class="channel-filter-chip" style="border-color:${color}66">
+    return `<label class="channel-filter-chip">
       <input type="checkbox" data-channel="${escapeHtml(ch)}" ${checked} />
-      <span style="color:${color}">${escapeHtml(label)}</span>
+      <span class="channel-filter-dot" style="background:${color}"></span>
+      <span>${escapeHtml(label)}</span>
     </label>`;
   }).join("");
 

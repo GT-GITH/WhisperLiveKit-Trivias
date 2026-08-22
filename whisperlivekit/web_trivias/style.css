@@ -37,13 +37,17 @@
   --transition-med: 0.2s ease-out;
   --font-sans: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
 
-  /* Rol-kleuren, herijkt voor voldoende contrast op een WIT vlak (voorheen
-     getuned voor een donkere achtergrond -- alle vier hieronder halen ≥4.8:1). */
-  --role-employee:    #1e5b94;
-  --role-interpreter: #6b3fa0;
-  --role-lawyer:      #1e7a4c;
-  --role-foreign:     #a3520c;
-  --role-default:     #5b6673;
+  /* Rol-kleuren -- gedempt/vergrijsd i.p.v. de eerdere felle primaire tinten
+     (#3b82f6/#a855f7/#22c55e/#f97316 die de ROLES-array in app.js voorheen
+     zelf hardcodete, los van deze variabelen): te veel verzadigde kleuren
+     tegelijk (filters, badges, tijdlijn, rollabels) gaf een "monitoring
+     dashboard"-gevoel i.p.v. een rustig dossierplatform. Elke waarde hieronder
+     is gecontroleerd op minimaal WCAG AA-contrast (4.5:1) tegen wit. */
+  --role-employee:    #4f6f91;  /* staalblauw -- Medewerker */
+  --role-interpreter: #786a8e;  /* vergrijsd paars -- Tolk */
+  --role-lawyer:      #567066;  /* grijsgroen -- Advocaat/overig */
+  --role-foreign:     #a06246;  /* gedempt terracotta -- Vreemdeling */
+  --role-default:     #5b6673;  /* neutrale restcategorie -- Spreker */
 
   --focus-ring-color: #123a5e;
 }
@@ -341,6 +345,10 @@ select:focus-visible,
      transcriptieregels tegelijk zichtbaar zonder scrollen, i.p.v. dat de
      ruimte eronder leeg blijft. */
   flex: 1;
+  /* Wit i.p.v. de gedempte --bg-subtle-tint -- rustiger "witte-pagina"-
+     uitstraling voor het transcript-canvas zelf; .final-box (elders) houdt
+     de subtiele tint. */
+  background: var(--bg-elevated);
 }
 
 /* Lege-staat "Live transcriptie" (vóór de eerste Start-klik) staat verderop
@@ -623,6 +631,18 @@ select:focus-visible,
    "Nieuwe opname starten"-knop niet als enige, kale knop in het paneel staat. */
 .session-info-panel {
   margin-top: 4px;
+}
+
+/* Drie losse kaarten (Sessiegegevens/Sprekers/Documenten) i.p.v. één platte
+   lijst -- vervangt tijdens terugluisteren het hele Bediening/Configuratie-
+   tabbladstelsel, zie updateLiveVsPlaybackUI() in app.js. */
+.session-info-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session-info-card {
   padding: 10px 12px;
   border-radius: var(--radius-xl);
   background: var(--bg-subtle);
@@ -646,12 +666,16 @@ select:focus-visible,
 .session-info-list div {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 8px;
   font-size: 12px;
 }
 
 .session-info-list dt {
   color: var(--text-soft);
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .session-info-list dd {
@@ -760,6 +784,7 @@ select:focus-visible,
 .seg-confirmed {
   color: var(--success); /* alleen voor het vinkje zelf */
   font-weight: normal;
+  font-size: 0.8em; /* klein, secundair statussymbool i.p.v. decoratief accent */
 }
 
 .seg-translate {
@@ -1387,6 +1412,13 @@ select:focus-visible,
   cursor: pointer;
 }
 
+.channel-filter-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 /* === Configuratie tab: sessie-brede referenties (zaaknummer e.d.) === */
 
 /* Onderscheidt Sessiegegevens (zaaknummer/cliëntreferentie) duidelijk van
@@ -1571,14 +1603,6 @@ select:focus-visible,
   justify-content: center;
   margin-top: 16px;
 }
-
-/* === Rol-badge kleuren in transcript === */
-
-.seg-role-employee    { color: var(--role-employee); }
-.seg-role-interpreter { color: var(--role-interpreter); }
-.seg-role-lawyer      { color: var(--role-lawyer); }
-.seg-role-foreign     { color: var(--role-foreign); }
-.seg-role-default     { color: var(--role-default); }
 
 /* === Lege-staat "Live transcriptie" (vóór de eerste Start-klik) === */
 
