@@ -212,6 +212,13 @@ class AudioProcessor:
         # decode-stap ook echt klaar is vóór _hard_reset_live_decoder() de decoder-context
         # reset.
         self._decode_in_progress: bool = False
+        # [DIAG][LIVE_STALL] onderzoek (2026-08-23): wanneer gezet, kan results_formatter()
+        # (een aparte asyncio-task die onafhankelijk van transcription_processor() blijft
+        # tikken) detecteren of een decode-aanroep verdacht lang bezig is -- inclusief een
+        # eventuele hang in start_silence() (roept process_iter(is_last=True) aan, maar
+        # heeft -- anders dan het hoofdpad -- geen asyncio.wait_for-timeout-guard).
+        self._decode_in_progress_since: Optional[float] = None
+        self._live_stall_last_logged_t: float = 0.0
 
         # Models and processing
         self.asr: Any = models.asr
@@ -779,9 +786,25 @@ class AudioProcessor:
                     if item.is_starting:
                         # Begin van stilte → ASR informeren
                         try:
-                            new_tokens, current_audio_processed_upto = await asyncio.to_thread(
-                                self.transcription.start_silence
-                            )
+                            # start_silence() roept intern process_iter(is_last=True) aan --
+                            # dezelfde potentieel trage GPU-decode als het hoofdpad hieronder,
+                            # maar zonder diens asyncio.wait_for(timeout=15.0)-guard. Zelfde
+                            # _decode_in_progress(_since)-markering zodat results_formatter()
+                            # (blijft onafhankelijk tikken) een hang hier ook kan signaleren.
+                            self._decode_in_progress = True
+                            self._decode_in_progress_since = time()
+                            _diag_start_silence_t0 = time()
+                            try:
+                                new_tokens, current_audio_processed_upto = await asyncio.to_thread(
+                                    self.transcription.start_silence
+                                )
+                                logger.info(
+                                    f"[DIAG][LIVE_PERF] start_silence_duration="
+                                    f"{time() - _diag_start_silence_t0:.3f}s"
+                                )
+                            finally:
+                                self._decode_in_progress = False
+                                self._decode_in_progress_since = None
                             asr_processing_logs += f" + Silence starting"
                         except Exception as e:
                             logger.warning(f"[LIVE] start_silence failed: {e}")
@@ -873,6 +896,7 @@ class AudioProcessor:
                     self.transcription.insert_audio_chunk(pcm_array, stream_time_end_of_current_pcm)
 
                     self._decode_in_progress = True
+                    self._decode_in_progress_since = time()
                     _diag_process_iter_start = time()  # [DIAG][LIVE_PERF], zie live-lag-onderzoek
                     try:
                         new_tokens, current_audio_processed_upto = await asyncio.wait_for(
@@ -886,6 +910,7 @@ class AudioProcessor:
                         current_audio_processed_upto = self.state.end_buffer
                     finally:
                         self._decode_in_progress = False
+                        self._decode_in_progress_since = None
                         # Puur observerend (2026-08-23, onderzoek groeiende live-lag) --
                         # rechtstreeks te correleren met de al bestaande lag-regel
                         # hierboven (transcription_lag_s) om te zien of de lag-groei
@@ -1131,8 +1156,29 @@ class AudioProcessor:
 
     async def results_formatter(self) -> AsyncGenerator[Union[FrontData, SegmentUpdate], None]:
         """Format processing results for output."""
+        LIVE_STALL_THRESHOLD_S = 8.0
+        LIVE_STALL_LOG_INTERVAL_S = 5.0
         while True:
             try:
+                # [DIAG][LIVE_STALL] onderzoek (2026-08-23): results_formatter draait als
+                # eigen asyncio-task en blijft -- zoals bevestigd in een eerder log, waar
+                # deze FRONTDATA_PUSH-regels bleven doorlopen terwijl de GUI volledig
+                # bevroor -- onafhankelijk tikken ook als transcription_processor() zelf
+                # muurvast zit op een niet van een timeout voorziene decode-aanroep (bv.
+                # start_silence()). Precies daarom is dit de juiste plek om zo'n hang te
+                # signaleren: alleen deze task kan het nog waarnemen.
+                _since = self._decode_in_progress_since
+                if _since is not None:
+                    _stalled_for = time() - _since
+                    if _stalled_for >= LIVE_STALL_THRESHOLD_S and \
+                       (time() - self._live_stall_last_logged_t) >= LIVE_STALL_LOG_INTERVAL_S:
+                        self._live_stall_last_logged_t = time()
+                        logger.warning(
+                            f"[DIAG][LIVE_STALL] channel={self.channel_id} decode al "
+                            f"{_stalled_for:.1f}s bezig zonder terug te keren "
+                            f"(process_iter of start_silence hangt mogelijk)"
+                        )
+
                 # results_formatter loop - first flush pending segment updates
                 while not self._ws_update_queue.empty():
                     upd = await self._ws_update_queue.get()
