@@ -375,6 +375,21 @@ startlive() {
   [[ -d "$APP_DIR/.git" ]] || die "Repo niet gevonden in $APP_DIR. Run eerst: bash scripts/init.sh --setup"
   [[ -d "$VENV_DIR" ]] || die "Venv niet gevonden in $VENV_DIR. Run eerst: bash scripts/init.sh --setup"
 
+  # RunPod's "Open Web Terminal" heeft een eigen idle-timeout, los van de pod
+  # zelf -- valt die verbinding weg, dan verdween voorheen ook meteen de hele
+  # server (was direct via `exec` aan die ene terminal-sessie gekoppeld, zie
+  # onderin deze functie). Server draait nu op de achtergrond (nohup+disown,
+  # zelfde bewezen patroon als ensure_ollama_running() hierboven) en overleeft
+  # een weggevallen terminal. Deze PID-check zorgt dat een `--start` ná het
+  # herverbinden niet blind een tweede server/poort-conflict/model-herlaad
+  # veroorzaakt, maar gewoon weer aanhaakt bij de al-draaiende server.
+  PID_FILE="$WORKSPACE/trivias.pid"
+  LOG_FILE="$WORKSPACE/trivias.log"
+  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    log "TriviasServer draait al (PID $(cat "$PID_FILE")) -- niet opnieuw gestart. Logs volgen ($LOG_FILE):"
+    exec tail -f "$LOG_FILE"
+  fi
+
   cd "$APP_DIR"
   # shellcheck disable=SC1091
   # Venv nu al actief (i.p.v. pas vlak voor exec) -- download_nllb_model()
@@ -410,7 +425,7 @@ startlive() {
   fi
 
   log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED nllb_enabled=$NLLB_ENABLED"
-  exec python -m whisperlivekit.TriviasServer \
+  nohup python -m whisperlivekit.TriviasServer \
     --host "$HOST" --port "$PORT" \
     --model "$MODEL" --language "$LANGUAGE" \
     --frame-threshold "$FRAME_THRESHOLD" \
@@ -420,7 +435,12 @@ startlive() {
     --pcm-input \
     "${DIAR_ARGS[@]}" \
     "${LLM_ARGS[@]}" \
-    "${NLLB_ARGS[@]}"
+    "${NLLB_ARGS[@]}" \
+    > "$LOG_FILE" 2>&1 &
+  echo $! > "$PID_FILE"
+  disown
+  log "TriviasServer gestart op de achtergrond (PID $(cat "$PID_FILE"), log: $LOG_FILE) -- blijft nu draaien ook als deze terminal wegvalt. Logs volgen:"
+  exec tail -f "$LOG_FILE"
 }
 
 gpustat() {
