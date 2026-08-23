@@ -167,6 +167,49 @@ def test_single_channel_skips_entirely():
     print("OK test_single_channel_skips_entirely")
 
 
+def test_active_channel_with_natural_pauses_is_not_chopped_up():
+    """Reproduceert de echte sessie (2026-08-23) die deze wijziging veroorzaakte:
+    een doorlopend gesproken, single-channel opname waarvan Ververs Transcriptie
+    65,9% van de audio wegsneed onder de vaste DEFAULT_OWN_GATE_THRESHOLD (0.015)
+    -- niet omdat het kanaal een lek was, maar omdat gewone spraakdynamiek
+    (pauzes, wegstervende medeklinkers) net zo goed onder een vaste drempel valt.
+
+    Signaal: afwisselend luide (0.2, ruim boven de drempel) en zachte-maar-niet-
+    stille (0.008, onder DEFAULT_OWN_GATE_THRESHOLD=0.015 maar boven
+    DEFAULT_SILENCE_FLOOR=0.005) stukken -- zoals spraak-met-pauzes, niet een
+    structureel stil/lekkend kanaal. compute_own_channel_gate_mask() zou de
+    zachte helft nog steeds onderdrukken (rechtstreeks getest); de entrypoint
+    moet dat nu NIET meer doen, want het kanaal heeft aantoonbaar actieve
+    inhoud (hoog p90)."""
+    rng = np.random.default_rng(7)
+    segment_n = SAMPLE_RATE * 1  # 1s per segment
+    n_segments = 10
+    parts = []
+    for i in range(n_segments):
+        amplitude = 0.2 if i % 2 == 0 else 0.008
+        parts.append((rng.standard_normal(segment_n) * amplitude).astype(np.float32))
+    speech_with_pauses = np.concatenate(parts)
+
+    # Vóór deze wijziging zou dit ~50% onderdrukken (de zachte helft) -- rechtstreeks
+    # getest op de ongewijzigde low-level functie, ter documentatie van het "oude" gedrag:
+    direct_mask = compute_own_channel_gate_mask(speech_with_pauses, SAMPLE_RATE)
+    direct_suppressed_frac = 1.0 - direct_mask.mean()
+    assert direct_suppressed_frac > 0.3, (
+        "sanity check: de rauwe per-frame-drempel moet de zachte helft van dit "
+        f"signaal nog steeds als 'te stil' zien (was {direct_suppressed_frac:.1%})"
+    )
+
+    # De entrypoint (wat Ververs Transcriptie daadwerkelijk aanroept) moet dit
+    # kanaal nu als aantoonbaar actief herkennen en helemaal niet onderdrukken:
+    masks = compute_cross_channel_gate_masks({"a": speech_with_pauses}, SAMPLE_RATE, session_id="test")
+    assert masks["a"].all(), (
+        "een kanaal met duidelijke spraakdynamiek (afwisselend luid/zacht) mag niet "
+        "aan flarden geknipt worden door de vaste eigen-ruisdrempel"
+    )
+    print("OK test_active_channel_with_natural_pauses_is_not_chopped_up "
+          f"(directe drempel zou {direct_suppressed_frac:.1%} onderdrukt hebben)")
+
+
 def test_arbitrate_suppresses_the_quieter_side_of_a_swap():
     """Rechtstreekse, deterministische test van arbitrate() (niet via ruwe audio
     + cross-correlatie-uitlijning -- dat introduceert onnodige kansvariatie in
@@ -259,6 +302,7 @@ if __name__ == "__main__":
         test_own_gate_suppresses_quiet_far_mic_leak,
         test_own_gate_leaves_loud_speech_untouched,
         test_single_channel_skips_entirely,
+        test_active_channel_with_natural_pauses_is_not_chopped_up,
         test_arbitrate_suppresses_the_quieter_side_of_a_swap,
         test_arbitrate_never_suppresses_both_equal_channels,
         test_arbitrate_isolated_blip_is_smoothed_away,

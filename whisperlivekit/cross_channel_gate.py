@@ -50,11 +50,33 @@ DEFAULT_OWN_GATE_THRESHOLD = 0.015   # = app.js's gateThreshold-default ("Normaa
                                       # geen ander kanaal of uitlijning nodig. Dit is wat een
                                       # ver-weg-microfoon-lek in live al onderdrukt vóórdat
                                       # cross-kanaal-arbitrage (stage 2, hieronder) er ooit aan
-                                      # te pas komt -- ontbrak hier volledig totdat een test
-                                      # liet zien dat live wél onderdrukte en refresh niet.
-                                      # Server kent de per-kanaal geconfigureerde drempel niet
-                                      # (client-side instelling, nooit naar de server gestuurd);
-                                      # deze default is de beste beschikbare benadering.
+                                      # te pas komt.
+                                      # BELANGRIJK (2026-08-23, echte sessie liet dit zien):
+                                      # deze waarde is een live-UX/latency-drempel ("bespaar
+                                      # onnodige ASR-aanroepen tijdens streamen"), nooit
+                                      # gekalibreerd als "is dit wel/geen echte spraak"-drempel.
+                                      # Toegepast als vaste absolute drempel op een HELE, in
+                                      # één keer gedecodeerde batch-opname hakt hij doodgewone
+                                      # spraakdynamiek (pauzes, wegstervende medeklinkers) net
+                                      # zo goed weg als een echt lek -- die twee zijn met een
+                                      # vaste drempel niet te onderscheiden. Daarom wordt deze
+                                      # drempel nu pas toegepast NADAT is vastgesteld dat een
+                                      # kanaal structureel stil is (zie
+                                      # DEFAULT_OWN_GATE_ACTIVITY_PERCENTILE hieronder en
+                                      # _channel_has_active_content()) -- nooit meer blind op
+                                      # een kanaal met aantoonbaar actieve inhoud.
+DEFAULT_OWN_GATE_ACTIVITY_PERCENTILE = 90.0
+                                      # Kanaalniveau-vooraf-check: als het p90 van de eigen
+                                      # RMS-envelope al boven DEFAULT_SILENCE_FLOOR ligt, heeft
+                                      # dit kanaal aantoonbaar actieve inhoud (normale spraak
+                                      # heeft altijd aanzienlijke dynamiek tussen klinkers/
+                                      # medeklinkers) -- dan slaat OWNGATE (de per-frame
+                                      # DEFAULT_OWN_GATE_THRESHOLD hierboven) voor dit hele
+                                      # kanaal helemaal over. Een structureel stil/lekkend
+                                      # kanaal (het scenario dat OWNGATE moet vangen, zie
+                                      # tests/test_cross_channel_gate.py) heeft juist een vlakke,
+                                      # laag-blijvende envelope: p90 blijft dan onder de vloer,
+                                      # dus wordt nog steeds (frame-niveau) onderdrukt.
 DEFAULT_MIN_SUPPRESS_RUN_MS = 150.0  # niet-causale tegenhanger van CLOSE_HOLD_MS (100ms);
                                       # iets ruimer omdat offline smoothing minder risico op
                                       # valse positieven heeft dan een causale hold
@@ -102,6 +124,22 @@ def compute_rms_envelope(
     strided = windows[::hop_samples]
     envelope = np.sqrt(np.mean(strided.astype(np.float64) ** 2, axis=1))
     return envelope, hop_samples
+
+
+def _channel_has_active_content(
+    envelope: np.ndarray,
+    silence_floor: float = DEFAULT_SILENCE_FLOOR,
+    percentile: float = DEFAULT_OWN_GATE_ACTIVITY_PERCENTILE,
+) -> bool:
+    """Kanaalniveau-vooraf-check, zie DEFAULT_OWN_GATE_ACTIVITY_PERCENTILE hierboven:
+    is het p90 van de eigen envelope al boven de stilte-vloer, dan heeft dit kanaal
+    aantoonbaar actieve inhoud (spraak heeft altijd dynamiek), en mag de per-frame
+    OWNGATE-drempel (DEFAULT_OWN_GATE_THRESHOLD, gekalibreerd voor iets heel anders --
+    zie de comment daar) 'm niet aan flarden knippen. Een leeg envelope-array (lege
+    audio) telt als geen actieve inhoud -- fail-safe naar de bestaande OWNGATE-weg."""
+    if len(envelope) == 0:
+        return False
+    return float(np.percentile(envelope, percentile)) >= silence_floor
 
 
 def _expand_frames_to_samples(keep_frames: np.ndarray, hop_samples: int, total_len: int) -> np.ndarray:
@@ -465,8 +503,11 @@ def compute_cross_channel_gate_masks(
     Twee lagen, gecombineerd met AND (een sample blijft alleen open als BEIDE
     lagen 'm open laten) -- zelfde tweelaags-ontwerp als de live gate (app.js):
     1. **Eigen-kanaal-ruisdrempel** (compute_own_channel_gate_mask, stage 1):
-       altijd toegepast, per kanaal, geen uitlijning nodig. Vangt een zwak/
-       ver-weg-microfoon-lek dat gewoon te stil is om nuttig te zijn.
+       per kanaal, geen uitlijning nodig -- maar ALLEEN toegepast op een kanaal
+       dat kanaalniveau al structureel stil blijkt (zie _channel_has_active_content()
+       en DEFAULT_OWN_GATE_ACTIVITY_PERCENTILE hierboven): vangt een zwak/
+       ver-weg-microfoon-lek dat gewoon te stil is om nuttig te zijn, zonder
+       een kanaal met aantoonbaar actieve spraak aan flarden te knippen.
     2. **Cross-kanaal-arbitrage** (align_all_channels + arbitrate, stage 2):
        alleen bij 2+ kanalen EN een betrouwbare uitlijning (anders fail-safe:
        geen onderdrukking op deze laag i.p.v. het risico van misalignering en
@@ -477,8 +518,24 @@ def compute_cross_channel_gate_masks(
     """
     channel_ids = list(audio_by_channel.keys())
 
+    # Envelope per kanaal vooraf berekenen (hergebruikt hieronder zowel voor de
+    # kanaalniveau-activiteitscheck als -- bij 2+ kanalen -- voor stage 2, i.p.v.
+    # 'm twee keer te berekenen).
+    envelopes: Dict[str, np.ndarray] = {}
+    hop_samples = None
+    for ch, audio in audio_by_channel.items():
+        envelopes[ch], hop_samples = compute_rms_envelope(audio, sample_rate, window_ms, hop_ms)
+
     own_gate_masks: Dict[str, np.ndarray] = {}
     for ch, audio in audio_by_channel.items():
+        if _channel_has_active_content(envelopes[ch], silence_floor):
+            own_gate_masks[ch] = np.ones(len(audio), dtype=bool)
+            logger.info(
+                f"[REFRESH][XGATE][OWNGATE] session={session_id} channel={ch} "
+                f"aantoonbaar actieve inhoud (p{DEFAULT_OWN_GATE_ACTIVITY_PERCENTILE:.0f} "
+                f"envelope >= {silence_floor}) -- eigen-ruisdrempel overgeslagen"
+            )
+            continue
         own_gate_masks[ch] = compute_own_channel_gate_mask(
             audio, sample_rate, own_gate_threshold, window_ms, hop_ms,
             min_suppress_run_ms, bridge_gap_ms,
@@ -498,12 +555,6 @@ def compute_cross_channel_gate_masks(
             f"cross-channel arbitrage (stage 2) overgeslagen -- alleen eigen-ruisdrempel toegepast"
         )
         return own_gate_masks
-
-    envelopes: Dict[str, np.ndarray] = {}
-    hop_samples = None
-    for ch, audio in audio_by_channel.items():
-        env, hop_samples = compute_rms_envelope(audio, sample_rate, window_ms, hop_ms)
-        envelopes[ch] = env
 
     ref_channel, offsets, confidences = align_all_channels(
         envelopes, hop_samples, sample_rate, max_lag_s, min_align_confidence, session_id
