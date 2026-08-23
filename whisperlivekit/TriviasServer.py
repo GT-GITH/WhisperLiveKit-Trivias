@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 import time
 import uuid
@@ -369,11 +370,44 @@ def _extract_batch_snapshot(engine: Any) -> Dict[str, Any]:
 
     return result
 
+async def _cpu_diag_loop() -> None:
+    """[DIAG][CPU] tijdelijke diagnostiek (2026-08-23): gebruiker meldde een paar keer
+    flinke haperingen tijdens live, samenvallend met 100% CPU-load in de RunPod-
+    telemetrie -- maar de sessie-logs zelf lieten niets abnormaals zien (geen
+    LIVE_STALL, normale ~50ms-loopcadans). Proces-brede CPU-meting, elke 2s, om
+    achteraf te kunnen correleren met andere logregels op hetzelfde tijdstip. Proces-
+    breed (niet per sessie/kanaal) i.p.v. in AudioProcessor, anders start elke actieve
+    sessie zijn eigen sampler en meten we dubbel/verkeerd."""
+    last_wall = time.monotonic()
+    last_cpu = time.process_time()
+    while True:
+        await asyncio.sleep(2.0)
+        now_wall = time.monotonic()
+        now_cpu = time.process_time()
+        wall_delta = now_wall - last_wall
+        cpu_delta = now_cpu - last_cpu
+        last_wall, last_cpu = now_wall, now_cpu
+        if wall_delta <= 0:
+            continue
+        # 100% = dit proces gebruikt gemiddeld 1 volledige core; kan >100% zijn
+        # bij meerdere gelijktijdig actieve threads (bv. to_thread-decodes).
+        cpu_pct = (cpu_delta / wall_delta) * 100.0
+        try:
+            load1, load5, _ = os.getloadavg()
+        except (OSError, AttributeError):
+            load1 = load5 = -1.0
+        logger.info(
+            f"[DIAG][CPU] process_cpu_pct={cpu_pct:.1f} system_load1={load1:.2f} "
+            f"system_load5={load5:.2f} ncpu={os.cpu_count()}"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _log_kv_block("TRIVIAS SERVER STARTUP PARAMETERS (RAW ARGS)", vars(args))
 
     global transcription_engine, llm_backend, nllb_backend
+    cpu_diag_task = asyncio.create_task(_cpu_diag_loop())
     logger.info("Initialising TranscriptionEngine for TriviasServer...")
     transcription_engine = TranscriptionEngine(**vars(args))
     logger.info("TranscriptionEngine ready.")
@@ -417,6 +451,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("Shutting down TriviasServer lifespan...")
+        cpu_diag_task.cancel()
+        try:
+            await cpu_diag_task
+        except asyncio.CancelledError:
+            pass
         logger.info("Lifespan cleanup done.")
         
 app = FastAPI(lifespan=lifespan)

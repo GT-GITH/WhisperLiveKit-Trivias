@@ -1191,12 +1191,24 @@ class AudioProcessor:
                     await asyncio.sleep(1)
                     continue
 
+                # [DIAG][CPU] onderzoek (2026-08-23): dit is de enige onvoorwaardelijk-elke-
+                # ~50ms aangeroepen, potentieel dure Python-berekening (get_lines() heeft een
+                # O(regels x suppressed_ranges) snoei-lus) -- tijd 'm expliciet zodat een
+                # eventuele CPU-piek (zie [DIAG][CPU] in TriviasServer.py) hierop terug te
+                # voeren is of juist niet.
+                _diag_get_lines_t0 = time()
                 self.tokens_alignment.update()
                 lines, buffer_diarization_text, buffer_translation_text = self.tokens_alignment.get_lines(
                     diarization=self.args.diarization,
                     translation=bool(self.translation),
                     current_silence=self.current_silence
                 )
+                _diag_get_lines_dur = time() - _diag_get_lines_t0
+                if _diag_get_lines_dur >= 0.02:
+                    logger.warning(
+                        f"[DIAG][CPU] channel={self.channel_id} get_lines_duration="
+                        f"{_diag_get_lines_dur:.3f}s n_lines={len(lines)}"
+                    )
                 state = await self.get_current_state()
 
                 buffer_transcription_text = state.buffer_transcription.text if state.buffer_transcription else ''
