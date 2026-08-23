@@ -1407,6 +1407,43 @@ select:focus-visible,
   color: var(--text-soft);
 }
 
+/* Groepeert de Open→/"Nog niet te openen"-aanduiding met de verwijderknop --
+   twee losse klikdoelen naast elkaar (zie createSessionItemEl(), stopPropagation
+   op de verwijderknop voorkomt dat diezelfde klik ook de kaart "opent"). */
+.session-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Neutraal in rust (--text-soft), pas rood (--danger) bij hover -- een
+   permanent rood prullenbakje op elke kaart zou de hele lijst onnodig
+   alarmerend laten ogen voor een actie die je zelden gebruikt. */
+.session-item-delete {
+  appearance: none;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.session-item-delete:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.session-item-delete .icon {
+  width: 15px;
+  height: 15px;
+}
+
 /* Puur visuele affordance ("dit is klikbaar") -- de hele kaart is al het
    klikdoel (zie createSessionItemEl() in app.js), dus dit vangt zelf geen
    eigen klikken op. */

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 import uuid
 import json
@@ -218,6 +219,14 @@ class SessionManager:
 
     def all(self) -> Dict[str, Dict[str, Any]]:
         return self._sessions
+
+    def forget(self, session_id: str) -> None:
+        """Gooit de in-memory metadata voor deze sessie weg (het bestand op
+        schijf is de aanroeper's verantwoordelijkheid, zie delete_session()).
+        Voorkomt dat een cache-hit binnen dezelfde procesduur een net
+        verwijderde sessie nog laat herleven -- geen _persist() nodig, het
+        meta.json-bestand zelf is al verwijderd door de aanroeper."""
+        self._sessions.pop(session_id, None)
 
 
 session_manager = SessionManager()
@@ -649,6 +658,55 @@ async def list_sessions_from_disk():
         entry["gehoorverslag_generated_at"] = meta.get("gehoorverslag_generated_at")
 
     return JSONResponse({"sessions": list(sessions.values())})
+
+
+_SESSION_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Verwijdert een sessie permanent: alle WAV/JSON-bestanden per kanaal en
+    de meta.json. Definitief, geen prullenbak -- gebruiker kiest hier bewust
+    voor via de bevestiging in de UI (createSessionItemEl() in app.js), vooral
+    bedoeld om test-/per-ongeluk-sessies (zie has_transcript=False, "Nog niet
+    te openen") op te kunnen ruimen.
+
+    Regex-validatie op session_id (i.t.t. de bestaande read-only endpoints,
+    die dit nooit nodig hadden) omdat dit de eerste destructieve
+    bestandsactie op een sessie-id is -- voorkomt dat een vreemde waarde als
+    wildcard in glob() breder matcht dan bedoeld."""
+    if not _SESSION_ID_RE.match(session_id):
+        return JSONResponse({"error": "invalid session_id"}, status_code=400)
+
+    recordings_dir = Path("recordings")
+    matches = list(recordings_dir.glob(f"session_{session_id}_*"))
+    meta_path = recordings_dir / f"session_{session_id}.meta.json"
+    if meta_path.exists():
+        matches.append(meta_path)
+
+    if not matches:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+
+    deleted: list[str] = []
+    errors: list[str] = []
+    for path in matches:
+        try:
+            path.unlink()
+            deleted.append(path.name)
+        except Exception as e:
+            errors.append(f"{path.name}: {e}")
+
+    session_manager.forget(session_id)
+    for key in [k for k in _wav_registry if k.startswith(f"{session_id}:")]:
+        _wav_registry.pop(key, None)
+
+    logger.info(
+        f"[DELETE] session={session_id} verwijderd: {len(deleted)} bestand(en)"
+        + (f", fouten: {errors}" if errors else "")
+    )
+    if errors and not deleted:
+        return JSONResponse({"error": "verwijderen mislukt", "details": errors}, status_code=500)
+    return JSONResponse({"deleted": deleted, "errors": errors})
 
 
 def _wav_duration_ms(wav_path: Path) -> Optional[int]:

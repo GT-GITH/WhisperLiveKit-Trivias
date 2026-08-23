@@ -1764,6 +1764,12 @@ function createSessionItemEl(s) {
   // zaaknummer" blijft alleen als bescheiden aanduiding staan, niet meer
   // naast de titel maar bij de overige sessiedetails.
   const hasCase = !!s.case_ref;
+  // Ongeëscapete versie van dezelfde tekst, alleen voor de confirm()-dialoog
+  // hieronder -- confirm() toont platte tekst, geëscapete entities (&amp; e.d.)
+  // zouden daar letterlijk fout tonen.
+  const plainLabel = hasCase
+    ? `Zaak ${s.case_ref}`
+    : `Gesprek · ${formatDutchDateTimeShort(s.created_at) || "onbekende datum"}`;
   const title = hasCase
     ? `Zaak ${escapeHtml(s.case_ref)}`
     : `Gesprek · ${escapeHtml(formatDutchDateTimeShort(s.created_at) || "onbekende datum")}`;
@@ -1816,7 +1822,12 @@ function createSessionItemEl(s) {
   item.innerHTML = `
     <div class="session-item-main">
       <span class="session-item-title">${title}</span>
-      ${rightSlot}
+      <span class="session-item-actions">
+        ${rightSlot}
+        <button class="session-item-delete" type="button" title="Sessie verwijderen">
+          <svg class="icon"><use href="#icon-trash"></use></svg>
+        </button>
+      </span>
     </div>
     <div class="session-item-detail">${detailLine}</div>
     <div class="session-item-meta-line">${metaLine}</div>
@@ -1829,7 +1840,44 @@ function createSessionItemEl(s) {
       loadSessionTranscript(s.session_id);
     });
   }
+
+  // Los klikdoel van de kaart zelf (stopPropagation, anders opent dezelfde
+  // klik ook nog de sessie via de listener hierboven) -- staat op ELKE kaart,
+  // ook (juist) de niet-openbare "Nog niet te openen"-kaarten, want dat is
+  // precies de rommel die hiermee opgeruimd moet kunnen worden.
+  const deleteBtn = item.querySelector(".session-item-delete");
+  if (deleteBtn) {
+    deleteBtn.addEventListener("click", e => {
+      e.stopPropagation();
+      deleteSession(s.session_id, plainLabel);
+    });
+  }
+
   return item;
+}
+
+// Definitief, geen prullenbak -- gebruiker koos hier expliciet voor (zie
+// plan). Ververst na afloop het hele Werkoverzicht + Sessies-lijst in één
+// keer via loadLandingData() (beide hergebruiken dezelfde cache/render-
+// functies), i.p.v. zelf de DOM-node weg te plukken.
+async function deleteSession(sessionId, label) {
+  const ok = confirm(
+    `Sessie "${label}" definitief verwijderen?\n\n` +
+    "Alle audio en transcriptie van deze sessie worden permanent van de " +
+    "server gewist. Dit kan niet ongedaan gemaakt worden.\n\nWeet je het zeker?"
+  );
+  if (!ok) return;
+  try {
+    const resp = await fetch(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert("Verwijderen mislukt: " + (data.error || resp.statusText));
+      return;
+    }
+    await loadLandingData();
+  } catch (e) {
+    alert("Verwijderen mislukt: " + e.message);
+  }
 }
 
 function showLandingPage() {
