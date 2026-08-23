@@ -202,6 +202,26 @@
             <button id="gehoorverslagButton" class="refresh-button hidden"><svg class="icon"><use href="#icon-document"></use></svg> Genereer gehoorverslag</button>
             <span id="recordingTimer" class="timer">00:00</span>
           </div>
+          <!-- Klik-op-regel-om-terug-te-luisteren tijdens LIVE opnemen -- los van
+               #playbackTimeline hieronder, die is gebonden aan een geladen
+               opgeslagen sessie (vaste duur/kanalen) en bestaat niet voor een nog
+               lopende opname. Zelfde visuele stijl (.playback-transport-*) voor
+               een consistente uitstraling, eigen kleine speler-state in app.js
+               (playLiveSegmentAt()) -- raakt geen WebSocket-/LIVE-FINAL-logica. -->
+          <div id="liveClipPlayer" class="live-clip-player hidden">
+            <button id="liveClipPlayPause" class="playback-transport-btn" type="button" title="Afspelen/pauzeren">
+              <svg class="icon"><use href="#icon-play"></use></svg>
+            </button>
+            <span id="liveClipLabel" class="live-clip-label"></span>
+            <span id="liveClipTimeLabel" class="playback-time-label">00:00 / 00:00</span>
+            <input id="liveClipScrubber" class="playback-scrubber" type="range" min="0" max="1000" value="0" step="100">
+            <svg class="icon playback-volume-icon"><use href="#icon-volume"></use></svg>
+            <input id="liveClipVolume" class="playback-volume" type="range" min="0" max="1" value="1" step="0.05">
+            <button id="liveClipClose" class="live-clip-close" type="button" title="Sluiten">
+              <svg class="icon"><use href="#icon-close"></use></svg>
+            </button>
+            <audio id="liveClipAudioPlayer"></audio>
+          </div>
           <div id="playbackChannelFilter" class="channel-filter hidden"></div>
           <div id="playbackTimeline" class="playback-timeline hidden">
             <div id="playbackTimelineLanes" class="playback-timeline-lanes">

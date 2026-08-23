@@ -960,8 +960,11 @@ select:focus-visible,
   flex-shrink: 0;
 }
 .doc-view .seg-text {
-  color: var(--text);
-  font-weight: 400;
+  /* Geen eigen color/font-weight hier -- .doc-view geldt nu ook tijdens live
+     opnemen, en een vaste donkere kleur zou de gedempte .seg-live-tint
+     (voorlopige tekst) overschrijven. Erft dus gewoon over van de bestaande
+     .seg-live/.seg-final/.seg-batch-klasse op de buitenste .seg, die het
+     LIVE/FINAL-onderscheid al correct regelt. */
 }
 .doc-view .seg-actions {
   grid-column: 4;
@@ -1975,6 +1978,53 @@ select:focus-visible,
   align-items: center;
   gap: 10px;
   margin-top: 8px;
+}
+
+/* Zelfde look als .playback-transport (playback-tijdlijn) -- eigen klasse
+   omdat dit los van #playbackTimeline staat (zie index.html), niet omdat de
+   stijl anders moet ogen. */
+.live-clip-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-xl);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+}
+.live-clip-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-clip-close {
+  appearance: none;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--text-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+}
+.live-clip-close:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.live-clip-close .icon {
+  width: 13px;
+  height: 13px;
 }
 
 .playback-transport-btn {

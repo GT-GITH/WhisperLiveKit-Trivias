@@ -1015,6 +1015,7 @@ async function startRecording() {
   isPlaybackMode = false;
   hidePlaybackChannelFilter();
   hidePlaybackTimeline();
+  hideLiveClipPlayer();
   updateRefreshPlaybackButtonUI();
   currentSessionId = crypto.randomUUID();
   console.log("[DIAG][START_RECORDING] nieuwe sessie", currentSessionId);
@@ -1176,6 +1177,7 @@ async function resumeRecording() {
   isPlaybackMode = false;
   hidePlaybackChannelFilter();
   hidePlaybackTimeline();
+  hideLiveClipPlayer();
   updateRefreshPlaybackButtonUI();
   await resumeAllConnections();
   updateLiveVsPlaybackUI();
@@ -1405,12 +1407,15 @@ function formatMs(ms) {
 function renderTranscript(lines, bufferTranscription, bufferTranslation, status) {
   if (!liveTranscriptDiv) return;
 
-  // Dossierweergave (vaste kolommen, gedempte iconen, ...) alleen tijdens
-  // terugluisteren -- alle bijbehorende CSS is geschoold onder .doc-view, dus
-  // deze toggle is de enige plek die bepaalt of het live-scherm meeverandert
-  // (dat mag het niet: zie CLAUDE.md "live vs. batch" en de expliciete scope
-  // van deze ronde, alleen het terugluister-scherm).
-  liveTranscriptDiv.classList.toggle("doc-view", isPlaybackMode);
+  // Dossierweergave (vaste kolommen, gedempte iconen, ...) geldt nu voor
+  // zowel live als terugluisteren -- was eerst uitsluitend playback-only
+  // (scope van de vorige ronde), maar gaf daardoor twee verschillende
+  // presentaties op hetzelfde scherm. Alle bijbehorende CSS staat nog steeds
+  // onder .doc-view; deze klasse blijft dus altijd aan i.p.v. voorwaardelijk.
+  // Het LIVE/FINAL-onderscheid (kleur/gewicht) komt nog steeds volledig uit
+  // .seg-live/.seg-final/.seg-batch, ongewijzigd -- .doc-view regelt alleen
+  // de kolomindeling eromheen, niet welke staat een regel heeft.
+  liveTranscriptDiv.classList.add("doc-view");
 
   const scrollParent = liveTranscriptDiv;
   const isAtBottom = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 80;
@@ -1856,6 +1861,8 @@ async function loadSessionTranscript(sessionId) {
     if (!resp.ok) { alert("Transcript niet gevonden."); return; }
     const data = await resp.json();
 
+    hideLiveClipPlayer(); // eventueel nog open van vóór het laden van deze sessie
+
     currentSessionId   = data.session_id;
     isPlaybackMode     = true;
     playbackChannels   = data.channels || [];
@@ -2225,6 +2232,98 @@ function renderPlaybackFiltered() {
   if (liveTranscriptDiv) renderTranscript(renderLines, "", "", "active_transcription");
 }
 
+// === Klik op segment tijdens LIVE opnemen → losse clip terugluisteren ===
+// Los van #playbackTimeline (die hoort bij een geladen opgeslagen sessie met
+// vaste duur/kanalen, bestaat niet tijdens een nog lopende opname) -- eigen
+// kleine speler-state, zelfde visuele stijl. Raakt geen WebSocket-/
+// LIVE-FINAL-/auto-scroll-/multi-kanaal-logica: puur het afspelen van een
+// al-opgenomen fragment via de bestaande /audio-slice-endpoint (zelfde
+// endpoint als hierboven, nu alleen met een nette balk i.p.v. een losse
+// zwevende <audio controls>-popup).
+let liveClipHighlightedSeg = null;
+
+function hideLiveClipPlayer() {
+  const bar = document.getElementById("liveClipPlayer");
+  const player = document.getElementById("liveClipAudioPlayer");
+  if (player) player.pause();
+  if (bar) bar.classList.add("hidden");
+  if (liveClipHighlightedSeg) {
+    liveClipHighlightedSeg.classList.remove("seg-now-playing");
+    liveClipHighlightedSeg = null;
+  }
+}
+
+function playLiveSegmentAt(session, channel, startMs, endMs, seg) {
+  const bar        = document.getElementById("liveClipPlayer");
+  const player      = document.getElementById("liveClipAudioPlayer");
+  const playPauseBtn = document.getElementById("liveClipPlayPause");
+  const labelEl     = document.getElementById("liveClipLabel");
+  const timeLabelEl = document.getElementById("liveClipTimeLabel");
+  const scrubber    = document.getElementById("liveClipScrubber");
+  const volumeInput = document.getElementById("liveClipVolume");
+  const closeBtn    = document.getElementById("liveClipClose");
+  if (!bar || !player) return;
+
+  if (liveClipHighlightedSeg && liveClipHighlightedSeg !== seg) {
+    liveClipHighlightedSeg.classList.remove("seg-now-playing");
+  }
+  liveClipHighlightedSeg = seg || null;
+  if (seg) seg.classList.add("seg-now-playing");
+
+  if (labelEl) {
+    const roleId = channelIdToRoleId(channel);
+    labelEl.textContent = `${getRoleLabel(roleId)} · ${formatMs(startMs)}`;
+  }
+  bar.classList.remove("hidden");
+  player.src = `/audio/${encodeURIComponent(session)}/${encodeURIComponent(channel)}?start_ms=${startMs}&end_ms=${endMs}`;
+  player.play().catch(() => {});
+
+  if (player.dataset.wired === "1") return;
+  player.dataset.wired = "1";
+
+  // De /audio-slice-endpoint levert exact het gevraagde fragment (start_ms..end_ms)
+  // als eigen WAV -- player.currentTime/duration zijn dus al clip-relatief, geen
+  // eigen offset-berekening nodig (i.t.t. de open-eindige playback-tijdlijn-slice).
+  let scrubbing = false;
+  player.addEventListener("loadedmetadata", () => {
+    if (Number.isFinite(player.duration)) scrubber.max = String(Math.round(player.duration * 1000));
+  });
+  player.addEventListener("timeupdate", () => {
+    if (scrubbing) return;
+    const posMs = Math.round(player.currentTime * 1000);
+    const durMs = Number.isFinite(player.duration) ? Math.round(player.duration * 1000) : posMs;
+    if (timeLabelEl) timeLabelEl.textContent = `${formatMs(posMs)} / ${formatMs(durMs)}`;
+    if (scrubber) scrubber.value = String(posMs);
+  });
+  player.addEventListener("play",  () => { playPauseBtn.innerHTML = '<svg class="icon"><use href="#icon-pause"></use></svg>'; });
+  player.addEventListener("pause", () => { playPauseBtn.innerHTML = '<svg class="icon"><use href="#icon-play"></use></svg>'; });
+  player.addEventListener("ended", () => { playPauseBtn.innerHTML = '<svg class="icon"><use href="#icon-play"></use></svg>'; });
+
+  if (playPauseBtn) {
+    playPauseBtn.addEventListener("click", () => {
+      if (player.paused) player.play().catch(() => {});
+      else player.pause();
+    });
+  }
+  if (scrubber) {
+    scrubber.addEventListener("input", () => {
+      scrubbing = true;
+      if (timeLabelEl) {
+        const durMs = Number.isFinite(player.duration) ? Math.round(player.duration * 1000) : Number(scrubber.value);
+        timeLabelEl.textContent = `${formatMs(Number(scrubber.value))} / ${formatMs(durMs)}`;
+      }
+    });
+    scrubber.addEventListener("change", () => {
+      player.currentTime = Number(scrubber.value) / 1000;
+      scrubbing = false;
+    });
+  }
+  if (volumeInput) {
+    volumeInput.addEventListener("input", () => { player.volume = Number(volumeInput.value); });
+  }
+  if (closeBtn) closeBtn.addEventListener("click", hideLiveClipPlayer);
+}
+
 // === Klik op segment → terugluisteren ===
 
 if (liveTranscriptDiv) {
@@ -2253,15 +2352,9 @@ if (liveTranscriptDiv) {
       return;
     }
 
-    const prev = document.getElementById("trivias-audio-player");
-    if (prev) prev.remove();
-    const audio = document.createElement("audio");
-    audio.id = "trivias-audio-player";
-    audio.controls = true;
-    audio.autoplay = true;
-    audio.src = `/audio/${encodeURIComponent(session)}/${encodeURIComponent(channel)}?start_ms=${startMs}&end_ms=${endMs}`;
-    audio.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:9999;background:#1e293b;border-radius:8px;";
-    document.body.appendChild(audio);
+    // Buiten playback-mode (live opnemen, of een net-gestopte sessie die nog
+    // niet als opgeslagen sessie geladen is): losse clip-speler, zie hierboven.
+    playLiveSegmentAt(session, channel, startMs, endMs, seg);
   });
 }
 
@@ -2337,16 +2430,15 @@ function insertTranslationLine(seg, translation, errorMessage) {
   const existing = seg.querySelector(".seg-translation, .seg-translation-error");
   if (existing) existing.remove();
 
-  // Terugluisteren krijgt een neutrale "Vertaling"-aanduiding i.p.v. het
-  // gekleurde globe-icoon + cursief -- zodat het leest als een rustige
-  // vervolgregel van dezelfde spreker, niet als een nieuwe/opvallende
-  // gebeurtenis. Het live-scherm behoudt de bestaande opmaak ongewijzigd.
+  // Neutrale "Vertaling"-aanduiding i.p.v. het gekleurde globe-icoon +
+  // cursief -- zodat het leest als een rustige vervolgregel van dezelfde
+  // spreker, niet als een nieuwe/opvallende gebeurtenis. Nu overal zo (was
+  // eerst playback-only, zie .doc-view hierboven -- zelfde reden om dit nu
+  // ook op live door te trekken).
   const line = document.createElement("div");
   if (translation) {
-    line.className = isPlaybackMode ? "seg-translation doc-translation" : "seg-translation";
-    line.innerHTML = isPlaybackMode
-      ? `<span class="doc-translation-tag">Vertaling</span>${escapeHtml(translation)}`
-      : `<svg class="icon"><use href="#icon-globe"></use></svg> ${escapeHtml(translation)}`;
+    line.className = "seg-translation doc-translation";
+    line.innerHTML = `<span class="doc-translation-tag">Vertaling</span>${escapeHtml(translation)}`;
   } else {
     line.className = "seg-translation-error";
     line.innerHTML = `<svg class="icon"><use href="#icon-warning"></use></svg> ${escapeHtml(errorMessage || "Vertalen mislukt")}`;
@@ -2417,6 +2509,7 @@ function startNewSessionFlow() {
   isPlaybackMode = false;
   hidePlaybackChannelFilter();
   hidePlaybackTimeline();
+  hideLiveClipPlayer();
   updateRefreshPlaybackButtonUI();
   updateLiveVsPlaybackUI();
   if (liveTranscriptDiv) {
