@@ -509,8 +509,21 @@ class AlignAtt:
                 f"(max plausibel ~{_diag_max_plausible_frames} frames), "
                 f"cumulative_time_offset={self.state.cumulative_time_offset:.2f}s"
             )
-        # print('Encoder duration:', end_encode-beg_encode)
-                
+        # [DIAG][LIVE_PERF] (2026-08-23) onderzoek naar groeiende live-lag: puur
+        # observerend, geen gedragswijziging. Meet per infer()-aanroep de
+        # encoder-duur apart van de (hieronder gemeten) decode-lus-duur, plus de
+        # actuele omvang van state.tokens/state.segments -- om te zien of de
+        # vertraging meegroeit met het aantal tokens (decoder-context, zie
+        # _current_tokens()) of met de audiobufferduur (encoder-input), of geen
+        # van beide (dan is de oorzaak elders, bv. GPU-contentie met de
+        # batch-worker).
+        _diag_total_tokens = sum(t.shape[1] for t in self.state.tokens)
+        logger.info(
+            f"[DIAG][LIVE_PERF] encoder_duration={end_encode - beg_encode:.3f}s "
+            f"segments_len={_diag_segments_len_s:.2f}s state_tokens_items={len(self.state.tokens)} "
+            f"state_tokens_total={_diag_total_tokens}"
+        )
+
         if self.cfg.language == "auto" and self.state.detected_language is None and self.state.first_timestamp:
             seconds_since_start = self.segments_len() - self.state.first_timestamp
             if seconds_since_start >= 2.0:
@@ -547,7 +560,8 @@ class AlignAtt:
         audio_duration_s = self.segments_len()
         max_tokens_per_chunk = max(50, int(audio_duration_s * TOKENS_PER_SECOND * 2.0))  # 2x margin, min 50
         tokens_produced_this_chunk = 0
-        
+        _diag_decode_loop_start = time()  # [DIAG][LIVE_PERF], zie loggingregel na de lus
+
         while not completed and current_tokens.shape[1] < self.max_text_len:  # bos is 3 tokens
             tokens_produced_this_chunk += 1
             
@@ -694,6 +708,16 @@ class AlignAtt:
                     current_tokens[i, -1].item(),
                     self.tokenizer.decode([current_tokens[i, -1].item()])
                 ))
+
+        # [DIAG][LIVE_PERF] (2026-08-23) zie de encoder-logregel hierboven -- dit is
+        # de tegenhanger voor het token-decode-gedeelte, apart gemeten zodat een
+        # groeiende looptijd hier (i.t.t. de encoder-duur) op een groeiende
+        # decoder-context (state.tokens) i.p.v. een groeiende audiobuffer wijst.
+        logger.info(
+            f"[DIAG][LIVE_PERF] decode_loop_duration={time() - _diag_decode_loop_start:.3f}s "
+            f"tokens_produced_this_chunk={tokens_produced_this_chunk} "
+            f"current_tokens_len={current_tokens.shape[1]}"
+        )
 
         tokens_to_split = current_tokens[0, token_len_before_decoding:]
 

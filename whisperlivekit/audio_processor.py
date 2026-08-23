@@ -873,6 +873,7 @@ class AudioProcessor:
                     self.transcription.insert_audio_chunk(pcm_array, stream_time_end_of_current_pcm)
 
                     self._decode_in_progress = True
+                    _diag_process_iter_start = time()  # [DIAG][LIVE_PERF], zie live-lag-onderzoek
                     try:
                         new_tokens, current_audio_processed_upto = await asyncio.wait_for(
                             asyncio.to_thread(self.transcription.process_iter),
@@ -885,6 +886,14 @@ class AudioProcessor:
                         current_audio_processed_upto = self.state.end_buffer
                     finally:
                         self._decode_in_progress = False
+                        # Puur observerend (2026-08-23, onderzoek groeiende live-lag) --
+                        # rechtstreeks te correleren met de al bestaande lag-regel
+                        # hierboven (transcription_lag_s) om te zien of de lag-groei
+                        # samenvalt met een groeiende process_iter-duur.
+                        logger.info(
+                            f"[DIAG][LIVE_PERF] process_iter_duration={time() - _diag_process_iter_start:.3f}s "
+                            f"lag={transcription_lag_s:.2f}s"
+                        )
 
                     new_tokens = new_tokens or []
 
