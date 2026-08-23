@@ -385,12 +385,27 @@ startlive() {
   # veroorzaakt, maar gewoon weer aanhaakt bij de al-draaiende server.
   PID_FILE="$WORKSPACE/trivias.pid"
   LOG_FILE="$WORKSPACE/trivias.log"
-  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    log "TriviasServer draait al (PID $(cat "$PID_FILE")) -- niet opnieuw gestart. Logs volgen ($LOG_FILE):"
-    exec tail -f "$LOG_FILE"
-  fi
-
+  COMMIT_FILE="$WORKSPACE/trivias.commit"
   cd "$APP_DIR"
+  current_commit="$(git rev-parse HEAD 2>/dev/null || echo "")"
+  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    running_commit="$(cat "$COMMIT_FILE" 2>/dev/null || echo "")"
+    if [[ -n "$current_commit" && "$running_commit" == "$current_commit" ]]; then
+      log "TriviasServer draait al (PID $(cat "$PID_FILE"), zelfde code) -- niet opnieuw gestart. Logs volgen ($LOG_FILE):"
+      exec tail -f "$LOG_FILE"
+    fi
+    # Draait nog, maar met oudere code dan wat nu op schijf staat (bv. na een
+    # git pull) -- zonder deze check zou "--start" stilzwijgend blijven
+    # aanhaken bij een server die de nieuwste wijzigingen nooit geladen heeft.
+    old_pid="$(cat "$PID_FILE")"
+    log "TriviasServer draait (PID $old_pid) met oudere code (${running_commit:-onbekend} i.p.v. $current_commit) -- herstart..."
+    kill "$old_pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      kill -0 "$old_pid" 2>/dev/null || break
+      sleep 0.5
+    done
+    kill -0 "$old_pid" 2>/dev/null && kill -9 "$old_pid" 2>/dev/null || true
+  fi
   # shellcheck disable=SC1091
   # Venv nu al actief (i.p.v. pas vlak voor exec) -- download_nllb_model()
   # hieronder heeft de venv's python (met huggingface_hub) nodig, anders
@@ -438,8 +453,9 @@ startlive() {
     "${NLLB_ARGS[@]}" \
     > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
+  echo "$current_commit" > "$COMMIT_FILE"
   disown
-  log "TriviasServer gestart op de achtergrond (PID $(cat "$PID_FILE"), log: $LOG_FILE) -- blijft nu draaien ook als deze terminal wegvalt. Logs volgen:"
+  log "TriviasServer gestart op de achtergrond (PID $(cat "$PID_FILE"), commit ${current_commit:0:12}, log: $LOG_FILE) -- blijft nu draaien ook als deze terminal wegvalt. Logs volgen:"
   exec tail -f "$LOG_FILE"
 }
 
