@@ -208,6 +208,7 @@ class SegmentUpdate:
     state: Optional[str] = None
     start_ms: Optional[int] = None
     end_ms: Optional[int] = None
+    is_final: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -218,6 +219,7 @@ class SegmentUpdate:
             "state": self.state,
             "start_ms": self.start_ms,
             "end_ms": self.end_ms,
+            "is_final": self.is_final,
         }
 
 @dataclass

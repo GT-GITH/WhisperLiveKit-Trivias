@@ -1565,6 +1565,7 @@ class AudioProcessor:
                                 end_ms=end_ms,
                                 text_batch=None,
                                 text_final=live_text,
+                                is_final=(reason == "end_of_stream"),
                             )
                             await self.emit_segment_update(upd)
                         except Exception as emit_err:
@@ -1732,6 +1733,7 @@ class AudioProcessor:
                                 end_ms=sent_end_ms,
                                 text_batch=sent["text"],
                                 text_final=sent["text"],
+                                is_final=(reason == "end_of_stream"),
                             )
                             await self.emit_segment_update(upd)
                     else:
@@ -1742,7 +1744,8 @@ class AudioProcessor:
                             start_ms=start_ms,
                             end_ms=real_window_end_ms,
                             text_batch=(batch_txt if (use_batch_as_final and batch_txt) else None),
-                            text_final=final_txt
+                            text_final=final_txt,
+                            is_final=(reason == "end_of_stream"),
                         )
                         await self.emit_segment_update(upd)
                 except Exception as emit_err:
@@ -1777,10 +1780,18 @@ class AudioProcessor:
         # 2) Geef event loop 1 tick om sentinel te verwerken
         await asyncio.sleep(0)
 
-        # 3) Cancel alleen als fallback (geef worker kans om SENTINEL te consumeren)
+        # 3) Cancel alleen als fallback (geef worker kans om SENTINEL te consumeren).
+        # 10s i.p.v. de eerdere 0.25s: sinds batch_asr.transcribe()/de WAV-lees via
+        # asyncio.to_thread lopen (niet meer synchroon op de event loop), duurt een
+        # regulier venster gemeten 2.4-5.8s ([DIAG][BATCH_PERF] transcribe_duration).
+        # Bij 0.25s werd de allerlaatste batch-taak na Stop (_flush_final_batch_tail,
+        # reason="end_of_stream") daardoor zo goed als altijd halverwege geannuleerd,
+        # vóór apply_batch_group() de batch-bevestigde slotzin kon toepassen -- de
+        # Stop-knop zelf wordt hier niet trager van, de frontend wacht al niet op
+        # cleanup() (zie stopRecording() in app.js).
         if self._batch_worker_task and not self._batch_worker_task.done():
             try:
-                await asyncio.wait_for(self._batch_worker_task, timeout=0.25)
+                await asyncio.wait_for(self._batch_worker_task, timeout=10.0)
             except Exception:
                 self._batch_worker_task.cancel()
 

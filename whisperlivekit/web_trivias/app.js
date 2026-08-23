@@ -512,6 +512,7 @@ if (liveTranscriptDiv) liveTranscriptDiv.style.whiteSpace = "pre-wrap";
 const connectionStatusSpan = document.getElementById("connectionStatus");
 const modeStatusSpan       = document.getElementById("modeStatus");
 const asrStatusSpan        = document.getElementById("asrStatus");
+const asrStatusSpinner     = document.getElementById("asrStatusSpinner");
 const connectionStatusDot  = document.getElementById("connectionStatusDot");
 const modeStatusDot        = document.getElementById("modeStatusDot");
 const asrStatusDot         = document.getElementById("asrStatusDot");
@@ -563,6 +564,40 @@ function setAsrStatus(text) {
   else if (t.includes("gepauzeerd") || t.includes("ververst")) dot = "recording";
   else if (t.includes("gestopt") || t.includes("mislukt") || t.includes("geen audio") || t.includes("verbroken") || t.includes("fout")) dot = "disconnected";
   setStatusDot(asrStatusDot, dot);
+}
+
+// === Stop: wachten op de laatste batch-zin ===
+// Server past de allerlaatste, batch-bevestigde zin na Stop asynchroon toe
+// (_flush_final_batch_tail, kan een paar seconden duren -- zie audio_processor.py
+// cleanup()). pendingFinalTailChannels houdt bij welke kanalen nog een
+// is_final-segment_update moeten sturen; finalTailTimeoutId is een fallback zodat
+// de spinner nooit blijft hangen als er (bv. omdat er niets te flushen was) nooit
+// zo'n update binnenkomt.
+let pendingFinalTailChannels = new Set();
+let finalTailTimeoutId = null;
+
+function showFinalizingSpinner() {
+  if (asrStatusSpinner) {
+    asrStatusSpinner.classList.remove("hidden");
+    asrStatusSpinner.classList.add("spinning");
+  }
+}
+
+function hideFinalizingSpinner() {
+  if (asrStatusSpinner) {
+    asrStatusSpinner.classList.add("hidden");
+    asrStatusSpinner.classList.remove("spinning");
+  }
+}
+
+function resolveFinalTailChannel(channelId) {
+  if (!pendingFinalTailChannels.has(channelId)) return;
+  pendingFinalTailChannels.delete(channelId);
+  if (pendingFinalTailChannels.size === 0) {
+    if (finalTailTimeoutId) { clearTimeout(finalTailTimeoutId); finalTailTimeoutId = null; }
+    hideFinalizingSpinner();
+    setAsrStatus("Klaar");
+  }
 }
 
 function updateRecordButtonUI() {
@@ -1000,6 +1035,12 @@ async function startRecording() {
     return;
   }
 
+  // Restant van een vorige Stop (spinner/pending-set) mag een nieuwe opname niet
+  // beïnvloeden.
+  if (finalTailTimeoutId) { clearTimeout(finalTailTimeoutId); finalTailTimeoutId = null; }
+  pendingFinalTailChannels.clear();
+  hideFinalizingSpinner();
+
   // [DIAG] "verdwenen helft opname"-onderzoek (2026-07-19): als hier nog
   // achtergebleven verbindingen van een vorige sessie openstaan, betekent dat een
   // nieuwe sessie start bovenop een oude i.p.v. schoon te beginnen -- precies het
@@ -1065,6 +1106,22 @@ async function stopRecording() {
   updateLiveVsPlaybackUI();
   stopChannelMeterLoop();
   setAsrStatus("Opname gestopt. Server rondt af…");
+
+  pendingFinalTailChannels = new Set(
+    Array.from(activeConnections.values()).map(conn => conn.channelId)
+  );
+  if (pendingFinalTailChannels.size > 0) {
+    showFinalizingSpinner();
+    if (finalTailTimeoutId) clearTimeout(finalTailTimeoutId);
+    // Fallback: als er (bv. omdat er niets meer te flushen viel) nooit een
+    // is_final-segment_update binnenkomt, moet de spinner niet blijven hangen.
+    finalTailTimeoutId = setTimeout(() => {
+      finalTailTimeoutId = null;
+      pendingFinalTailChannels.clear();
+      hideFinalizingSpinner();
+      setAsrStatus("Klaar");
+    }, 12000);
+  }
 
   for (const [uid, conn] of activeConnections.entries()) {
     if (conn.ws?.readyState === WebSocket.OPEN) {
@@ -1300,6 +1357,8 @@ function handleFrontData(data, channelId) {
 }
 
 function handleSegmentUpdate(data, channelId) {
+  if (data.is_final) resolveFinalTailChannel(channelId);
+
   const id = data.id;
   if (!id) return;
 

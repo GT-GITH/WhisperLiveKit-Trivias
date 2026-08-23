@@ -427,6 +427,15 @@ select:focus-visible,
 .dot-neutral {
   background: var(--border-strong);
 }
+
+.status-spinner {
+  width: 14px;
+  height: 14px;
+  color: var(--text-soft);
+}
+.status-spinner.spinning {
+  animation: icon-spin 0.9s linear infinite;
+}
 .status-row-mic {
   align-items: center;
 }
