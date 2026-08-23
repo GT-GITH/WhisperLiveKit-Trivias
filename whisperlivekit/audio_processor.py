@@ -13,7 +13,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from time import time
-from typing import Any, AsyncGenerator, List, Optional, Union
+from typing import Any, AsyncGenerator, List, Optional, Tuple, Union
 from whisperlivekit.timed_objects import SegmentUpdate
 
 import numpy as np
@@ -1329,11 +1329,21 @@ class AudioProcessor:
         except Exception:
             pass
 
-    def _read_wav_slice_float32(self, start_ms: int, end_ms: int) -> Optional[np.ndarray]:
+    def _read_wav_slice_float32(
+        self, start_ms: int, end_ms: int
+    ) -> Tuple[Optional[np.ndarray], Optional[int]]:
+        """Returns (audio_f32, actual_end_ms). actual_end_ms is the real end of the
+        slice that was read, in the same ms timebase as the requested start_ms/end_ms --
+        equal to end_ms normally, but less than end_ms when the WAV on disk didn't yet
+        reach that far (see the [DIAG][WAV_CLIP] branch below). Callers MUST use
+        actual_end_ms (not the requested end_ms) for any downstream bookkeeping that
+        claims "this range has been covered" -- otherwise a window that got silently
+        clipped here still gets marked as fully processed, and the un-decoded tail is
+        later pruned from the live transcript with nothing to replace it."""
         if not getattr(self, "_wav_path", None):
-            return None
+            return None, None
         if end_ms <= start_ms:
-            return None
+            return None, None
 
         self._flush_wav()
 
@@ -1341,7 +1351,7 @@ class AudioProcessor:
         end_frame   = int((end_ms   / 1000.0) * self.sample_rate)
         n_frames    = max(0, end_frame - start_frame)
         if n_frames <= 0:
-            return None
+            return None, None
 
         try:
             with wave.open(str(self._wav_path), "rb") as rf:
@@ -1358,7 +1368,7 @@ class AudioProcessor:
                         f"({actual_frames / self.sample_rate:.2f}s) -- drift van "
                         f"{(start_frame - actual_frames) / self.sample_rate:.2f}s, niets te lezen"
                     )
-                    return None
+                    return None, None
 
                 if end_frame > actual_frames:
                     # De kraan structureel dicht i.p.v. dweilen per bovenstroomse teller
@@ -1377,15 +1387,16 @@ class AudioProcessor:
                     end_frame = actual_frames
                     n_frames = max(0, end_frame - start_frame)
                     if n_frames <= 0:
-                        return None
+                        return None, None
 
                 rf.setpos(start_frame)
                 raw = rf.readframes(n_frames)
             if not raw:
-                return None
+                return None, None
 
             audio_f32 = self.convert_pcm_to_float(raw)
             sha1 = _sha1_pcm16(audio_f32)
+            actual_end_ms = int(round((end_frame / self.sample_rate) * 1000.0))
 
             logger.info(
                 f"[BATCH][SLICE][DBG] wav={Path(self._wav_path).name} "
@@ -1394,10 +1405,10 @@ class AudioProcessor:
                 f"sr={self.sample_rate} sha1={sha1}"
             )
 
-            return audio_f32
+            return audio_f32, actual_end_ms
         except Exception as e:
             logger.warning(f"[BATCH] WAV slice read failed: {e}")
-            return None
+            return None, None
 
     def _batch_transcribe_text(self, audio_f32: np.ndarray) -> Optional[str]:
         try:
@@ -1492,7 +1503,14 @@ class AudioProcessor:
                 decode_start_ms = max(0, start_ms - BATCH_CONTEXT_PAD_LEFT_MS)
                 decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_RIGHT_MS
 
-                audio_f32 = self._read_wav_slice_float32(decode_start_ms, decode_end_ms)
+                audio_f32, decoded_end_ms = self._read_wav_slice_float32(decode_start_ms, decode_end_ms)
+                # Wat er echt gedecodeerd werd, kan korter zijn dan het geplande end_ms
+                # (WAV op schijf liep nog niet bij -- zie [DIAG][WAV_CLIP]). Downstream
+                # boekhouding (suppressed_ranges_ms, geëmitteerde SegmentUpdates) moet
+                # hierop gebaseerd zijn, niet op het geplande end_ms, anders wordt een
+                # niet-gedecodeerd staartstuk toch als "afgehandeld" geboekt en later uit
+                # de live-tekst gesnoeid zonder vervanging.
+                real_window_end_ms = min(end_ms, decoded_end_ms) if decoded_end_ms is not None else end_ms
                 logger.info(
                     f"[BATCH][DECODE][DBG] job={job['job_id']} "
                     f"window={start_ms}..{end_ms} decode={decode_start_ms}..{decode_end_ms} "
@@ -1647,11 +1665,26 @@ class AudioProcessor:
                 async with self.lock:
                     group_id = self.tokens_alignment.apply_batch_group(
                         window_start_ms=start_ms,
-                        window_end_ms=end_ms,
+                        window_end_ms=real_window_end_ms,
                         text_final=final_txt,
                         text_batch=(batch_txt if (use_batch_as_final and batch_txt) else None),
                         speaker=-1,
                     )
+                    # Het geplande end_ms lag verder dan wat er echt gedecodeerd is
+                    # (WAV liep nog niet bij op decodeermoment). Het volgende venster
+                    # stond al klaar om vanaf het optimistische end_ms te beginnen
+                    # (_batch_on_silence_boundary/_flush_final_batch_tail zetten dat
+                    # synchroon bij enqueue) -- zet dat terug naar wat echt gedekt is,
+                    # zodat het gemiste staartstuk in het eerstvolgende venster alsnog
+                    # wordt opgepikt i.p.v. voor altijd overgeslagen. Alleen als er
+                    # ondertussen niet al een nieuwer venster overheen is gegaan.
+                    if real_window_end_ms < end_ms and self._batch_window_start_ms == end_ms:
+                        logger.info(
+                            f"[BATCH][WINDOW_REWIND] job={job['job_id']} "
+                            f"start teruggezet van {end_ms}ms naar {real_window_end_ms}ms "
+                            f"(WAV bevatte nog niet alles op decodeermoment)"
+                        )
+                        self._batch_window_start_ms = real_window_end_ms
 
                 logger.info(
                     f"[BATCH][APPLY][DBG] job={job['job_id']} group_id={group_id} "
@@ -1684,7 +1717,7 @@ class AudioProcessor:
                             id=str(group_id),
                             state="FINAL",
                             start_ms=start_ms,
-                            end_ms=end_ms,
+                            end_ms=real_window_end_ms,
                             text_batch=(batch_txt if (use_batch_as_final and batch_txt) else None),
                             text_final=final_txt
                         )
