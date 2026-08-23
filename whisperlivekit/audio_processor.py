@@ -1503,7 +1503,20 @@ class AudioProcessor:
                 decode_start_ms = max(0, start_ms - BATCH_CONTEXT_PAD_LEFT_MS)
                 decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_RIGHT_MS
 
-                audio_f32, decoded_end_ms = self._read_wav_slice_float32(decode_start_ms, decode_end_ms)
+                # Synchrone I/O (flush+fsync+wave-read) hoort niet rechtstreeks op de
+                # gedeelde event loop -- _batch_worker() draait als asyncio.create_task
+                # op DEZELFDE loop als transcription_processor() (live) en watchdog().
+                # Een trage/hangende aanroep hier bevriest dus ALLES, niet alleen batch
+                # (bevestigd: [DIAG][WAV_CLIP]-kloof liep sessielang op van 2s naar 17s,
+                # gevolgd door een totale stilstand zonder exception/traceback in het log).
+                _batch_perf_t0 = time()
+                audio_f32, decoded_end_ms = await asyncio.to_thread(
+                    self._read_wav_slice_float32, decode_start_ms, decode_end_ms
+                )
+                logger.info(
+                    f"[DIAG][BATCH_PERF] job={job['job_id']} wav_read_duration="
+                    f"{time() - _batch_perf_t0:.3f}s"
+                )
                 # Wat er echt gedecodeerd werd, kan korter zijn dan het geplande end_ms
                 # (WAV op schijf liep nog niet bij -- zie [DIAG][WAV_CLIP]). Downstream
                 # boekhouding (suppressed_ranges_ms, geëmitteerde SegmentUpdates) moet
@@ -1573,7 +1586,17 @@ class AudioProcessor:
                     _lang_override,
                     getattr(self.batch_asr, "language", None),
                 )
-                result = self.batch_asr.transcribe(audio_f32, word_timestamps=True, language_override=_lang_override)
+                _batch_perf_t0 = time()
+                result = await asyncio.to_thread(
+                    self.batch_asr.transcribe,
+                    audio_f32,
+                    word_timestamps=True,
+                    language_override=_lang_override,
+                )
+                logger.info(
+                    f"[DIAG][BATCH_PERF] job={job['job_id']} transcribe_duration="
+                    f"{time() - _batch_perf_t0:.3f}s"
+                )
                 batch_txt = result["text"]
                 sentence_segments = result.get("sentence_segments", [])
                 logger.info(
