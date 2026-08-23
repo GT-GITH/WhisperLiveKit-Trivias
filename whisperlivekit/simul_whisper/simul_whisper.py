@@ -1,5 +1,6 @@
 import logging
 import os
+import subprocess
 from time import time
 from typing import List, Optional, Tuple
 
@@ -27,6 +28,41 @@ from .token_buffer import TokenBuffer
 
 DEC_PAD = 50257
 logger = logging.getLogger(__name__)
+
+# [DIAG][GPU] (2026-08-23) onderzoek naar sporadisch trage encoder-aanroepen
+# (zie [DIAG][LIVE_PERF] hieronder): op verzoek rechtstreeks in het serverlog
+# opgenomen i.p.v. een losse handmatige `nvidia-smi -l 1`-sessie ernaast nodig
+# te hebben. clocks.sm/clocks.max.sm + pstate testen direct de hypothese dat
+# de GPU tussen bursts in terugzakt naar een lagere energiestand (geen
+# "persistence mode") en bij hervatten eerst moet opschalen. Gethrottled
+# (max. 1x per _GPU_DIAG_INTERVAL_S) en volledig fail-safe: nvidia-smi
+# ontbreken/falen mag de transcriptie nooit raken, dus altijd een stille
+# no-op bij een fout (bv. lokaal zonder GPU tijdens ontwikkelen).
+_last_gpu_diag_log = 0.0
+_GPU_DIAG_INTERVAL_S = 2.0
+
+
+def _diag_log_gpu_state() -> None:
+    global _last_gpu_diag_log
+    now = time()
+    if now - _last_gpu_diag_log < _GPU_DIAG_INTERVAL_S:
+        return
+    _last_gpu_diag_log = now
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=clocks.sm,clocks.max.sm,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,pstate",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            logger.info(f"[DIAG][GPU] sm_clock_MHz,max_sm_clock_MHz,util_pct,mem_used_MiB,mem_total_MiB,temp_C,power_W,pstate = {result.stdout.strip()}")
+    except Exception as e:
+        logger.debug(f"[DIAG][GPU] nvidia-smi query mislukt (fail-safe genegeerd): {e}")
 
 if mlx_backend_available():
     from mlx_whisper.audio import \
@@ -523,6 +559,7 @@ class AlignAtt:
             f"segments_len={_diag_segments_len_s:.2f}s state_tokens_items={len(self.state.tokens)} "
             f"state_tokens_total={_diag_total_tokens}"
         )
+        _diag_log_gpu_state()
 
         if self.cfg.language == "auto" and self.state.detected_language is None and self.state.first_timestamp:
             seconds_since_start = self.segments_len() - self.state.first_timestamp
