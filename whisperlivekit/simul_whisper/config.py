@@ -51,6 +51,13 @@ class ChannelTranscriptionConfig:
     batch_temperature: list[float] = field(default_factory=lambda: [0.0, 0.2])
     batch_condition_on_previous_text: bool = False
     batch_initial_prompt: Optional[str] = None
+    # Modelroutering (fase 1 van het voorstel, batch-only): optioneel pad/HF-repo
+    # naar een taalspecifiek CTranslate2-model voor de batch-pass van dit kanaal.
+    # None (default, elk bestaand kanaal) = ongewijzigd gedrag: het server-brede
+    # standaardmodel (--model/--model-path) wordt gebruikt, exact zoals vandaag.
+    # Alleen kanalen die dit veld expliciet invullen krijgen een eigen, apart
+    # geladen batch-model (zie TranscriptionEngine.get_batch_asr_for_channel()).
+    batch_model_path: Optional[str] = None
 
 
 CHANNEL_CONFIGS: dict[str, ChannelTranscriptionConfig] = {
@@ -129,6 +136,23 @@ CHANNEL_CONFIGS: dict[str, ChannelTranscriptionConfig] = {
         live_audio_min_len=0.0,
         live_decoder_type="greedy",
         batch_initial_prompt=None,
+    ),
+
+    # PoC modelroutering (zie voorstel): expliciete vermelding zodat er een
+    # concrete plek is om batch_model_path in te vullen. Vandaag nog None =
+    # ongewijzigd gedrag, identiek aan de generieke "foreign"-fallback hieronder.
+    # Vul in zodra een CTranslate2-conversie van bv.
+    # microsoft/paza-whisper-large-v3-turbo beschikbaar is (lokaal pad of een
+    # al als CT2 gepubliceerde HF-repo), bv.
+    # batch_model_path="/models/paza-whisper-large-v3-turbo-ct2".
+    "foreign_so": ChannelTranscriptionConfig(
+        language="so",
+        task="transcribe",
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
+        live_decoder_type="greedy",
+        batch_initial_prompt=None,
+        batch_model_path=None,
     ),
 
     # Generieke fallback voor elk "foreign_<taalcode>"-kanaal zonder eigen,

@@ -98,8 +98,13 @@ class TranscriptionEngine:
         backend_policy = self.args.backend_policy
         if self.args.transcription:
 
-            self.batch_asr = None      
-            if backend_policy == "simulstreaming":                 
+            self.batch_asr = None
+            # Modelroutering (fase 1, batch-only -- zie voorstel): registry van
+            # extra BatchFasterWhisperASR-instances, lazily gebouwd per uniek
+            # channel_cfg.batch_model_path. Kanalen zonder override (vandaag: alle)
+            # blijven op self.batch_asr, exact het bestaande gedrag.
+            self._batch_asr_registry: dict = {}
+            if backend_policy == "simulstreaming":               
                 simulstreaming_params = {
                     "disable_fast_encoder": False,
                     "custom_alignment_heads": None,
@@ -202,6 +207,36 @@ class TranscriptionEngine:
                 translation_params = update_with_kwargs(translation_params, kwargs)
                 self.translation_model = load_model([self.args.lan], **translation_params) #in the future we want to handle different languages for different speakers
 
+    def get_batch_asr_for_channel(self, channel_id: str):
+        """
+        Modelroutering (fase 1, batch-only -- zie voorstel voor modelroutering
+        per kanaal). Kanalen zonder expliciet channel_cfg.batch_model_path
+        krijgen het server-brede standaardmodel (self.batch_asr) terug --
+        exact het gedrag van vóór deze methode bestond. Alleen een kanaal met
+        een expliciete override krijgt een eigen, apart geladen
+        BatchFasterWhisperASR-instance (lazily gebouwd, daarna hergebruikt).
+        De live/AlignAtt-route blijft in deze fase bewust ongemoeid.
+        """
+        if self.batch_asr is None:
+            return None
+        channel_cfg = get_channel_config(channel_id)
+        model_path = channel_cfg.batch_model_path
+        if not model_path:
+            return self.batch_asr
+        if model_path not in self._batch_asr_registry:
+            logger.info(
+                "Modelroutering: laad apart batch-model voor channel_id=%s model=%s",
+                channel_id, model_path,
+            )
+            self._batch_asr_registry[model_path] = BatchFasterWhisperASR(
+                model=model_path,
+                language=channel_cfg.language,
+                beam_size=channel_cfg.batch_beam_size,
+                condition_on_previous_text=channel_cfg.batch_condition_on_previous_text,
+                temperature=channel_cfg.batch_temperature,
+                initial_prompt=channel_cfg.batch_initial_prompt or None,
+            )
+        return self._batch_asr_registry[model_path]
 
 
 def online_factory(args, asr, language: str = None):

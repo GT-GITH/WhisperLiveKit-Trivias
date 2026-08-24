@@ -168,7 +168,13 @@ class AudioProcessor:
 
         # Audio processing settings
         self.args = models.args
-        self.batch_asr = getattr(models, "batch_asr", None)
+        # Modelroutering (fase 1, batch-only -- zie voorstel): geeft voor
+        # kanalen zonder expliciete override exact hetzelfde object terug als
+        # de oude `getattr(models, "batch_asr", None)` deed.
+        if hasattr(models, "get_batch_asr_for_channel"):
+            self.batch_asr = models.get_batch_asr_for_channel(self.channel_id)
+        else:
+            self.batch_asr = getattr(models, "batch_asr", None)
         _live_lang_effective = self.channel_language or getattr(self.args, "lan", None)
         _batch_lang_init     = getattr(self.batch_asr, "language", None) if self.batch_asr else None
         _batch_lang_override = self.channel_language  # van URL-param lang=

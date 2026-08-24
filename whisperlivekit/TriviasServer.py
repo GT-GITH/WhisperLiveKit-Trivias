@@ -559,7 +559,15 @@ def rebuild_channel_transcript(
         asr_audio_f32 = audio_f32
 
     lang = _resolve_channel_language(channel_id, session_id=session_id)
-    segments = engine.batch_asr.transcribe_full(asr_audio_f32, language_override=lang)
+    # Modelroutering (fase 1, batch-only -- zie voorstel): "Ververs Transcriptie"
+    # gebruikt hetzelfde per-kanaal batch-model als de incrementele batch-pass,
+    # zodat beide paden nooit uiteen kunnen lopen. Zonder channel_cfg.batch_model_path
+    # (elk bestaand kanaal) is dit exact engine.batch_asr, ongewijzigd gedrag.
+    if hasattr(engine, "get_batch_asr_for_channel"):
+        batch_asr = engine.get_batch_asr_for_channel(channel_id)
+    else:
+        batch_asr = engine.batch_asr
+    segments = batch_asr.transcribe_full(asr_audio_f32, language_override=lang)
 
     entries: list[dict] = []
     n_accepted = 0
