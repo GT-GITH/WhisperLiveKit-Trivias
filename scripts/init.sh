@@ -330,7 +330,14 @@ PY
 # --- run ---
 ensure_ollama_running() {
   [[ "${LLM_ENABLED}" == "1" ]] || return 0
-  if curl -fsS "http://localhost:11434/api/version" >/dev/null 2>&1; then
+  # --max-time 5 (2026-08-24): zonder een expliciete timeout hangt curl hier
+  # onbeperkt als de poort wel openstaat maar het proces erachter niet meer
+  # reageert (bv. per ongeluk gestopt door een Ctrl+Z die een losstaand,
+  # genohup'd achtergrondproces raakte -- geobserveerd: `ollama serve` in
+  # STAT=Tl, TCP accepteert de connectie maar levert nooit een response).
+  # Zo'n hang hier blokkeert de hele --start-herstartsequentie stil, zonder
+  # enige foutmelding.
+  if curl -fsS --max-time 5 "http://localhost:11434/api/version" >/dev/null 2>&1; then
     log "Ollama draait al"
     return 0
   fi
@@ -341,7 +348,7 @@ ensure_ollama_running() {
   nohup ollama serve > "$WORKSPACE/ollama.log" 2>&1 &
   disown
   for _ in $(seq 1 30); do
-    curl -fsS "http://localhost:11434/api/version" >/dev/null 2>&1 && { log "Ollama draait"; return 0; }
+    curl -fsS --max-time 5 "http://localhost:11434/api/version" >/dev/null 2>&1 && { log "Ollama draait"; return 0; }
     sleep 1
   done
   die "Ollama startte niet binnen 30s -- zie $WORKSPACE/ollama.log"
