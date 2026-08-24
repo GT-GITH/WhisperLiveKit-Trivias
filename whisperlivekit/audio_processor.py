@@ -168,14 +168,23 @@ class AudioProcessor:
         _live_lang_effective = self.channel_language or getattr(self.args, "lan", None)
         _batch_lang_init     = getattr(self.batch_asr, "language", None) if self.batch_asr else None
         _batch_lang_override = self.channel_language  # van URL-param lang=
+        # [DIAG][GATE] onderzoek (2026-08-24): de eigen-kanaal-ruisdrempel (gateThreshold,
+        # zie pcm_worklet.js) is een pure clientinstelling die tot nu toe nergens server-side
+        # zichtbaar was -- bij een sessie waar [GATE]-logregels consequent "suppressed
+        # 1634/1634" (100%) lieten zien tijdens naar later bleek hoorbare spraak, was niet na
+        # te gaan of dat een te streng ingestelde drempel was of een fout in de gate-logica
+        # zelf. Alleen loggen, geen gedragswijziging.
+        _gate_threshold = kwargs.get("gate_threshold", None)
         logger.info(
             "AudioProcessor engine bound: channel_id=%s "
-            "live_lang=%s batch_lang_init=%s batch_lang_override=%s (batch effectief: %s)",
+            "live_lang=%s batch_lang_init=%s batch_lang_override=%s (batch effectief: %s) "
+            "gate_threshold=%s",
             self.channel_id,
             _live_lang_effective,
             _batch_lang_init,
             _batch_lang_override,
             _batch_lang_override if _batch_lang_override else _batch_lang_init,
+            _gate_threshold,
         )
         self.sample_rate = 16000
         self.channels = 1
@@ -1191,24 +1200,12 @@ class AudioProcessor:
                     await asyncio.sleep(1)
                     continue
 
-                # [DIAG][CPU] onderzoek (2026-08-23): dit is de enige onvoorwaardelijk-elke-
-                # ~50ms aangeroepen, potentieel dure Python-berekening (get_lines() heeft een
-                # O(regels x suppressed_ranges) snoei-lus) -- tijd 'm expliciet zodat een
-                # eventuele CPU-piek (zie [DIAG][CPU] in TriviasServer.py) hierop terug te
-                # voeren is of juist niet.
-                _diag_get_lines_t0 = time()
                 self.tokens_alignment.update()
                 lines, buffer_diarization_text, buffer_translation_text = self.tokens_alignment.get_lines(
                     diarization=self.args.diarization,
                     translation=bool(self.translation),
                     current_silence=self.current_silence
                 )
-                _diag_get_lines_dur = time() - _diag_get_lines_t0
-                if _diag_get_lines_dur >= 0.02:
-                    logger.warning(
-                        f"[DIAG][CPU] channel={self.channel_id} get_lines_duration="
-                        f"{_diag_get_lines_dur:.3f}s n_lines={len(lines)}"
-                    )
                 state = await self.get_current_state()
 
                 buffer_transcription_text = state.buffer_transcription.text if state.buffer_transcription else ''

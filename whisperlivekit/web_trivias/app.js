@@ -842,6 +842,11 @@ function buildWebSocketUrl(sessionId, channelId, cfg) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({ session_id: sessionId, channel_id: channelId, lang: cfg.language || "nl", gate_framed: "1" });
   if (cfg.language2) params.set("lang2", cfg.language2);
+  // [DIAG][GATE] onderzoek (2026-08-24): gateThreshold is een pure clientinstelling die tot
+  // nu toe nergens server-side zichtbaar was, waardoor een sessie met (bleek achteraf)
+  // aanhoudende 100%-ASR-onderdrukking niet te herleiden was tot een te streng ingestelde
+  // drempel vs. een echte fout in de gate-logica. Alleen zichtbaar maken, geen gedragswijziging.
+  params.set("gate_threshold", String(cfg.gateThreshold ?? 0));
   // Elk kanaal opent zijn eigen WS-verbinding maar deelt dezelfde session_id;
   // de backend merget case_ref/person_ref per sessie (SessionManager.create_or_update),
   // dus het is onschadelijk dat elk kanaal dezelfde waarde meestuurt.
