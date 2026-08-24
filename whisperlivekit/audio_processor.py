@@ -158,6 +158,10 @@ class AudioProcessor:
         # Batch refinement (Stap 3)
         self._batch_queue: asyncio.Queue = asyncio.Queue()
         self._batch_worker_task: Optional[asyncio.Task] = None
+        # True vanaf het dequeuen van een job tot en met de finally in _batch_worker()
+        # -- zie _processing_tasks_done(), dat hierop wacht i.p.v. op _batch_worker_task
+        # zelf (die bewust voor altijd leeft tot cleanup()'s SENTINEL).
+        self._batch_job_active: bool = False
         
         # nieuwe asyncio.Queue voor tweede poging batch transscripttie
         self._ws_update_queue: asyncio.Queue = asyncio.Queue()
@@ -1480,6 +1484,7 @@ class AudioProcessor:
         logger.info("[BATCH][WORKER] worker started")
         while True:
             job = await self._batch_queue.get()
+            self._batch_job_active = True
             try:
                 if job is SENTINEL:
                     logger.info("[BATCH][WORKER] received sentinel, stopping")
@@ -1821,6 +1826,7 @@ class AudioProcessor:
                 logger.warning(f"[BATCH][WORKER] error: {e}")
             finally:
                 self._batch_queue.task_done()
+                self._batch_job_active = False
 
     async def cleanup(self) -> None:
         """Clean up resources when processing is complete."""
@@ -1880,7 +1886,18 @@ class AudioProcessor:
             self.translation_task,
             self.ffmpeg_reader_task,
         ]
-        return all(task.done() for task in tasks_to_check if task)
+        if not all(task.done() for task in tasks_to_check if task):
+            return False
+        # _batch_worker_task zelf blijft bewust leven (while True, wacht op een
+        # SENTINEL die pas in cleanup() komt, niet gesynchroniseerd met deze
+        # generator) -- i.p.v. daarop wachten (zou hier voor altijd hangen),
+        # wachten tot de queue leeg is EN er geen taak meer "in de hand" zit.
+        # Zonder dit stopte results_formatter() al binnen milliseconden na Stop,
+        # ruim vóór de laatste (soms meerdere seconden durende) batch-taak klaar
+        # was -- precies het venster waarin de batch-bevestigde slotzin nooit
+        # bij de client aankwam (2026-08-24, geobserveerd: 3,7s batch-taak,
+        # generator was al 18ms na Stop "Terminating").
+        return self._batch_queue.empty() and not self._batch_job_active
 
 
     async def process_audio(self, message: Optional[bytes]) -> None:
