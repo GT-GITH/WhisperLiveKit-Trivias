@@ -130,13 +130,45 @@ CHANNEL_CONFIGS: dict[str, ChannelTranscriptionConfig] = {
         live_decoder_type="greedy",
         batch_initial_prompt=None,
     ),
+
+    # Generieke fallback voor elk "foreign_<taalcode>"-kanaal zonder eigen,
+    # specifiek afgestelde vermelding hierboven (zie get_channel_config()).
+    # app.js's LANGUAGES-lijst biedt 13 talen voor de rol "Vreemdeling", maar
+    # hierboven staan er maar 4 specifiek uitgewerkt (nl/ar/fa/ru, onderling nu
+    # al identiek op de taalcode na) -- voor de overige 9 (bv. "so", "tr") viel
+    # get_channel_config() stilzwijgend terug op "default", een rolconfig die
+    # niet voor "Vreemdeling" bedoeld is. language=None: dit veld wordt voor
+    # foreign_*-kanalen in de praktijk nooit gebruikt (TriviasServer.py's
+    # _resolve_channel_language() haalt de taal al rechtstreeks uit de
+    # channel_id zelf, vóórdat deze config geraadpleegd zou worden), dus een
+    # gok als "nl" laten staan zou misleidend zijn.
+    "foreign": ChannelTranscriptionConfig(
+        language=None,
+        task="transcribe",
+        live_frame_threshold=25,
+        live_audio_min_len=0.0,
+        live_decoder_type="greedy",
+        batch_initial_prompt=None,
+    ),
 }
 
 
 def get_channel_config(channel_id: Optional[str]) -> ChannelTranscriptionConfig:
     """
-    Resolve a channel config with fallback to 'default'.
+    Volgorde:
+    1. Exacte match in CHANNEL_CONFIGS -- een bewust per-taal afgestelde
+       vermelding (zoals de bestaande foreign_nl/ar/fa/ru, of een toekomstige
+       voor bv. foreign_so als iemand die ooit specifiek wil afstellen).
+    2. Elk ander "foreign_<taalcode>"-kanaal (zie getChannelId() in app.js --
+       de talenlijst daar staat los van deze backend-config en kan zonder
+       hier iets aan te passen uitbreiden): de generieke "foreign"-rolconfig,
+       i.p.v. stilzwijgend "default" (een andere rol) te gebruiken.
+    3. Overal anders: "default".
     """
     if not channel_id:
         return CHANNEL_CONFIGS["default"]
-    return CHANNEL_CONFIGS.get(channel_id, CHANNEL_CONFIGS["default"])
+    if channel_id in CHANNEL_CONFIGS:
+        return CHANNEL_CONFIGS[channel_id]
+    if channel_id.startswith("foreign_"):
+        return CHANNEL_CONFIGS["foreign"]
+    return CHANNEL_CONFIGS["default"]
