@@ -16,6 +16,12 @@ set -euo pipefail
 #        chatmodel (Ollama) bleek onbetrouwbaar voor vertaling van complexe
 #        brontalen -- NLLB is uitsluitend op vertalen getraind. NLLB_ENABLED=0
 #        om uit te zetten (dan draait /translate in fallback, 503).
+#   SOMALI_BATCH_MODEL_ENABLED=0 SOMALI_BATCH_MODEL_SRC=microsoft/paza-whisper-large-v3-turbo
+#     -> modelroutering per kanaal (fase 1, batch-only, PoC -- zie het voorstel).
+#        Default UIT: opt-in voor het foreign_so-kanaal. =1 converteert het
+#        bronmodel één keer naar CTranslate2 (SOMALI_BATCH_MODEL_DIR) en geeft
+#        dat pad door als --foreign-so-batch-model. Elk ander kanaal blijft
+#        ongewijzigd op het server-brede standaardmodel.
 #
 # Usage:
 #   bash scripts/init.sh --setup         # deps + git + venv + pip
@@ -85,6 +91,17 @@ OLLAMA_MODELS="${OLLAMA_MODELS:-$WORKSPACE/.ollama-models}"
 NLLB_ENABLED="${NLLB_ENABLED:-1}"
 NLLB_MODEL="${NLLB_MODEL:-entai2965/nllb-200-distilled-600M-ctranslate2}"
 NLLB_DEVICE="${NLLB_DEVICE:-auto}"
+
+# Modelroutering per kanaal (fase 1, batch-only, PoC -- zie het voorstel voor
+# modelroutering per kanaal). Default UIT: dit is een opt-in PoC voor het
+# foreign_so-kanaal, geen ander kanaal wordt hierdoor geraakt. Zet
+# SOMALI_BATCH_MODEL_ENABLED=1 om bij --setup/--setup-start het bronmodel
+# (PyTorch/HF-formaat) één keer te converteren naar CTranslate2 (nodig --
+# faster-whisper/BatchFasterWhisperASR kan geen ruwe HF-checkpoints laden) en
+# het resulterende pad als --foreign-so-batch-model aan de server mee te geven.
+SOMALI_BATCH_MODEL_ENABLED="${SOMALI_BATCH_MODEL_ENABLED:-0}"
+SOMALI_BATCH_MODEL_SRC="${SOMALI_BATCH_MODEL_SRC:-microsoft/paza-whisper-large-v3-turbo}"
+SOMALI_BATCH_MODEL_DIR="${SOMALI_BATCH_MODEL_DIR:-$WORKSPACE/models/paza-whisper-large-v3-turbo-ct2}"
 
 
 # --- ensure bash ---
@@ -291,11 +308,18 @@ PY
   log "Install project + deps (editable) via pyproject.toml..."
   pip install -e .
 
+  if [[ "${NLLB_ENABLED}" == "1" || "${SOMALI_BATCH_MODEL_ENABLED}" == "1" ]]; then
+    # transformers is nodig voor de NLLB-tokenizer én voor ct2-transformers-converter
+    # (modelroutering-PoC hieronder) -- ctranslate2 zelf is al een dep via faster-whisper.
+    log "Install transformers (NLLB-tokenizer en/of ct2-transformers-converter)..."
+    pip install transformers
+  fi
   if [[ "${NLLB_ENABLED}" == "1" ]]; then
-    log "Install NLLB-vertaal-dependencies (transformers voor de tokenizer -- ctranslate2 zelf is al een dep via faster-whisper; langid voor de al-Nederlands-check bij tolk-vertaling)..."
-    pip install transformers langid
-  else
-    log "NLLB_ENABLED=0 → transformers/langid-install skip"
+    log "Install langid (al-Nederlands-check bij tolk-vertaling)..."
+    pip install langid
+  fi
+  if [[ "${NLLB_ENABLED}" != "1" && "${SOMALI_BATCH_MODEL_ENABLED}" != "1" ]]; then
+    log "NLLB_ENABLED=0 en SOMALI_BATCH_MODEL_ENABLED=0 → transformers/langid-install skip"
   fi
 
   install_nemo_sortformer
@@ -307,6 +331,8 @@ PY
   python -c "import onnxruntime; print('onnxruntime OK')" || die "onnxruntime import faalde"
   if [[ "${NLLB_ENABLED}" == "1" ]]; then
     python -c "import ctranslate2, transformers, langid; print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__)" || die "ctranslate2/transformers/langid import faalde"
+  elif [[ "${SOMALI_BATCH_MODEL_ENABLED}" == "1" ]]; then
+    python -c "import ctranslate2, transformers; print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__)" || die "ctranslate2/transformers import faalde (nodig voor modelroutering-PoC conversie)"
   fi
 
   if [[ "${DIARIZATION}" == "1" ]]; then
@@ -375,6 +401,27 @@ download_nllb_model() {
 from huggingface_hub import snapshot_download
 snapshot_download("$NLLB_MODEL")
 PY
+}
+
+prepare_somali_batch_model() {
+  # Modelroutering per kanaal (fase 1, batch-only, PoC -- zie het voorstel).
+  # faster-whisper/BatchFasterWhisperASR kan alleen CTranslate2-formaat laden,
+  # SOMALI_BATCH_MODEL_SRC is een gewoon HF/PyTorch-checkpoint -- daarom hier
+  # één keer converteren, net als download_nllb_model() hierboven idempotent.
+  [[ "${SOMALI_BATCH_MODEL_ENABLED:-0}" == "1" ]] || return 0
+  if [[ -f "$SOMALI_BATCH_MODEL_DIR/model.bin" ]]; then
+    log "Somalisch batch-model (CT2) al aanwezig → conversie skip: $SOMALI_BATCH_MODEL_DIR"
+    return 0
+  fi
+  command -v ct2-transformers-converter >/dev/null 2>&1 \
+    || die "ct2-transformers-converter niet gevonden (verwacht via het ctranslate2-pakket). Run eerst: bash scripts/init.sh --setup (met SOMALI_BATCH_MODEL_ENABLED=1)"
+  log "Converteer Somalisch batch-model naar CTranslate2: $SOMALI_BATCH_MODEL_SRC → $SOMALI_BATCH_MODEL_DIR (eerste keer kan een tijd duren, download + conversie)..."
+  mkdir -p "$(dirname "$SOMALI_BATCH_MODEL_DIR")"
+  ct2-transformers-converter \
+    --model "$SOMALI_BATCH_MODEL_SRC" \
+    --output_dir "$SOMALI_BATCH_MODEL_DIR" \
+    --quantization float16 \
+    --force
 }
 
 startlive() {
@@ -446,7 +493,15 @@ startlive() {
     log "NLLB_ENABLED=0 → /translate draait in fallback-modus (geen vertaling)"
   fi
 
-  log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED nllb_enabled=$NLLB_ENABLED"
+  ROUTING_ARGS=()
+  if [[ "$SOMALI_BATCH_MODEL_ENABLED" == "1" ]]; then
+    prepare_somali_batch_model
+    ROUTING_ARGS+=(--foreign-so-batch-model "$SOMALI_BATCH_MODEL_DIR")
+  else
+    log "SOMALI_BATCH_MODEL_ENABLED=0 → foreign_so blijft op het server-brede standaardmodel (ongewijzigd gedrag)"
+  fi
+
+  log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED nllb_enabled=$NLLB_ENABLED somali_batch_model_enabled=$SOMALI_BATCH_MODEL_ENABLED"
   nohup python -m whisperlivekit.TriviasServer \
     --host "$HOST" --port "$PORT" \
     --model "$MODEL" --language "$LANGUAGE" \
@@ -458,6 +513,7 @@ startlive() {
     "${DIAR_ARGS[@]}" \
     "${LLM_ARGS[@]}" \
     "${NLLB_ARGS[@]}" \
+    "${ROUTING_ARGS[@]}" \
     > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
   echo "$current_commit" > "$COMMIT_FILE"

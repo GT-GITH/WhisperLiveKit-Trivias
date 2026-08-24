@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 from whisperlivekit.simul_whisper.backend import evaluate_batch_segment
-from whisperlivekit.simul_whisper.config import get_channel_config
+from whisperlivekit.simul_whisper.config import get_channel_config, CHANNEL_CONFIGS
 from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
 from whisperlivekit.gehoorverslag import build_gehoorverslag_docx
 from whisperlivekit.llm_backend import LLMBackend, build_llm_backend
@@ -374,6 +374,17 @@ async def lifespan(app: FastAPI):
     _log_kv_block("TRIVIAS SERVER STARTUP PARAMETERS (RAW ARGS)", vars(args))
 
     global transcription_engine, llm_backend, nllb_backend
+
+    # Modelroutering per kanaal (fase 1, batch-only, PoC -- zie het voorstel):
+    # --foreign-so-batch-model vult CHANNEL_CONFIGS["foreign_so"].batch_model_path
+    # vóór de TranscriptionEngine gebouwd wordt. Onbekend/leeg (default) laat het
+    # veld op None -- ongewijzigd gedrag, exact zoals elk ander kanaal.
+    if getattr(args, "foreign_so_batch_model", None):
+        CHANNEL_CONFIGS["foreign_so"].batch_model_path = args.foreign_so_batch_model
+        logger.info(
+            "[ROUTING] foreign_so batch_model_path=%s", args.foreign_so_batch_model
+        )
+
     logger.info("Initialising TranscriptionEngine for TriviasServer...")
     transcription_engine = TranscriptionEngine(**vars(args))
     logger.info("TranscriptionEngine ready.")

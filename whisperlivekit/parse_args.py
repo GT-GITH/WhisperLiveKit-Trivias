@@ -371,6 +371,21 @@ def parse_args():
         help="Device voor het NLLB-model ('auto', 'cuda' of 'cpu'). Default 'auto'.",
     )
 
+    # Modelroutering per kanaal (fase 1, batch-only -- zie het voorstel voor
+    # modelroutering). Vandaag alleen het foreign_so-PoC-kanaal; None = ongewijzigd
+    # gedrag (server-breed standaardmodel), zie ChannelTranscriptionConfig.batch_model_path.
+    routing_group = parser.add_argument_group("Modelroutering per kanaal (PoC, batch-only)")
+    routing_group.add_argument(
+        "--foreign-so-batch-model",
+        type=str,
+        default=None,
+        dest="foreign_so_batch_model",
+        help="Lokaal pad naar een ctranslate2-geconverteerd, Somalisch-gespecialiseerd "
+             "batch-model voor het foreign_so-kanaal (bv. een ct2-transformers-converter-"
+             "output-dir van microsoft/paza-whisper-large-v3-turbo). Onbekend/leeg = "
+             "foreign_so blijft op het server-brede standaardmodel, ongewijzigd gedrag.",
+    )
+
     args = parser.parse_args()
     
     args.transcription = not args.no_transcription
