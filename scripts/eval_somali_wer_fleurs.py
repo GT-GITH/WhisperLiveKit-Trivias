@@ -81,17 +81,39 @@ def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
     zelfde twee stappen als prepare_somali_batch_model() in scripts/init.sh.
 
     Download het HF-model eerst zelf lokaal (i.p.v. de repo-naam rechtstreeks
-    aan ct2-transformers-converter te geven) met .bin-checkpoints uitgesloten:
-    recente transformers-versies weigeren pickle-.bin-bestanden te laden
-    tenzij torch>=2.6 (CVE-2025-32434) -- geconstateerd op steja/whisper-
-    large-somali, dat zowel een .bin als een .safetensors publiceert.
-    ignore_patterns dwingt de safetensors-variant af, waar die blokkade niet
-    voor geldt."""
+    aan ct2-transformers-converter te geven): recente transformers-versies
+    weigeren pickle-.bin-checkpoints te laden tenzij torch>=2.6
+    (CVE-2025-32434). steja/whisper-large-somali publiceert ALLEEN zo'n
+    .bin-bestand (geen .safetensors-alternatief) -- dus lossen we dat hier
+    zelf op met een rechtstreekse torch.load() (torch zelf blokkeert dit
+    niet, alleen transformers' eigen from_pretrained-guard) gevolgd door een
+    safetensors-export, i.p.v. het bestand simpelweg uit te sluiten."""
     os.makedirs(local_dir, exist_ok=True)
     if not os.path.isfile(os.path.join(local_dir, "model.bin")):
         staging_dir = local_dir + "-hf-src"
-        print(f"Download {hf_repo} -> {staging_dir} (alleen safetensors)...")
-        snapshot_download(hf_repo, local_dir=staging_dir, ignore_patterns=["*.bin", "*.h5", "*.msgpack"])
+        print(f"Download {hf_repo} -> {staging_dir}...")
+        snapshot_download(hf_repo, local_dir=staging_dir, ignore_patterns=["*.h5", "*.msgpack"])
+
+        has_safetensors = any(f.endswith(".safetensors") for f in os.listdir(staging_dir))
+        if not has_safetensors:
+            bin_path = os.path.join(staging_dir, "pytorch_model.bin")
+            if not os.path.isfile(bin_path):
+                raise RuntimeError(
+                    f"Geen .safetensors en geen pytorch_model.bin gevonden voor "
+                    f"{hf_repo} in {staging_dir}"
+                )
+            print(f"Geen safetensors voor {hf_repo} -- converteer {bin_path} lokaal...")
+            import torch
+            from safetensors.torch import save_file
+
+            state_dict = torch.load(bin_path, map_location="cpu", weights_only=True)
+            # .clone() breekt gedeeld geheugen (bv. getiede embeddings, gangbaar bij
+            # Whisper) -- safetensors weigert anders te serialiseren; .contiguous()
+            # is een vereiste van het safetensors-formaat.
+            state_dict = {k: v.clone().contiguous() for k, v in state_dict.items()}
+            save_file(state_dict, os.path.join(staging_dir, "model.safetensors"))
+            os.remove(bin_path)
+
         print(f"Converteer {staging_dir} -> {local_dir} (CT2, float16, kan even duren)...")
         subprocess.run(
             [
