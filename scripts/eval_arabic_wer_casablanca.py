@@ -1,35 +1,37 @@
 """Eenmalig evaluatiescript, GEEN onderdeel van de reguliere pijplijn.
 
-Doel: objectieve baseline-meting van het server-brede standaardmodel (large-v3)
-op Arabisch, per dialect -- vóór er wordt gezocht naar een gespecialiseerd
-model. Gebruikt UBC-NLP/Casablanca (EMNLP 2024, handmatig getranscribeerd,
-acht dialecten) i.p.v. FLEURS: FLEURS heeft voor Arabisch alleen een
-Egyptisch-dialect-config, niet representatief voor de daadwerkelijke IND-
-doelgroep (zie Gehoren/Rapport complexiteit... .pdf, tabel B3.1: Syrisch,
-Iraaks, Marokkaans, Algerijns, Jemenitisch structureel in de top-10-
-nationaliteiten 2013-2022).
+Doel: large-v3 (server-brede standaard) vergelijken met een Maghrebijns-
+gerichte kandidaat op precies de twee dialecten waar large-v3 het slechtst op
+scoorde (zie de eerdere baseline-run: Morocco WER=0.904/CER=0.432, Algeria
+WER=0.788/CER=0.674 -- inclusief concrete hallucinaties, bv. een letterlijke
+"abonneer je op het kanaal"-YouTube-outro-hallucinatie op Algeria[9]).
 
-Test de dialecten die het dichtst bij die doelgroep liggen:
-  - jordan / palestine  -> proxy voor Levantijns/Syrisch (Syrië zelf zit niet
-    apart in Casablanca, Jordaans/Palestijns is dialectisch het dichtst bij)
-  - morocco / algeria   -> Maghrebijns (per de Interspeech-2025-leaderboard en
-    oddadmix's eigen modelkaart het lastigste dialect voor elk getest model)
-  - yemen               -> Jemenitisch
+Kandidaat: oddadmix/whisper-large-v3-turbo-arabic-dialectal -- fine-tune op
+Levantijns/Maghrebijns/Egyptisch/Golf/Soedanees/Iraaks/MSA. Eigen modelkaart:
+WER 0.344/CER 0.115 op een eigen testset (932 clips), met de expliciete
+kanttekening "real-world dialect coverage varies (Maghrebi is the hardest)"
+en "Private / internal model. Evaluate on your own data before production
+use." -- vandaar deze eigen, onafhankelijke meting i.p.v. dat cijfer over te
+nemen (zie feedback-memory verify-asr-model-claims-independently).
 
-Egypt/mauritania/uae worden overgeslagen -- minder relevant voor de IND-
-doelgroep, en dit script gaat om een gerichte baseline, niet volledigheid.
+Gebruikt UBC-NLP/Casablanca (EMNLP 2024, handmatig getranscribeerd) i.p.v.
+FLEURS: FLEURS heeft voor Arabisch alleen een Egyptisch-dialect-config, niet
+representatief voor de IND-doelgroep (zie Gehoren/Rapport complexiteit...pdf,
+tabel B3.1).
 
 Vereist (eenmalig, niet in pyproject.toml):
-    pip install datasets jiwer
+    pip install datasets jiwer librosa
 
-Gebruik op de RunPod-pod (venv actief, internet nodig voor Casablanca-download,
-~1GB):
+Gebruik op de RunPod-pod (venv actief, internet nodig voor Casablanca +
+oddadmix-download/conversie, ~3GB):
     python scripts/eval_arabic_wer_casablanca.py
 """
 
 import io
 import os
 import re
+import shutil
+import subprocess
 
 # Vóór elke import die HF Hub kan aanroken -- zie eerdere Somalisch-evaluaties
 # voor de achtergrond (HF_HUB_ENABLE_HF_TRANSFER=1 zonder hf_transfer-pakket in
@@ -40,10 +42,14 @@ import librosa
 import soundfile as sf
 from datasets import Audio, get_dataset_config_names, load_dataset
 from faster_whisper import WhisperModel
+from huggingface_hub import hf_hub_download
 from jiwer import cer, wer
 
-MODEL_NAME = "large-v3"
-DIALECT_CONFIGS = ["jordan", "palestine", "morocco", "algeria", "yemen"]
+STOCK_MODEL_NAME = "large-v3"
+ODDADMIX_HF_REPO = "oddadmix/whisper-large-v3-turbo-arabic-dialectal"
+ODDADMIX_CT2_DIR = "/workspace/models/oddadmix-arabic-dialectal-ct2"
+
+DIALECT_CONFIGS = ["morocco", "algeria"]
 SPLIT = "test"
 N_SAMPLES_PER_DIALECT = 20
 TARGET_SR = 16000
@@ -69,6 +75,26 @@ def resolve_configs() -> list[str]:
     return resolved
 
 
+def ensure_ct2_model(hf_repo: str, ct2_dir: str) -> str:
+    """Zelfde twee stappen als scripts/prepare_batch_model_registry.py: CT2-
+    conversie + preprocessor_config.json-aanvulling (ct2-transformers-converter
+    neemt dat bestand nooit vanzelf mee)."""
+    os.makedirs(ct2_dir, exist_ok=True)
+    if not os.path.isfile(os.path.join(ct2_dir, "model.bin")):
+        print(f"Converteer {hf_repo} -> {ct2_dir} (CT2, float16, kan even duren)...")
+        subprocess.run(
+            ["ct2-transformers-converter", "--model", hf_repo, "--output_dir", ct2_dir,
+             "--quantization", "float16", "--force"],
+            check=True,
+        )
+    preproc_path = os.path.join(ct2_dir, "preprocessor_config.json")
+    if not os.path.isfile(preproc_path):
+        print(f"Haal preprocessor_config.json op voor {hf_repo}...")
+        src = hf_hub_download(hf_repo, "preprocessor_config.json")
+        shutil.copy(src, preproc_path)
+    return ct2_dir
+
+
 def normalize(text: str) -> str:
     """Lichte normalisatie voor een eerlijke WER-vergelijking. Geen Arabisch-
     specifieke normalisatie (bv. hamza/alef-varianten, diakrieten) -- dat zou
@@ -80,7 +106,7 @@ def normalize(text: str) -> str:
     return text
 
 
-def load_audio(raw_bytes: bytes) -> "tuple[list[float], int]":
+def load_audio(raw_bytes: bytes):
     audio, sr = sf.read(io.BytesIO(raw_bytes), dtype="float32")
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
@@ -94,59 +120,62 @@ def main() -> None:
     configs = resolve_configs()
     print(f"Casablanca-dialecten: {configs}, split={SPLIT}, n/dialect={N_SAMPLES_PER_DIALECT}")
 
-    print(f"Laad {MODEL_NAME}...")
-    model = WhisperModel(MODEL_NAME, device="cuda", compute_type="float16")
+    print("Laad modellen...")
+    models = {
+        "large-v3": WhisperModel(STOCK_MODEL_NAME, device="cuda", compute_type="float16"),
+    }
+    try:
+        oddadmix_dir = ensure_ct2_model(ODDADMIX_HF_REPO, ODDADMIX_CT2_DIR)
+        models["oddadmix-dialectal"] = WhisperModel(oddadmix_dir, device="cuda", compute_type="float16")
+    except Exception as e:
+        print(f"[oddadmix-dialectal] kon niet geladen worden, sla over: {e}")
 
-    all_refs, all_hyps = [], []
-    per_dialect_results = {}
-
+    # Vooraf alle dialect-datasets laden (één keer per dialect, hergebruikt over modellen).
+    dialect_samples = {}
     for dialect in configs:
-        print(f"\n=== Dialect: {dialect} ===")
         try:
             ds = load_dataset("UBC-NLP/Casablanca", dialect, split=f"{SPLIT}[:{N_SAMPLES_PER_DIALECT}]")
         except Exception as e:
             print(f"[{dialect}] kon dataset niet laden, overgeslagen: {e}")
             continue
-        ds = ds.cast_column("audio", Audio(decode=False))
+        dialect_samples[dialect] = ds.cast_column("audio", Audio(decode=False))
 
-        refs, hyps = [], []
-        for i, sample in enumerate(ds):
-            audio, sr = load_audio(sample["audio"]["bytes"])
-            reference = sample.get("transcription")
-            if not reference:
-                print(f"[{dialect}][{i}] geen referentietekst, velden: {list(sample.keys())}")
-                continue
+    results = {label: {} for label in models}
 
-            segments, _info = model.transcribe(
-                audio,
-                language="ar",
-                beam_size=7,
-                temperature=[0.0, 0.2],
-                condition_on_previous_text=False,
-                vad_filter=True,
-                no_speech_threshold=0.9,
-            )
-            hyp = " ".join(seg.text.strip() for seg in segments).strip()
+    for dialect, ds in dialect_samples.items():
+        print(f"\n=== Dialect: {dialect} ===")
+        for label, model in models.items():
+            refs, hyps = [], []
+            for i, sample in enumerate(ds):
+                audio, sr = load_audio(sample["audio"]["bytes"])
+                reference = sample.get("transcription")
+                if not reference:
+                    continue
 
-            print(f"[{dialect}][{i}] REF: {reference}")
-            print(f"[{dialect}][{i}] HYP: {hyp}")
+                segments, _info = model.transcribe(
+                    audio,
+                    language="ar",
+                    beam_size=7,
+                    temperature=[0.0, 0.2],
+                    condition_on_previous_text=False,
+                    vad_filter=True,
+                    no_speech_threshold=0.9,
+                )
+                hyp = " ".join(seg.text.strip() for seg in segments).strip()
 
-            refs.append(normalize(reference))
-            hyps.append(normalize(hyp) or " ")
+                print(f"[{dialect}][{i}][{label}] REF: {reference}")
+                print(f"[{dialect}][{i}][{label}] HYP: {hyp}")
 
-        if refs:
-            d_wer, d_cer = wer(refs, hyps), cer(refs, hyps)
-            per_dialect_results[dialect] = (d_wer, d_cer, len(refs))
-            all_refs.extend(refs)
-            all_hyps.extend(hyps)
+                refs.append(normalize(reference))
+                hyps.append(normalize(hyp) or " ")
 
-    print(f"\n=== Resultaat per dialect ({MODEL_NAME}) ===")
-    for dialect, (d_wer, d_cer, n) in per_dialect_results.items():
-        print(f"{dialect:12s} WER={d_wer:.3f}  CER={d_cer:.3f}  (n={n})")
+            if refs:
+                results[label][dialect] = (wer(refs, hyps), cer(refs, hyps), len(refs))
 
-    if all_refs:
-        print(f"\n=== Gemiddeld over alle dialecten ===")
-        print(f"WER={wer(all_refs, all_hyps):.3f}  CER={cer(all_refs, all_hyps):.3f}  (n={len(all_refs)})")
+    print("\n=== Resultaat per dialect en model ===")
+    for label, per_dialect in results.items():
+        for dialect, (d_wer, d_cer, n) in per_dialect.items():
+            print(f"{label:20s} {dialect:10s} WER={d_wer:.3f}  CER={d_cer:.3f}  (n={n})")
 
 
 if __name__ == "__main__":
