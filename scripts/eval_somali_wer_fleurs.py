@@ -125,6 +125,12 @@ def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
             ],
             check=True,
         )
+        # De originele HF-gewichten (~3GB per model) zijn na een geslaagde conversie
+        # overbodig -- alleen de CT2-output in local_dir wordt hergebruikt. Zonder
+        # deze cleanup liepen we op de RunPod-pod vast op schijfruimte (FLEURS +
+        # meerdere modellen x tijdelijk dubbele opslag tijdens de .bin->safetensors-
+        # stap hierboven).
+        shutil.rmtree(staging_dir, ignore_errors=True)
     else:
         print(f"{local_dir} al aanwezig -> conversie skip")
 
