@@ -1,13 +1,23 @@
 """Eenmalig evaluatiescript, GEEN onderdeel van de reguliere pijplijn.
 
 Doel: large-v3 (server-brede standaard) vergelijken met een Maghrebijns-
-gerichte kandidaat op precies de twee dialecten waar large-v3 het slechtst op
-scoorde (zie de eerdere baseline-run: Morocco WER=0.904/CER=0.432, Algeria
-WER=0.788/CER=0.674 -- inclusief concrete hallucinaties, bv. een letterlijke
-"abonneer je op het kanaal"-YouTube-outro-hallucinatie op Algeria[9]).
+gerichte kandidaat over ALLE vijf geteste dialecten (Jordaans/Palestijns als
+proxy voor Levantijns/Syrisch, Marokkaans, Algerijns, Jemenitisch) -- niet
+alleen op Marokkaans/Algerijns, waar large-v3 het eerder het slechtst deed
+(baseline: Morocco WER=0.904/CER=0.432, Algeria WER=0.788/CER=0.674,
+inclusief concrete hallucinaties zoals een letterlijke "abonneer je op het
+kanaal"-YouTube-outro-hallucinatie op Algeria[9]; op oddadmix daarna gemeten:
+Morocco WER=0.640/CER=0.250, Algeria WER=0.743/CER=0.295 -- forse verbetering,
+onafhankelijk bevestigd, geen hallucinaties meer op dezelfde fragmenten).
 
-Kandidaat: oddadmix/whisper-large-v3-turbo-arabic-dialectal -- fine-tune op
-Levantijns/Maghrebijns/Egyptisch/Golf/Soedanees/Iraaks/MSA. Eigen modelkaart:
+Openstaande vraag die deze volledige run beantwoordt: oddadmix is getraind op
+Levantijns/Maghrebijns/Egyptisch/Golf/Soedanees/Iraaks/MSA tegelijk -- als het
+óók minstens even goed is op Jordaans/Palestijns/Jemenitisch (waar large-v3
+al prima scoorde), hoeft er geen dialect-specifieke routering gebouwd te
+worden en kan gewoon AL het Arabisch naar oddadmix. Scoort het daar juist
+slechter (specialisatie-afruil), dan is dialect-routering wél nodig.
+
+Kandidaat: oddadmix/whisper-large-v3-turbo-arabic-dialectal. Eigen modelkaart:
 WER 0.344/CER 0.115 op een eigen testset (932 clips), met de expliciete
 kanttekening "real-world dialect coverage varies (Maghrebi is the hardest)"
 en "Private / internal model. Evaluate on your own data before production
@@ -50,7 +60,7 @@ STOCK_MODEL_NAME = "large-v3"
 ODDADMIX_HF_REPO = "oddadmix/whisper-large-v3-turbo-arabic-dialectal"
 ODDADMIX_CT2_DIR = "/workspace/models/oddadmix-arabic-dialectal-ct2"
 
-DIALECT_CONFIGS = ["morocco", "algeria"]
+DIALECT_CONFIGS = ["jordan", "palestine", "morocco", "algeria", "yemen"]
 SPLIT = "test"
 N_SAMPLES_PER_DIALECT = 20
 TARGET_SR = 16000
