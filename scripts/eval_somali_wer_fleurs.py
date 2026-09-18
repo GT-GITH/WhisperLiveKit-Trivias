@@ -25,10 +25,11 @@ large-v3-download):
     python scripts/eval_somali_wer_fleurs.py
 """
 
+import io
 import re
 
-import numpy as np
-from datasets import get_dataset_config_names, load_dataset
+import soundfile as sf
+from datasets import Audio, get_dataset_config_names, load_dataset
 from faster_whisper import WhisperModel
 from jiwer import cer, wer
 
@@ -73,6 +74,11 @@ def main() -> None:
     config = resolve_somali_config()
     print(f"FLEURS-config: {config}, split={SPLIT}, n={N_SAMPLES}")
     ds = load_dataset("google/fleurs", config, split=f"{SPLIT}[:{N_SAMPLES}]")
+    # Nieuwere datasets-versies decoderen audio via torchcodec (eigen torch-versie-eis,
+    # zelfde soort valkuil als de eerdere transformers/torch-mismatch) -- decode=False
+    # geeft de ruwe bestandsbytes terug, die we hieronder zelf met soundfile inlezen
+    # (al een bestaande dependency, geen nieuwe torch-gevoelige package nodig).
+    ds = ds.cast_column("audio", Audio(decode=False))
 
     print("Laad modellen (eenmalig, hergebruikt voor alle samples)...")
     models = {
@@ -83,8 +89,9 @@ def main() -> None:
     results = {name: {"refs": [], "hyps": []} for name in models}
 
     for i, sample in enumerate(ds):
-        audio = sample["audio"]["array"].astype(np.float32)
-        sr = sample["audio"]["sampling_rate"]
+        audio, sr = sf.read(io.BytesIO(sample["audio"]["bytes"]), dtype="float32")
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
         if sr != 16000:
             raise RuntimeError(f"Onverwachte samplerate {sr}, verwacht 16000")
         reference = sample.get("transcription") or sample.get("raw_transcription")
