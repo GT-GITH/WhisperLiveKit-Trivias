@@ -1,9 +1,10 @@
 """Eenmalig diagnose-scriptje, GEEN onderdeel van de reguliere pijplijn.
 
-Doel: op EXACT hetzelfde audiofragment (bevestigd door de user als schoon,
-geldig Somalisch -- sessie d8593ed1-b0f2-4ab9-931d-6da049045cf5, job
-0ea6c2c2, window 0..31746ms, waar de pijplijn slechts 'baki nda' teruggaf
-voor 25 seconden spraak) vergelijken:
+Doel: op EXACT hetzelfde audiofragment (sessie 15f7501c-5bff-45a3-a28a-
+9b9653071ab3, job d05651e8, window 0..30230ms -- geldig Somalisch, ditmaal
+afgewezen op no_speech_prob=0.857, niet op repetitie of een te korte tekst;
+faster-whisper gaf hier 4 zinnen terug, o.a. "Guur kum marhaadu le stedjis...")
+vergelijken:
   a) microsoft/paza-whisper-large-v3-turbo (het huidige PoC-kandidaatmodel,
      fine-tuned op 6 Oost-Afrikaanse talen -- 5 Bantoetalen + Somalisch als
      enige Cushitische uitzondering; modelkaart zelf: "not recommended for
@@ -30,11 +31,11 @@ import wave
 import numpy as np
 from faster_whisper import WhisperModel
 
-WAV_PATH = "recordings/session_d8593ed1-b0f2-4ab9-931d-6da049045cf5_foreign_so_20260918T131242Z.wav"
+WAV_PATH = "recordings/session_15f7501c-5bff-45a3-a28a-9b9653071ab3_foreign_so_20260918T132846Z.wav"
 PAZA_MODEL_DIR = "/workspace/models/paza-whisper-large-v3-turbo-ct2"
 STOCK_MODEL_NAME = "large-v3"
 START_MS = 0
-END_MS = 31746
+END_MS = 30230
 SAMPLE_RATE = 16000
 
 
