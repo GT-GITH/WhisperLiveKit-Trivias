@@ -311,8 +311,15 @@ PY
   if [[ "${NLLB_ENABLED}" == "1" || "${SOMALI_BATCH_MODEL_ENABLED}" == "1" ]]; then
     # transformers is nodig voor de NLLB-tokenizer én voor ct2-transformers-converter
     # (modelroutering-PoC hieronder) -- ctranslate2 zelf is al een dep via faster-whisper.
+    # Gepind (<5): een ongepinde install trok op 2026-09-18 transformers==5.15.0 binnen,
+    # dat eist torch>=2.5 en schakelt zonder foutmelding zijn PyTorch-backend uit tegen
+    # het hier gepinde torch==2.4.1+cu121 (install_pytorch_compatible hierboven, vastgezet
+    # voor de rest van de CUDA/ctranslate2/pyannote-stack) -- ct2-transformers-converter
+    # faalt daardoor pas verderop, bij het echte laden van WhisperForConditionalGeneration
+    # (geconstateerd tijdens de foreign_so-modelroutering-PoC-test op RunPod). 4.49 is de
+    # laatste bevestigd torch>=2.0-compatibele lijn met large-v3-turbo-ondersteuning.
     log "Install transformers (NLLB-tokenizer en/of ct2-transformers-converter)..."
-    pip install transformers
+    pip install "transformers>=4.46,<5"
   fi
   if [[ "${NLLB_ENABLED}" == "1" ]]; then
     log "Install langid (al-Nederlands-check bij tolk-vertaling)..."
@@ -332,7 +339,17 @@ PY
   if [[ "${NLLB_ENABLED}" == "1" ]]; then
     python -c "import ctranslate2, transformers, langid; print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__)" || die "ctranslate2/transformers/langid import faalde"
   elif [[ "${SOMALI_BATCH_MODEL_ENABLED}" == "1" ]]; then
-    python -c "import ctranslate2, transformers; print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__)" || die "ctranslate2/transformers import faalde (nodig voor modelroutering-PoC conversie)"
+    # Meer dan alleen 'import transformers' -- die slaagt ook als transformers zijn
+    # PyTorch-backend zelf stilzwijgend heeft uitgeschakeld (torch-versie te oud voor
+    # de geïnstalleerde transformers-versie). ct2-transformers-converter faalt dan pas
+    # verderop, na een volledige HF-download, bij WhisperForConditionalGeneration.from_pretrained().
+    # Dit forceert diezelfde backend-check hier, offline en vóór de download.
+    python -c "
+import ctranslate2, transformers
+from transformers import WhisperForConditionalGeneration
+WhisperForConditionalGeneration.from_pretrained  # triggert transformers' backend-guard zonder te downloaden
+print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__, '(PyTorch-backend OK)')
+" || die "ctranslate2/transformers import faalde, of transformers' PyTorch-backend is uitgeschakeld (torch-versie te oud voor deze transformers-versie) -- nodig voor modelroutering-PoC conversie"
   fi
 
   if [[ "${DIARIZATION}" == "1" ]]; then
