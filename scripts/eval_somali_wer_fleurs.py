@@ -63,7 +63,7 @@ os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 import soundfile as sf
 from datasets import Audio, get_dataset_config_names, load_dataset
 from faster_whisper import WhisperModel
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from jiwer import cer, wer
 
 PAZA_MODEL_DIR = "/workspace/models/paza-whisper-large-v3-turbo-ct2"
@@ -78,14 +78,25 @@ SPLIT = "test"
 
 def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
     """Idempotente CT2-conversie + preprocessor_config.json-aanvulling --
-    zelfde twee stappen als prepare_somali_batch_model() in scripts/init.sh."""
+    zelfde twee stappen als prepare_somali_batch_model() in scripts/init.sh.
+
+    Download het HF-model eerst zelf lokaal (i.p.v. de repo-naam rechtstreeks
+    aan ct2-transformers-converter te geven) met .bin-checkpoints uitgesloten:
+    recente transformers-versies weigeren pickle-.bin-bestanden te laden
+    tenzij torch>=2.6 (CVE-2025-32434) -- geconstateerd op steja/whisper-
+    large-somali, dat zowel een .bin als een .safetensors publiceert.
+    ignore_patterns dwingt de safetensors-variant af, waar die blokkade niet
+    voor geldt."""
     os.makedirs(local_dir, exist_ok=True)
     if not os.path.isfile(os.path.join(local_dir, "model.bin")):
-        print(f"Converteer {hf_repo} -> {local_dir} (CT2, float16, kan even duren)...")
+        staging_dir = local_dir + "-hf-src"
+        print(f"Download {hf_repo} -> {staging_dir} (alleen safetensors)...")
+        snapshot_download(hf_repo, local_dir=staging_dir, ignore_patterns=["*.bin", "*.h5", "*.msgpack"])
+        print(f"Converteer {staging_dir} -> {local_dir} (CT2, float16, kan even duren)...")
         subprocess.run(
             [
                 "ct2-transformers-converter",
-                "--model", hf_repo,
+                "--model", staging_dir,
                 "--output_dir", local_dir,
                 "--quantization", "float16",
                 "--force",
