@@ -179,3 +179,17 @@ def get_channel_config(channel_id: Optional[str]) -> ChannelTranscriptionConfig:
     if channel_id.startswith("foreign_"):
         return CHANNEL_CONFIGS["foreign"]
     return CHANNEL_CONFIGS["default"]
+
+
+def resolve_language_for_routing(channel_id: Optional[str]) -> Optional[str]:
+    """Taalcode voor modelroutering-doeleinden (TranscriptionEngine.get_batch_asr_for_channel()):
+    voor "foreign_<code>"-kanalen is dat de suffix (dezelfde conventie als app.js's
+    getChannelId() en TriviasServer.py's _resolve_channel_language() -- de taal van een
+    foreign_*-kanaal zit al in de channel_id zelf, nooit in deze config). Voor overige
+    kanalen (employee/lawyer/interpreter/default) de vaste taal uit hun CHANNEL_CONFIGS-
+    vermelding (bv. altijd "nl")."""
+    if not channel_id:
+        return None
+    if channel_id.startswith("foreign_"):
+        return channel_id[len("foreign_"):]
+    return get_channel_config(channel_id).language

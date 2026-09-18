@@ -1,3 +1,4 @@
+import json
 import logging
 import sys
 from argparse import Namespace
@@ -6,7 +7,7 @@ from whisperlivekit.local_agreement.online_asr import OnlineASRProcessor
 from whisperlivekit.local_agreement.whisper_online import backend_factory
 from whisperlivekit.simul_whisper import SimulStreamingASR
 from whisperlivekit.simul_whisper.backend import BatchFasterWhisperASR
-from whisperlivekit.simul_whisper.config import get_channel_config
+from whisperlivekit.simul_whisper.config import get_channel_config, resolve_language_for_routing
 
 
 def update_with_kwargs(_dict, kwargs):
@@ -99,11 +100,33 @@ class TranscriptionEngine:
         if self.args.transcription:
 
             self.batch_asr = None
-            # Modelroutering (fase 1, batch-only -- zie voorstel): registry van
-            # extra BatchFasterWhisperASR-instances, lazily gebouwd per uniek
-            # channel_cfg.batch_model_path. Kanalen zonder override (vandaag: alle)
-            # blijven op self.batch_asr, exact het bestaande gedrag.
+            # Modelroutering (generiek, per taal): registry van extra
+            # BatchFasterWhisperASR-instances, lazily gebouwd per uniek modelpad.
+            # Kanalen/talen zonder override blijven op self.batch_asr, exact het
+            # bestaande gedrag.
             self._batch_asr_registry: dict = {}
+            # {taalcode: ct2_model_pad}, handmatig bijgehouden na validatie (zie
+            # project-memory "modelroutering-poc") -- geen taal krijgt een
+            # specialisatie tenzij expliciet in dit bestand vermeld. Bewust geen
+            # automatische mapnaam-detectie: een specialisatie is een bewuste,
+            # geverifieerde beslissing, geen bijeffect van wat er toevallig op
+            # schijf staat.
+            self._language_batch_model_registry: dict = {}
+            registry_path = kwargs.get("batch_model_registry")
+            if registry_path:
+                try:
+                    with open(registry_path, "r", encoding="utf-8") as f:
+                        self._language_batch_model_registry = json.load(f)
+                    logger.info(
+                        "Modelroutering: batch_model_registry geladen (%d taal/talen) uit %s: %s",
+                        len(self._language_batch_model_registry), registry_path,
+                        list(self._language_batch_model_registry.keys()),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Modelroutering: kon batch_model_registry niet laden (%s) -- "
+                        "ga verder zonder taalspecifieke routering: %s", registry_path, e,
+                    )
             if backend_policy == "simulstreaming":               
                 simulstreaming_params = {
                     "disable_fast_encoder": False,
@@ -209,24 +232,32 @@ class TranscriptionEngine:
 
     def get_batch_asr_for_channel(self, channel_id: str):
         """
-        Modelroutering (fase 1, batch-only -- zie voorstel voor modelroutering
-        per kanaal). Kanalen zonder expliciet channel_cfg.batch_model_path
-        krijgen het server-brede standaardmodel (self.batch_asr) terug --
-        exact het gedrag van vóór deze methode bestond. Alleen een kanaal met
-        een expliciete override krijgt een eigen, apart geladen
-        BatchFasterWhisperASR-instance (lazily gebouwd, daarna hergebruikt).
-        De live/AlignAtt-route blijft in deze fase bewust ongemoeid.
+        Modelroutering (generiek, per taal -- batch-only). Volgorde:
+        1. channel_cfg.batch_model_path -- expliciete per-kanaal override, voor
+           het zeldzame geval dat één specifiek kanaal (i.p.v. een hele taal)
+           een eigen model nodig heeft.
+        2. self._language_batch_model_registry -- de taal van dit kanaal
+           (resolve_language_for_routing()) opgezocht in het via
+           --batch-model-registry geladen JSON-bestand.
+        3. self.batch_asr -- het server-brede standaardmodel, exact het gedrag
+           van vóór deze methode bestond.
+        Elk model wordt lazily gebouwd (eerste keer per uniek pad) en daarna
+        hergebruikt. De live/AlignAtt-route blijft bewust ongemoeid.
         """
         if self.batch_asr is None:
             return None
         channel_cfg = get_channel_config(channel_id)
         model_path = channel_cfg.batch_model_path
         if not model_path:
+            language = resolve_language_for_routing(channel_id)
+            if language:
+                model_path = self._language_batch_model_registry.get(language)
+        if not model_path:
             return self.batch_asr
         if model_path not in self._batch_asr_registry:
             logger.info(
-                "Modelroutering: laad apart batch-model voor channel_id=%s model=%s",
-                channel_id, model_path,
+                "Modelroutering: laad apart batch-model voor channel_id=%s taal=%s model=%s",
+                channel_id, resolve_language_for_routing(channel_id), model_path,
             )
             self._batch_asr_registry[model_path] = BatchFasterWhisperASR(
                 model=model_path,

@@ -371,6 +371,22 @@ def parse_args():
         help="Device voor het NLLB-model ('auto', 'cuda' of 'cpu'). Default 'auto'.",
     )
 
+    # Modelroutering per kanaal (generiek, per taal -- zie
+    # ChannelTranscriptionConfig.batch_model_path / TranscriptionEngine.get_batch_asr_for_channel()).
+    routing_group = parser.add_argument_group("Modelroutering per kanaal (generiek, per taal)")
+    routing_group.add_argument(
+        "--batch-model-registry",
+        type=str,
+        default=None,
+        dest="batch_model_registry",
+        help="Pad naar een JSON-bestand dat taalcodes koppelt aan een eigen, apart "
+             'geconverteerd CTranslate2-batchmodel, bv. {"so": "/workspace/models/'
+             'somali-batch-ct2"}. Een taal zonder vermelding blijft op het server-'
+             "brede standaardmodel. Onbekend/leeg (default) = geen enkele taal "
+             "krijgt een specialisatie, ongewijzigd gedrag. Alleen de batch-pass "
+             "wordt gerouteerd, de live/AlignAtt-pass blijft ongemoeid.",
+    )
+
     args = parser.parse_args()
     
     args.transcription = not args.no_transcription
