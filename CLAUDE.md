@@ -28,6 +28,46 @@ The live (AlignAtt) pass optimizes for latency. Its output is for real-time unde
 **Batch transcription is the legally citable source.**
 The batch (FasterWhisper) pass is the authoritative transcript. It runs with higher beam width and more context and is the only output that should be quoted in legal proceedings, stored as the official transcript, or surfaced as "final" in the UI. Features that blur this distinction — e.g. mixing live and batch segments in the citation export — are design defects.
 
+## Audio-first Evidence Model (hard invariants)
+
+This platform is an **audio-first, evidence-based platform**, not a
+speech-to-text app and not an AI assistant. The design rationale is in
+`docs/architecture/ADR-001-audio-first-evidence-model.md` — read it before
+making architectural decisions. The binding rules:
+
+1. **The WAV on disk is never modified.** Gating, filtering and noise
+   suppression may only ever touch an in-memory copy on its way to a model.
+2. **No derived artifact may become detached from the evidence required to
+   verify it.** This is the core rule; the rest follow from it.
+3. **Channel identity is part of the evidence model, not presentation
+   metadata.** The channel is *who spoke* — in an interpreted hearing, the
+   difference between what the interviewee said, what the interpreter
+   translated and what the employee asked is legally material.
+4. **Time is the primary key.** Every segment carries stream-relative ms; the
+   audio fragment follows deterministically (16 kHz mono s16le → byte offset =
+   ms × 32). Change the recording format and that derivation must change with it.
+5. **LIVE, FINAL and AUDIO are three distinct things.** Live = transient UI
+   representation. Final/batch = authoritative textual derivative. Audio =
+   the evidence. Never collapse them.
+6. **Models are replaceable processors, never part of the durable data model.**
+   Do not architect the domain model around the current Whisper build, LLM,
+   translation model or prompt. Per-channel models are allowed, but which model
+   and configuration produced a result must remain recoverable — including
+   which fallback was used and why.
+7. **AI derives and proposes; the human judges.** Do not build UI or APIs in
+   which a generated conclusion can be presented or exported detached from its
+   provenance.
+
+**Consequence for every change:** do not optimize this platform merely for
+"the best transcript". The transcript is an important intermediate
+representation; the actual product is the evidence chain. A technically
+excellent transcript that loses the link between audio, speaker, time, segment
+and derived observation is an architectural regression, not an improvement.
+
+Known gaps in the current implementation (and when they are due to be closed)
+are tabled at the end of the ADR — consult it before assuming a provenance
+field exists.
+
 ## Commands
 
 **Install from source:**
@@ -123,6 +163,7 @@ Models are loaded once into `TranscriptionEngine` (singleton per server process)
 
 ## Docs
 
+- `docs/architecture/ADR-001-audio-first-evidence-model.md` — **the audio-first evidence model**: why this architecture exists, its binding invariants, and the table of known provenance gaps with the point at which each is due to be closed
 - `docs/FO.md` — **Functioneel Ontwerp** — authoritative functional specification for this project; read this before making feature decisions
 - `docs/API.md` — WebSocket protocol and JSON message schema
 - `docs/technical_integration.md` — embedding WLK without FastAPI
