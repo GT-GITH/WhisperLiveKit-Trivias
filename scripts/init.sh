@@ -426,19 +426,37 @@ prepare_somali_batch_model() {
   # SOMALI_BATCH_MODEL_SRC is een gewoon HF/PyTorch-checkpoint -- daarom hier
   # één keer converteren, net als download_nllb_model() hierboven idempotent.
   [[ "${SOMALI_BATCH_MODEL_ENABLED:-0}" == "1" ]] || return 0
+  mkdir -p "$SOMALI_BATCH_MODEL_DIR"
   if [[ -f "$SOMALI_BATCH_MODEL_DIR/model.bin" ]]; then
     log "Somalisch batch-model (CT2) al aanwezig → conversie skip: $SOMALI_BATCH_MODEL_DIR"
-    return 0
+  else
+    command -v ct2-transformers-converter >/dev/null 2>&1 \
+      || die "ct2-transformers-converter niet gevonden (verwacht via het ctranslate2-pakket). Run eerst: bash scripts/init.sh --setup (met SOMALI_BATCH_MODEL_ENABLED=1)"
+    log "Converteer Somalisch batch-model naar CTranslate2: $SOMALI_BATCH_MODEL_SRC → $SOMALI_BATCH_MODEL_DIR (eerste keer kan een tijd duren, download + conversie)..."
+    ct2-transformers-converter \
+      --model "$SOMALI_BATCH_MODEL_SRC" \
+      --output_dir "$SOMALI_BATCH_MODEL_DIR" \
+      --quantization float16 \
+      --force
   fi
-  command -v ct2-transformers-converter >/dev/null 2>&1 \
-    || die "ct2-transformers-converter niet gevonden (verwacht via het ctranslate2-pakket). Run eerst: bash scripts/init.sh --setup (met SOMALI_BATCH_MODEL_ENABLED=1)"
-  log "Converteer Somalisch batch-model naar CTranslate2: $SOMALI_BATCH_MODEL_SRC → $SOMALI_BATCH_MODEL_DIR (eerste keer kan een tijd duren, download + conversie)..."
-  mkdir -p "$(dirname "$SOMALI_BATCH_MODEL_DIR")"
-  ct2-transformers-converter \
-    --model "$SOMALI_BATCH_MODEL_SRC" \
-    --output_dir "$SOMALI_BATCH_MODEL_DIR" \
-    --quantization float16 \
-    --force
+
+  # ct2-transformers-converter zet alleen modelgewichten + tokenizer weg, geen
+  # preprocessor_config.json (feature_size/mel-banden). faster-whisper valt zonder
+  # dat bestand terug op FeatureExtractor's default feature_size=80 -- voor een
+  # large-v3-gebaseerd model (128 mel-banden) faalt de decode dan pas bij de
+  # eerste echte batch-job met "Invalid input features shape: expected ... (1, 128,
+  # 3000), but got ... (1, 80, 3000)" (geconstateerd tijdens de foreign_so-PoC-test
+  # op RunPod, 2026-09-18). Losse idempotente stap, want het bestand ontbrak ook
+  # in een al eerder (vóór deze fix) geconverteerde modelmap.
+  if [[ ! -f "$SOMALI_BATCH_MODEL_DIR/preprocessor_config.json" ]]; then
+    log "Haal preprocessor_config.json op voor $SOMALI_BATCH_MODEL_SRC (mel-bank-config, ontbreekt in ct2-transformers-converter's output)..."
+    python - <<PY
+from huggingface_hub import hf_hub_download
+import shutil
+src = hf_hub_download("$SOMALI_BATCH_MODEL_SRC", "preprocessor_config.json")
+shutil.copy(src, "$SOMALI_BATCH_MODEL_DIR/preprocessor_config.json")
+PY
+  fi
 }
 
 startlive() {
