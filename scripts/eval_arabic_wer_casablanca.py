@@ -28,6 +28,7 @@ oddadmix-download/conversie, ~3GB):
 """
 
 import io
+import json
 import os
 import re
 import shutil
@@ -42,7 +43,7 @@ import librosa
 import soundfile as sf
 from datasets import Audio, get_dataset_config_names, load_dataset
 from faster_whisper import WhisperModel
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from jiwer import cer, wer
 
 STOCK_MODEL_NAME = "large-v3"
@@ -75,18 +76,43 @@ def resolve_configs() -> list[str]:
     return resolved
 
 
+def _fix_extra_special_tokens(staging_dir: str) -> None:
+    """Twee onafhankelijke Whisper-finetune-auteurs (Sunbird, oddadmix) bleken
+    dezelfde tokenizer_config.json-eigenaardigheid te publiceren: extra_special_tokens
+    als lege lijst i.p.v. dict. transformers' PreTrainedTokenizerBase roept hier
+    altijd .keys() op aan en crasht met AttributeError -- vermoedelijk een bug in
+    een veelgebruikt Whisper-finetune-exportscript, dus deze patch is breed
+    herbruikbaar voor toekomstige kandidaten."""
+    path = os.path.join(staging_dir, "tokenizer_config.json")
+    if not os.path.isfile(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    if isinstance(config.get("extra_special_tokens"), list):
+        config["extra_special_tokens"] = {}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(config, f)
+
+
 def ensure_ct2_model(hf_repo: str, ct2_dir: str) -> str:
-    """Zelfde twee stappen als scripts/prepare_batch_model_registry.py: CT2-
-    conversie + preprocessor_config.json-aanvulling (ct2-transformers-converter
-    neemt dat bestand nooit vanzelf mee)."""
+    """Download het HF-model eerst zelf lokaal (i.p.v. de repo-naam rechtstreeks
+    aan ct2-transformers-converter te geven), zodat een kapotte tokenizer_config.json
+    gepatcht kan worden vóór de conversie. Zelfde twee vervolgstappen als
+    scripts/prepare_batch_model_registry.py: CT2-conversie + preprocessor_config.json-
+    aanvulling (ct2-transformers-converter neemt dat bestand nooit vanzelf mee)."""
     os.makedirs(ct2_dir, exist_ok=True)
     if not os.path.isfile(os.path.join(ct2_dir, "model.bin")):
-        print(f"Converteer {hf_repo} -> {ct2_dir} (CT2, float16, kan even duren)...")
+        staging_dir = ct2_dir + "-hf-src"
+        print(f"Download {hf_repo} -> {staging_dir}...")
+        snapshot_download(hf_repo, local_dir=staging_dir, ignore_patterns=["*.h5", "*.msgpack"])
+        _fix_extra_special_tokens(staging_dir)
+        print(f"Converteer {staging_dir} -> {ct2_dir} (CT2, float16, kan even duren)...")
         subprocess.run(
-            ["ct2-transformers-converter", "--model", hf_repo, "--output_dir", ct2_dir,
+            ["ct2-transformers-converter", "--model", staging_dir, "--output_dir", ct2_dir,
              "--quantization", "float16", "--force"],
             check=True,
         )
+        shutil.rmtree(staging_dir, ignore_errors=True)
     preproc_path = os.path.join(ct2_dir, "preprocessor_config.json")
     if not os.path.isfile(preproc_path):
         print(f"Haal preprocessor_config.json op voor {hf_repo}...")
