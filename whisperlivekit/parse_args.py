@@ -377,14 +377,17 @@ def parse_args():
     routing_group.add_argument(
         "--batch-model-registry",
         type=str,
-        default=None,
+        default="batch_model_registry.json",
         dest="batch_model_registry",
-        help="Pad naar een JSON-bestand dat taalcodes koppelt aan een eigen, apart "
-             'geconverteerd CTranslate2-batchmodel, bv. {"so": "/workspace/models/'
-             'somali-batch-ct2"}. Een taal zonder vermelding blijft op het server-'
-             "brede standaardmodel. Onbekend/leeg (default) = geen enkele taal "
-             "krijgt een specialisatie, ongewijzigd gedrag. Alleen de batch-pass "
-             "wordt gerouteerd, de live/AlignAtt-pass blijft ongemoeid.",
+        help="Pad naar een JSON-bestand (default: batch_model_registry.json in de "
+             'projectroot, git-getrackt) dat taalcodes koppelt aan een eigen, apart '
+             'geconverteerd CTranslate2-batchmodel, bv. {"so": {"hf_repo": "...", '
+             '"ct2_dir": "/workspace/models/somali-batch-ct2"}}. Een taal zonder '
+             "vermelding blijft op het server-brede standaardmodel. Ontbrekend/leeg "
+             "bestand = geen enkele taal krijgt een specialisatie, ongewijzigd "
+             "gedrag. Alleen de batch-pass wordt gerouteerd, de live/AlignAtt-pass "
+             "blijft ongemoeid. Zie scripts/prepare_batch_model_registry.py voor het "
+             "voorbereiden (conversie) van elke vermelding.",
     )
 
     args = parser.parse_args()

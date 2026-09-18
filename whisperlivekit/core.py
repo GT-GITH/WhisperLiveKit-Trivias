@@ -105,23 +105,35 @@ class TranscriptionEngine:
             # Kanalen/talen zonder override blijven op self.batch_asr, exact het
             # bestaande gedrag.
             self._batch_asr_registry: dict = {}
-            # {taalcode: ct2_model_pad}, handmatig bijgehouden na validatie (zie
-            # project-memory "modelroutering-poc") -- geen taal krijgt een
-            # specialisatie tenzij expliciet in dit bestand vermeld. Bewust geen
-            # automatische mapnaam-detectie: een specialisatie is een bewuste,
-            # geverifieerde beslissing, geen bijeffect van wat er toevallig op
-            # schijf staat.
+            # {taalcode: ct2_model_pad}, afgeleid van batch_model_registry.json
+            # (projectroot, git-getrackt; zie scripts/prepare_batch_model_registry.py voor
+            # het volledige {"taalcode": {"hf_repo": ..., "ct2_dir": ...}}-schema -- hier
+            # wordt alleen ct2_dir uitgelezen, hf_repo is enkel relevant bij het
+            # converteren). Handmatig bijgehouden na validatie (zie project-memory
+            # "modelroutering-poc") -- geen taal krijgt een specialisatie tenzij
+            # expliciet in dit bestand vermeld. Bewust geen automatische mapnaam-
+            # detectie: een specialisatie is een bewuste, geverifieerde beslissing,
+            # geen bijeffect van wat er toevallig op schijf staat.
             self._language_batch_model_registry: dict = {}
             registry_path = kwargs.get("batch_model_registry")
             if registry_path:
                 try:
                     with open(registry_path, "r", encoding="utf-8") as f:
-                        self._language_batch_model_registry = json.load(f)
+                        raw_registry = json.load(f)
+                    self._language_batch_model_registry = {
+                        lang: (entry.get("ct2_dir") if isinstance(entry, dict) else entry)
+                        for lang, entry in raw_registry.items()
+                    }
+                    self._language_batch_model_registry = {
+                        lang: path for lang, path in self._language_batch_model_registry.items() if path
+                    }
                     logger.info(
                         "Modelroutering: batch_model_registry geladen (%d taal/talen) uit %s: %s",
                         len(self._language_batch_model_registry), registry_path,
                         list(self._language_batch_model_registry.keys()),
                     )
+                except FileNotFoundError:
+                    pass  # registry.json ontbreekt (bv. een fresh checkout) -- gewoon geen routering
                 except Exception as e:
                     logger.warning(
                         "Modelroutering: kon batch_model_registry niet laden (%s) -- "

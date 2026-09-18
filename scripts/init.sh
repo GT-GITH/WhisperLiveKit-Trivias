@@ -33,6 +33,24 @@ echo "[init] init.sh version: $INIT_VERSION"
 log() { echo -e "[init] $*"; }
 die() { echo -e "[init] ❌ $*" >&2; exit 1; }
 
+# Modelroutering per kanaal (generiek, per taal): true zodra batch_model_registry.json
+# (projectroot, git-getrackt) minstens één taal-vermelding bevat. Gebruikt om te
+# bepalen of transformers/ct2-transformers-converter geinstalleerd moeten worden en of
+# scripts/prepare_batch_model_registry.py iets te doen heeft. Fail-safe: ontbrekend of
+# kapot bestand telt als "geen vermeldingen", nooit een harde fout.
+registry_has_entries() {
+  local registry_file="$APP_DIR/batch_model_registry.json"
+  [[ -f "$registry_file" ]] || return 1
+  python -c "
+import json, sys
+try:
+    data = json.load(open('$registry_file', encoding='utf-8'))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if data else 1)
+" 2>/dev/null
+}
+
 IS_SOURCED=0
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
   IS_SOURCED=1
@@ -291,25 +309,29 @@ PY
   log "Install project + deps (editable) via pyproject.toml..."
   pip install -e .
 
-  if [[ "${NLLB_ENABLED}" == "1" ]]; then
-    # transformers is nodig voor de NLLB-tokenizer, en ook voor ct2-transformers-converter
-    # zodra een toekomstige per-kanaal modelroutering weer een HF-checkpoint moet
-    # converteren (zie ChannelTranscriptionConfig.batch_model_path/
-    # TranscriptionEngine.get_batch_asr_for_channel()) -- ctranslate2 zelf is al een dep
-    # via faster-whisper. Gepind (<5): een ongepinde install trok op 2026-09-18
-    # transformers==5.15.0 binnen, dat eist torch>=2.5 en schakelt zonder foutmelding
-    # zijn PyTorch-backend uit tegen het hier gepinde torch==2.4.1+cu121
-    # (install_pytorch_compatible hierboven, vastgezet voor de rest van de
-    # CUDA/ctranslate2/pyannote-stack) -- ct2-transformers-converter faalt daardoor pas
-    # verderop, bij het echte laden van WhisperForConditionalGeneration (geconstateerd
-    # tijdens de Somalisch-modelroutering-PoC-test op RunPod). 4.49 is de laatste
-    # bevestigd torch>=2.0-compatibele lijn met large-v3-turbo-ondersteuning.
+  NEED_TRANSFORMERS=0
+  [[ "${NLLB_ENABLED}" == "1" ]] && NEED_TRANSFORMERS=1
+  registry_has_entries && NEED_TRANSFORMERS=1
+  if [[ "$NEED_TRANSFORMERS" == "1" ]]; then
+    # transformers is nodig voor de NLLB-tokenizer, en voor ct2-transformers-converter
+    # zodra batch_model_registry.json een taal-vermelding bevat (zie
+    # ChannelTranscriptionConfig.batch_model_path/TranscriptionEngine.get_batch_asr_for_channel())
+    # -- ctranslate2 zelf is al een dep via faster-whisper. Gepind (<5): een ongepinde
+    # install trok op 2026-09-18 transformers==5.15.0 binnen, dat eist torch>=2.5 en
+    # schakelt zonder foutmelding zijn PyTorch-backend uit tegen het hier gepinde
+    # torch==2.4.1+cu121 (install_pytorch_compatible hierboven, vastgezet voor de rest
+    # van de CUDA/ctranslate2/pyannote-stack) -- ct2-transformers-converter faalt
+    # daardoor pas verderop, bij het echte laden van WhisperForConditionalGeneration
+    # (geconstateerd tijdens de Somalisch-modelroutering-PoC-test op RunPod). 4.49 is
+    # de laatste bevestigd torch>=2.0-compatibele lijn met large-v3-turbo-ondersteuning.
     log "Install transformers (NLLB-tokenizer en/of ct2-transformers-converter)..."
     pip install "transformers>=4.46,<5"
+  else
+    log "NLLB_ENABLED=0 en geen batch_model_registry.json-vermeldingen → transformers-install skip"
+  fi
+  if [[ "${NLLB_ENABLED}" == "1" ]]; then
     log "Install langid (al-Nederlands-check bij tolk-vertaling)..."
     pip install langid
-  else
-    log "NLLB_ENABLED=0 → transformers/langid-install skip"
   fi
 
   install_nemo_sortformer
@@ -319,19 +341,22 @@ PY
   python -c "import torchaudio; print('torchaudio', torchaudio.__version__)" || die "torchaudio import faalde"
   python -c "import faster_whisper; print('faster_whisper OK')" || die "faster-whisper import faalde"
   python -c "import onnxruntime; print('onnxruntime OK')" || die "onnxruntime import faalde"
-  if [[ "${NLLB_ENABLED}" == "1" ]]; then
+  if [[ "$NEED_TRANSFORMERS" == "1" ]]; then
     # Meer dan alleen 'import transformers' -- die slaagt ook als transformers zijn
     # PyTorch-backend zelf stilzwijgend heeft uitgeschakeld (torch-versie te oud voor
     # de geïnstalleerde transformers-versie). ct2-transformers-converter faalt dan pas
     # verderop, na een volledige HF-download, bij WhisperForConditionalGeneration.from_pretrained()
     # -- dit forceert diezelfde backend-check hier, offline en vóór de download. Relevant
-    # zodra per-kanaal modelroutering weer een HF-checkpoint moet converteren.
+    # zodra batch_model_registry.json een taal-vermelding bevat.
     python -c "
-import ctranslate2, transformers, langid
+import ctranslate2, transformers
 from transformers import WhisperForConditionalGeneration
 WhisperForConditionalGeneration.from_pretrained  # triggert transformers' backend-guard zonder te downloaden
 print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__, '(PyTorch-backend OK)')
-" || die "ctranslate2/transformers import faalde, of transformers' PyTorch-backend is uitgeschakeld (torch-versie te oud voor deze transformers-versie) -- nodig voor modelroutering-PoC conversie"
+" || die "ctranslate2/transformers import faalde, of transformers' PyTorch-backend is uitgeschakeld (torch-versie te oud voor deze transformers-versie) -- nodig voor modelroutering-conversie"
+  fi
+  if [[ "${NLLB_ENABLED}" == "1" ]]; then
+    python -c "import langid; print('langid OK')" || die "langid import faalde"
   fi
 
   if [[ "${DIARIZATION}" == "1" ]]; then
@@ -471,6 +496,22 @@ startlive() {
     log "NLLB_ENABLED=0 → /translate draait in fallback-modus (geen vertaling)"
   fi
 
+  # Modelroutering per kanaal (generiek, per taal): elke vermelding in
+  # batch_model_registry.json (projectroot, git-getrackt) wordt hier -- vóór de server
+  # start -- geconverteerd/klaargezet, zodat een operator nooit op een live download
+  # hoeft te wachten na het configureren van een taal en klikken op "Start opname".
+  # Leeg bestand = registry_has_entries false = prepare_batch_model_registry.py wordt
+  # niet eens aangeroepen (geen ct2-transformers-converter-afhankelijkheid nodig).
+  ROUTING_ARGS=()
+  if registry_has_entries; then
+    command -v ct2-transformers-converter >/dev/null 2>&1 \
+      || die "ct2-transformers-converter niet gevonden maar batch_model_registry.json heeft vermeldingen. Run eerst: bash scripts/init.sh --setup"
+    python "$APP_DIR/scripts/prepare_batch_model_registry.py"
+    ROUTING_ARGS+=(--batch-model-registry "$APP_DIR/batch_model_registry.json")
+  else
+    log "batch_model_registry.json is leeg → geen enkele taal krijgt een specialisatie (ongewijzigd gedrag)"
+  fi
+
   log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED nllb_enabled=$NLLB_ENABLED"
   nohup python -m whisperlivekit.TriviasServer \
     --host "$HOST" --port "$PORT" \
@@ -482,6 +523,7 @@ startlive() {
     --pcm-input \
     "${DIAR_ARGS[@]}" \
     "${LLM_ARGS[@]}" \
+    "${ROUTING_ARGS[@]}" \
     "${NLLB_ARGS[@]}" \
     > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
