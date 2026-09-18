@@ -52,6 +52,14 @@ import re
 import shutil
 import subprocess
 
+# Vóór elke import die HF Hub kan aanroken: deze RunPod-omgeving heeft
+# HF_HUB_ENABLE_HF_TRANSFER=1 zonder het bijbehorende hf_transfer-pakket
+# geinstalleerd (zelfde val als scripts/init.sh's startlive() al ondervangt
+# voor de servercontext, maar dat gold niet voor los uitgevoerde scripts --
+# hier nu ook hardcoded i.p.v. per keer een env-var-prefix te moeten
+# onthouden, geconstateerd na 2x dezelfde fout op de RunPod-pod).
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
 import soundfile as sf
 from datasets import Audio, get_dataset_config_names, load_dataset
 from faster_whisper import WhisperModel
