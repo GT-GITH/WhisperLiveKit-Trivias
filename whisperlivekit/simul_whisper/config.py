@@ -193,3 +193,18 @@ def resolve_language_for_routing(channel_id: Optional[str]) -> Optional[str]:
     if channel_id.startswith("foreign_"):
         return channel_id[len("foreign_"):]
     return get_channel_config(channel_id).language
+
+
+def strip_dialect_suffix(lang: Optional[str]) -> Optional[str]:
+    """Whisper kent geen apart taaltoken per dialect -- een dialect-gekwalificeerde
+    routeringscode (bv. "ar_ma" voor Marokkaans-Arabisch, "ar_dz" voor Algerijns-
+    Arabisch; zie resolve_language_for_routing() hierboven en batch_model_registry.json)
+    moet vóór een daadwerkelijke ASR-aanroep worden teruggebracht tot de kale
+    basistaalcode ("ar"). Codes zonder underscore (het overgrote merendeel)
+    blijven ongewijzigd. Gebruikt door zowel de live- als de batch-taalresolutie
+    (audio_processor.py, TriviasServer.py._resolve_channel_language()) -- de
+    routeringscode zelf (channel_id, resolve_language_for_routing()) blijft overal
+    ongestript, alleen wat richting het model gaat wordt hier gecorrigeerd."""
+    if not lang:
+        return lang
+    return lang.split("_", 1)[0]

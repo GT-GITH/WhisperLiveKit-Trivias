@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
 from whisperlivekit.simul_whisper.backend import evaluate_batch_segment
-from whisperlivekit.simul_whisper.config import get_channel_config
+from whisperlivekit.simul_whisper.config import get_channel_config, strip_dialect_suffix
 from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
 from whisperlivekit.gehoorverslag import build_gehoorverslag_docx
 from whisperlivekit.llm_backend import LLMBackend, build_llm_backend
@@ -491,13 +491,19 @@ def _resolve_channel_language(channel_id: str, session_id: Optional[str] = None)
        (bv. "foreign_tr", zie getChannelId() in app.js) -- persistent (staat
        letterlijk in de WAV-bestandsnaam), ook zonder sessie-metadata.
     3. Fallback: de vaste rol-preset (get_channel_config()) -- voor sessies van
-       vóór de per-kanaal-taal-persistentie, of zonder session_id beschikbaar."""
+       vóór de per-kanaal-taal-persistentie, of zonder session_id beschikbaar.
+
+    Dialect-gekwalificeerde codes (bv. "foreign_ar_ma" voor Marokkaans-Arabisch)
+    worden hier altijd teruggebracht tot de kale basistaalcode ("ar") --
+    Whisper kent geen apart taaltoken per dialect. De volledige code blijft
+    beschikbaar voor modelroutering via resolve_language_for_routing()
+    (simul_whisper/config.py), die apart op channel_id werkt."""
     if session_id:
         persisted = session_manager.get_channel_language(session_id, channel_id)
         if persisted:
-            return persisted
+            return strip_dialect_suffix(persisted)
     if channel_id and channel_id.startswith("foreign_"):
-        return channel_id[len("foreign_"):] or "nl"
+        return strip_dialect_suffix(channel_id[len("foreign_"):]) or "nl"
     return get_channel_config(channel_id).language
 
 

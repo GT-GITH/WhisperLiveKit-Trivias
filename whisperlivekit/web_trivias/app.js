@@ -20,6 +20,8 @@ const LANGUAGES = [
   { code: "nl", label: "Nederlands" },
   { code: "en", label: "Engels" },
   { code: "ar", label: "Arabisch" },
+  { code: "ar_ma", label: "Arabisch (Marokkaans)" },
+  { code: "ar_dz", label: "Arabisch (Algerijns)" },
   { code: "fa", label: "Farsi / Perzisch" },
   { code: "ru", label: "Russisch" },
   { code: "fr", label: "Frans" },

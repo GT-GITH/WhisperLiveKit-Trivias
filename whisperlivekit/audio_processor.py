@@ -26,6 +26,7 @@ from whisperlivekit.core import (TranscriptionEngine,
 from whisperlivekit.ffmpeg_manager import FFmpegManager, FFmpegState
 from whisperlivekit.silero_vad_iterator import FixedVADIterator, OnnxWrapper, load_jit_vad
 from whisperlivekit.simul_whisper.backend import HALLUCINATION_PATTERNS, evaluate_batch_segment
+from whisperlivekit.simul_whisper.config import strip_dialect_suffix
 from whisperlivekit.timed_objects import (ASRToken, ChangeSpeaker, FrontData,
                                           Segment, Silence, State, Transcript)
 from whisperlivekit.tokens_alignment import TokensAlignment
@@ -139,7 +140,13 @@ class AudioProcessor:
         """Initialize the audio processor with configuration, models, and state."""
 
         self.channel_id = kwargs.get("channel_id", "default")
-        self.channel_language  = kwargs.get("language",  None)
+        # Dialect-gekwalificeerde taalcodes (bv. "ar_ma" voor Marokkaans-Arabisch,
+        # zie batch_model_registry.json) zitten in self.channel_id t.b.v. modelroutering
+        # (get_batch_asr_for_channel() hieronder, ongewijzigd) -- Whisper zelf kent geen
+        # apart taaltoken per dialect, dus hier altijd de kale basistaalcode bewaren;
+        # dit veld voedt zowel de live-taalinstelling (self.transcription hieronder)
+        # als de batch-taal-override.
+        self.channel_language  = strip_dialect_suffix(kwargs.get("language", None))
         self.channel_language2 = kwargs.get("language2", None)
 
         if 'transcription_engine' in kwargs and isinstance(kwargs['transcription_engine'], TranscriptionEngine):
