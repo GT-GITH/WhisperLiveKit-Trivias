@@ -207,16 +207,21 @@ def main() -> None:
     ds = ds.cast_column("audio", Audio(decode=False))
 
     print("Laad modellen (eenmalig, hergebruikt voor alle samples)...")
-    models = {
-        "paza": WhisperModel(PAZA_MODEL_DIR, device="cuda", compute_type="float16"),
-        "large-v3": WhisperModel(STOCK_MODEL_NAME, device="cuda", compute_type="float16"),
-        "steja": WhisperModel(
-            ensure_ct2_model(STEJA_HF_REPO, STEJA_MODEL_DIR), device="cuda", compute_type="float16"
-        ),
-        "sunbird": WhisperModel(
-            ensure_ct2_model(SUNBIRD_HF_REPO, SUNBIRD_MODEL_DIR), device="cuda", compute_type="float16"
-        ),
+    model_sources = {
+        "paza": lambda: PAZA_MODEL_DIR,
+        "large-v3": lambda: STOCK_MODEL_NAME,
+        "steja": lambda: ensure_ct2_model(STEJA_HF_REPO, STEJA_MODEL_DIR),
+        "sunbird": lambda: ensure_ct2_model(SUNBIRD_HF_REPO, SUNBIRD_MODEL_DIR),
     }
+    models = {}
+    for label, get_source in model_sources.items():
+        try:
+            models[label] = WhisperModel(get_source(), device="cuda", compute_type="float16")
+        except Exception as e:
+            # Eén ontoegankelijke/kapotte kandidaat (bv. Sunbird is een gated repo --
+            # vereist handmatig toegang aanvragen op de modelpagina, een HF-token
+            # alleen is niet genoeg) mag de vergelijking voor de rest niet blokkeren.
+            print(f"[{label}] kon niet geladen worden, sla over: {e}")
 
     results = {name: {"refs": [], "hyps": []} for name in models}
 
