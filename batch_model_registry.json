@@ -1,1 +1,12 @@
-{}
+{
+  "ar_ma": {
+    "hf_repo": "oddadmix/whisper-large-v3-turbo-arabic-dialectal",
+    "ct2_dir": "/workspace/models/oddadmix-arabic-dialectal-ct2",
+    "preprocessor_fallback_repo": "openai/whisper-large-v3-turbo"
+  },
+  "ar_dz": {
+    "hf_repo": "oddadmix/whisper-large-v3-turbo-arabic-dialectal",
+    "ct2_dir": "/workspace/models/oddadmix-arabic-dialectal-ct2",
+    "preprocessor_fallback_repo": "openai/whisper-large-v3-turbo"
+  }
+}

@@ -11,7 +11,10 @@ Registry-formaat (batch_model_registry.json, projectroot, git-getrackt):
 {
   "<taalcode>": {
     "hf_repo": "<HuggingFace-repo, gewoon PyTorch/HF-checkpoint>",
-    "ct2_dir": "<lokaal pad waar het geconverteerde model moet komen>"
+    "ct2_dir": "<lokaal pad waar het geconverteerde model moet komen>",
+    "preprocessor_fallback_repo": "<optioneel -- alleen nodig als hf_repo zelf
+       geen preprocessor_config.json publiceert; bv. 'openai/whisper-large-v3-
+       turbo' voor een large-v3-turbo-finetune>"
   }
 }
 
@@ -39,30 +42,43 @@ REGISTRY_PATH = os.path.join(
 )
 
 
-def ensure_ct2_model(lang: str, hf_repo: str, ct2_dir: str) -> None:
+def ensure_ct2_model(lang: str, hf_repo: str, ct2_dir: str, preprocessor_fallback_repo: str = None) -> None:
     os.makedirs(ct2_dir, exist_ok=True)
     if os.path.isfile(os.path.join(ct2_dir, "model.bin")):
         print(f"[{lang}] {ct2_dir} al aanwezig -> conversie skip")
-        return
-    print(f"[{lang}] converteer {hf_repo} -> {ct2_dir} (CT2, float16, kan even duren)...")
-    subprocess.run(
-        [
-            "ct2-transformers-converter",
-            "--model", hf_repo,
-            "--output_dir", ct2_dir,
-            "--quantization", "float16",
-            "--force",
-        ],
-        check=True,
-    )
+    else:
+        print(f"[{lang}] converteer {hf_repo} -> {ct2_dir} (CT2, float16, kan even duren)...")
+        subprocess.run(
+            [
+                "ct2-transformers-converter",
+                "--model", hf_repo,
+                "--output_dir", ct2_dir,
+                "--quantization", "float16",
+                "--force",
+            ],
+            check=True,
+        )
+
     # ct2-transformers-converter neemt nooit preprocessor_config.json mee (alleen
     # gewichten + tokenizer) -- zonder dat bestand valt faster-whisper terug op
     # feature_size=80 i.p.v. wat de architectuur (bv. 128 voor large-v3) vereist.
-    # Zie project-memory "modelroutering-poc" voor de volledige achtergrond.
+    # Buiten de "al geconverteerd"-tak om: een eerdere run kan dit bestand gemist
+    # hebben terwijl model.bin al wel bestond. Zie project-memory "modelroutering-poc".
     preproc_path = os.path.join(ct2_dir, "preprocessor_config.json")
     if not os.path.isfile(preproc_path):
         print(f"[{lang}] haal preprocessor_config.json op voor {hf_repo}...")
-        src = hf_hub_download(hf_repo, "preprocessor_config.json")
+        try:
+            src = hf_hub_download(hf_repo, "preprocessor_config.json")
+        except Exception as e:
+            if not preprocessor_fallback_repo:
+                raise
+            # Sommige finetunes (bv. oddadmix/whisper-large-v3-turbo-arabic-dialectal)
+            # publiceren alleen processor_config.json (generieke wrapper, geen
+            # feature-extractie-parameters). Mel-bank-parameters zijn architectuur-
+            # bepaald, niet finetune-specifiek -- val terug op het in de registry
+            # opgegeven basismodel i.p.v. te crashen.
+            print(f"[{lang}] {hf_repo} publiceert geen preprocessor_config.json ({e}) -- val terug op {preprocessor_fallback_repo}")
+            src = hf_hub_download(preprocessor_fallback_repo, "preprocessor_config.json")
         shutil.copy(src, preproc_path)
 
 
@@ -83,7 +99,7 @@ def main() -> None:
             print(f"[{lang}] WAARSCHUWING: vermelding mist 'hf_repo' of 'ct2_dir', overgeslagen: {entry}")
             continue
         try:
-            ensure_ct2_model(lang, hf_repo, ct2_dir)
+            ensure_ct2_model(lang, hf_repo, ct2_dir, entry.get("preprocessor_fallback_repo"))
         except Exception as e:
             print(f"[{lang}] FOUT bij voorbereiden ({hf_repo} -> {ct2_dir}): {e}", file=sys.stderr)
             print(f"[{lang}] blijft op het server-brede standaardmodel (fail-safe).")
