@@ -138,23 +138,6 @@ CHANNEL_CONFIGS: dict[str, ChannelTranscriptionConfig] = {
         batch_initial_prompt=None,
     ),
 
-    # PoC modelroutering (zie voorstel): expliciete vermelding zodat er een
-    # concrete plek is om batch_model_path in te vullen. Vandaag nog None =
-    # ongewijzigd gedrag, identiek aan de generieke "foreign"-fallback hieronder.
-    # Vul in zodra een CTranslate2-conversie van bv.
-    # microsoft/paza-whisper-large-v3-turbo beschikbaar is (lokaal pad of een
-    # al als CT2 gepubliceerde HF-repo), bv.
-    # batch_model_path="/models/paza-whisper-large-v3-turbo-ct2".
-    "foreign_so": ChannelTranscriptionConfig(
-        language="so",
-        task="transcribe",
-        live_frame_threshold=25,
-        live_audio_min_len=0.0,
-        live_decoder_type="greedy",
-        batch_initial_prompt=None,
-        batch_model_path=None,
-    ),
-
     # Generieke fallback voor elk "foreign_<taalcode>"-kanaal zonder eigen,
     # specifiek afgestelde vermelding hierboven (zie get_channel_config()).
     # app.js's LANGUAGES-lijst biedt 13 talen voor de rol "Vreemdeling", maar

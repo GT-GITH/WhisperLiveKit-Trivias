@@ -16,12 +16,6 @@ set -euo pipefail
 #        chatmodel (Ollama) bleek onbetrouwbaar voor vertaling van complexe
 #        brontalen -- NLLB is uitsluitend op vertalen getraind. NLLB_ENABLED=0
 #        om uit te zetten (dan draait /translate in fallback, 503).
-#   SOMALI_BATCH_MODEL_ENABLED=0 SOMALI_BATCH_MODEL_SRC=microsoft/paza-whisper-large-v3-turbo
-#     -> modelroutering per kanaal (fase 1, batch-only, PoC -- zie het voorstel).
-#        Default UIT: opt-in voor het foreign_so-kanaal. =1 converteert het
-#        bronmodel één keer naar CTranslate2 (SOMALI_BATCH_MODEL_DIR) en geeft
-#        dat pad door als --foreign-so-batch-model. Elk ander kanaal blijft
-#        ongewijzigd op het server-brede standaardmodel.
 #
 # Usage:
 #   bash scripts/init.sh --setup         # deps + git + venv + pip
@@ -91,17 +85,6 @@ OLLAMA_MODELS="${OLLAMA_MODELS:-$WORKSPACE/.ollama-models}"
 NLLB_ENABLED="${NLLB_ENABLED:-1}"
 NLLB_MODEL="${NLLB_MODEL:-entai2965/nllb-200-distilled-600M-ctranslate2}"
 NLLB_DEVICE="${NLLB_DEVICE:-auto}"
-
-# Modelroutering per kanaal (fase 1, batch-only, PoC -- zie het voorstel voor
-# modelroutering per kanaal). Default UIT: dit is een opt-in PoC voor het
-# foreign_so-kanaal, geen ander kanaal wordt hierdoor geraakt. Zet
-# SOMALI_BATCH_MODEL_ENABLED=1 om bij --setup/--setup-start het bronmodel
-# (PyTorch/HF-formaat) één keer te converteren naar CTranslate2 (nodig --
-# faster-whisper/BatchFasterWhisperASR kan geen ruwe HF-checkpoints laden) en
-# het resulterende pad als --foreign-so-batch-model aan de server mee te geven.
-SOMALI_BATCH_MODEL_ENABLED="${SOMALI_BATCH_MODEL_ENABLED:-0}"
-SOMALI_BATCH_MODEL_SRC="${SOMALI_BATCH_MODEL_SRC:-microsoft/paza-whisper-large-v3-turbo}"
-SOMALI_BATCH_MODEL_DIR="${SOMALI_BATCH_MODEL_DIR:-$WORKSPACE/models/paza-whisper-large-v3-turbo-ct2}"
 
 
 # --- ensure bash ---
@@ -308,25 +291,25 @@ PY
   log "Install project + deps (editable) via pyproject.toml..."
   pip install -e .
 
-  if [[ "${NLLB_ENABLED}" == "1" || "${SOMALI_BATCH_MODEL_ENABLED}" == "1" ]]; then
-    # transformers is nodig voor de NLLB-tokenizer én voor ct2-transformers-converter
-    # (modelroutering-PoC hieronder) -- ctranslate2 zelf is al een dep via faster-whisper.
-    # Gepind (<5): een ongepinde install trok op 2026-09-18 transformers==5.15.0 binnen,
-    # dat eist torch>=2.5 en schakelt zonder foutmelding zijn PyTorch-backend uit tegen
-    # het hier gepinde torch==2.4.1+cu121 (install_pytorch_compatible hierboven, vastgezet
-    # voor de rest van de CUDA/ctranslate2/pyannote-stack) -- ct2-transformers-converter
-    # faalt daardoor pas verderop, bij het echte laden van WhisperForConditionalGeneration
-    # (geconstateerd tijdens de foreign_so-modelroutering-PoC-test op RunPod). 4.49 is de
-    # laatste bevestigd torch>=2.0-compatibele lijn met large-v3-turbo-ondersteuning.
+  if [[ "${NLLB_ENABLED}" == "1" ]]; then
+    # transformers is nodig voor de NLLB-tokenizer, en ook voor ct2-transformers-converter
+    # zodra een toekomstige per-kanaal modelroutering weer een HF-checkpoint moet
+    # converteren (zie ChannelTranscriptionConfig.batch_model_path/
+    # TranscriptionEngine.get_batch_asr_for_channel()) -- ctranslate2 zelf is al een dep
+    # via faster-whisper. Gepind (<5): een ongepinde install trok op 2026-09-18
+    # transformers==5.15.0 binnen, dat eist torch>=2.5 en schakelt zonder foutmelding
+    # zijn PyTorch-backend uit tegen het hier gepinde torch==2.4.1+cu121
+    # (install_pytorch_compatible hierboven, vastgezet voor de rest van de
+    # CUDA/ctranslate2/pyannote-stack) -- ct2-transformers-converter faalt daardoor pas
+    # verderop, bij het echte laden van WhisperForConditionalGeneration (geconstateerd
+    # tijdens de Somalisch-modelroutering-PoC-test op RunPod). 4.49 is de laatste
+    # bevestigd torch>=2.0-compatibele lijn met large-v3-turbo-ondersteuning.
     log "Install transformers (NLLB-tokenizer en/of ct2-transformers-converter)..."
     pip install "transformers>=4.46,<5"
-  fi
-  if [[ "${NLLB_ENABLED}" == "1" ]]; then
     log "Install langid (al-Nederlands-check bij tolk-vertaling)..."
     pip install langid
-  fi
-  if [[ "${NLLB_ENABLED}" != "1" && "${SOMALI_BATCH_MODEL_ENABLED}" != "1" ]]; then
-    log "NLLB_ENABLED=0 en SOMALI_BATCH_MODEL_ENABLED=0 → transformers/langid-install skip"
+  else
+    log "NLLB_ENABLED=0 → transformers/langid-install skip"
   fi
 
   install_nemo_sortformer
@@ -337,15 +320,14 @@ PY
   python -c "import faster_whisper; print('faster_whisper OK')" || die "faster-whisper import faalde"
   python -c "import onnxruntime; print('onnxruntime OK')" || die "onnxruntime import faalde"
   if [[ "${NLLB_ENABLED}" == "1" ]]; then
-    python -c "import ctranslate2, transformers, langid; print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__)" || die "ctranslate2/transformers/langid import faalde"
-  elif [[ "${SOMALI_BATCH_MODEL_ENABLED}" == "1" ]]; then
     # Meer dan alleen 'import transformers' -- die slaagt ook als transformers zijn
     # PyTorch-backend zelf stilzwijgend heeft uitgeschakeld (torch-versie te oud voor
     # de geïnstalleerde transformers-versie). ct2-transformers-converter faalt dan pas
-    # verderop, na een volledige HF-download, bij WhisperForConditionalGeneration.from_pretrained().
-    # Dit forceert diezelfde backend-check hier, offline en vóór de download.
+    # verderop, na een volledige HF-download, bij WhisperForConditionalGeneration.from_pretrained()
+    # -- dit forceert diezelfde backend-check hier, offline en vóór de download. Relevant
+    # zodra per-kanaal modelroutering weer een HF-checkpoint moet converteren.
     python -c "
-import ctranslate2, transformers
+import ctranslate2, transformers, langid
 from transformers import WhisperForConditionalGeneration
 WhisperForConditionalGeneration.from_pretrained  # triggert transformers' backend-guard zonder te downloaden
 print('ctranslate2', ctranslate2.__version__, '/ transformers', transformers.__version__, '(PyTorch-backend OK)')
@@ -420,45 +402,6 @@ snapshot_download("$NLLB_MODEL")
 PY
 }
 
-prepare_somali_batch_model() {
-  # Modelroutering per kanaal (fase 1, batch-only, PoC -- zie het voorstel).
-  # faster-whisper/BatchFasterWhisperASR kan alleen CTranslate2-formaat laden,
-  # SOMALI_BATCH_MODEL_SRC is een gewoon HF/PyTorch-checkpoint -- daarom hier
-  # één keer converteren, net als download_nllb_model() hierboven idempotent.
-  [[ "${SOMALI_BATCH_MODEL_ENABLED:-0}" == "1" ]] || return 0
-  mkdir -p "$SOMALI_BATCH_MODEL_DIR"
-  if [[ -f "$SOMALI_BATCH_MODEL_DIR/model.bin" ]]; then
-    log "Somalisch batch-model (CT2) al aanwezig → conversie skip: $SOMALI_BATCH_MODEL_DIR"
-  else
-    command -v ct2-transformers-converter >/dev/null 2>&1 \
-      || die "ct2-transformers-converter niet gevonden (verwacht via het ctranslate2-pakket). Run eerst: bash scripts/init.sh --setup (met SOMALI_BATCH_MODEL_ENABLED=1)"
-    log "Converteer Somalisch batch-model naar CTranslate2: $SOMALI_BATCH_MODEL_SRC → $SOMALI_BATCH_MODEL_DIR (eerste keer kan een tijd duren, download + conversie)..."
-    ct2-transformers-converter \
-      --model "$SOMALI_BATCH_MODEL_SRC" \
-      --output_dir "$SOMALI_BATCH_MODEL_DIR" \
-      --quantization float16 \
-      --force
-  fi
-
-  # ct2-transformers-converter zet alleen modelgewichten + tokenizer weg, geen
-  # preprocessor_config.json (feature_size/mel-banden). faster-whisper valt zonder
-  # dat bestand terug op FeatureExtractor's default feature_size=80 -- voor een
-  # large-v3-gebaseerd model (128 mel-banden) faalt de decode dan pas bij de
-  # eerste echte batch-job met "Invalid input features shape: expected ... (1, 128,
-  # 3000), but got ... (1, 80, 3000)" (geconstateerd tijdens de foreign_so-PoC-test
-  # op RunPod, 2026-09-18). Losse idempotente stap, want het bestand ontbrak ook
-  # in een al eerder (vóór deze fix) geconverteerde modelmap.
-  if [[ ! -f "$SOMALI_BATCH_MODEL_DIR/preprocessor_config.json" ]]; then
-    log "Haal preprocessor_config.json op voor $SOMALI_BATCH_MODEL_SRC (mel-bank-config, ontbreekt in ct2-transformers-converter's output)..."
-    python - <<PY
-from huggingface_hub import hf_hub_download
-import shutil
-src = hf_hub_download("$SOMALI_BATCH_MODEL_SRC", "preprocessor_config.json")
-shutil.copy(src, "$SOMALI_BATCH_MODEL_DIR/preprocessor_config.json")
-PY
-  fi
-}
-
 startlive() {
   # IMPORTANT: --start should NOT do setup. It assumes repo+venv are already ready.
   [[ -d "$APP_DIR/.git" ]] || die "Repo niet gevonden in $APP_DIR. Run eerst: bash scripts/init.sh --setup"
@@ -528,15 +471,7 @@ startlive() {
     log "NLLB_ENABLED=0 → /translate draait in fallback-modus (geen vertaling)"
   fi
 
-  ROUTING_ARGS=()
-  if [[ "$SOMALI_BATCH_MODEL_ENABLED" == "1" ]]; then
-    prepare_somali_batch_model
-    ROUTING_ARGS+=(--foreign-so-batch-model "$SOMALI_BATCH_MODEL_DIR")
-  else
-    log "SOMALI_BATCH_MODEL_ENABLED=0 → foreign_so blijft op het server-brede standaardmodel (ongewijzigd gedrag)"
-  fi
-
-  log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED nllb_enabled=$NLLB_ENABLED somali_batch_model_enabled=$SOMALI_BATCH_MODEL_ENABLED"
+  log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED nllb_enabled=$NLLB_ENABLED"
   nohup python -m whisperlivekit.TriviasServer \
     --host "$HOST" --port "$PORT" \
     --model "$MODEL" --language "$LANGUAGE" \
@@ -548,7 +483,6 @@ startlive() {
     "${DIAR_ARGS[@]}" \
     "${LLM_ARGS[@]}" \
     "${NLLB_ARGS[@]}" \
-    "${ROUTING_ARGS[@]}" \
     > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
   echo "$current_commit" > "$COMMIT_FILE"
