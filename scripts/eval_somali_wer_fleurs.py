@@ -122,7 +122,7 @@ def _fix_extra_special_tokens(staging_dir: str) -> None:
             json.dump(config, f)
 
 
-def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
+def ensure_ct2_model(hf_repo: str, local_dir: str, preprocessor_fallback_repo: str | None = None) -> str:
     """Idempotente CT2-conversie + preprocessor_config.json-aanvulling --
     zelfde twee stappen als prepare_somali_batch_model() in scripts/init.sh.
 
@@ -185,7 +185,17 @@ def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
     preproc_path = os.path.join(local_dir, "preprocessor_config.json")
     if not os.path.isfile(preproc_path):
         print(f"Haal preprocessor_config.json op voor {hf_repo}...")
-        src = hf_hub_download(hf_repo, "preprocessor_config.json")
+        try:
+            src = hf_hub_download(hf_repo, "preprocessor_config.json")
+        except Exception as e:
+            if not preprocessor_fallback_repo:
+                raise
+            # Sunbird publiceert alleen processor_config.json (een generieke wrapper
+            # zonder de feature-extractie-parameters die faster-whisper nodig heeft),
+            # geen preprocessor_config.json. Mel-bank-parameters zijn architectuur-
+            # bepaald, niet finetune-specifiek -- val terug op het basismodel.
+            print(f"{hf_repo} publiceert geen preprocessor_config.json ({e}) -- val terug op {preprocessor_fallback_repo}")
+            src = hf_hub_download(preprocessor_fallback_repo, "preprocessor_config.json")
         shutil.copy(src, preproc_path)
     return local_dir
 
@@ -236,7 +246,9 @@ def main() -> None:
         "paza": lambda: PAZA_MODEL_DIR,
         "large-v3": lambda: STOCK_MODEL_NAME,
         "steja": lambda: ensure_ct2_model(STEJA_HF_REPO, STEJA_MODEL_DIR),
-        "sunbird": lambda: ensure_ct2_model(SUNBIRD_HF_REPO, SUNBIRD_MODEL_DIR),
+        "sunbird": lambda: ensure_ct2_model(
+            SUNBIRD_HF_REPO, SUNBIRD_MODEL_DIR, preprocessor_fallback_repo="openai/whisper-large-v3"
+        ),
     }
     models = {}
     for label, get_source in model_sources.items():
