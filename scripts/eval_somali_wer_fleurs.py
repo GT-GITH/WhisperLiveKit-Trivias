@@ -75,6 +75,28 @@ SUNBIRD_MODEL_DIR = "/workspace/models/sunbird-asr-whisper-51-african-ct2"
 N_SAMPLES = 10
 SPLIT = "test"
 
+# Whisper's byte-level BPE-tokenizer is identiek over alle checkpoints/finetunes
+# heen -- sommige oudere/incomplete fine-tune-repo's (bv. steja/whisper-large-somali)
+# uploaden daarom geen eigen tokenizer-bestanden, wat ct2-transformers-converter
+# laat crashen op een ontbrekend vocab_file. Vul aan vanuit een bekend-compleet
+# basismodel als het lokaal ontbreekt.
+WHISPER_TOKENIZER_FALLBACK_REPO = "openai/whisper-large-v2"
+WHISPER_TOKENIZER_FILES = [
+    "vocab.json", "merges.txt", "tokenizer_config.json",
+    "normalizer.json", "added_tokens.json", "special_tokens_map.json",
+]
+
+
+def _ensure_tokenizer_files(staging_dir: str) -> None:
+    for fname in WHISPER_TOKENIZER_FILES:
+        if os.path.isfile(os.path.join(staging_dir, fname)):
+            continue
+        try:
+            src = hf_hub_download(WHISPER_TOKENIZER_FALLBACK_REPO, fname)
+        except Exception:
+            continue  # niet elk Whisper-checkpoint publiceert alle 6 bestanden, prima
+        shutil.copy(src, os.path.join(staging_dir, fname))
+
 
 def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
     """Idempotente CT2-conversie + preprocessor_config.json-aanvulling --
@@ -93,6 +115,7 @@ def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
         staging_dir = local_dir + "-hf-src"
         print(f"Download {hf_repo} -> {staging_dir}...")
         snapshot_download(hf_repo, local_dir=staging_dir, ignore_patterns=["*.h5", "*.msgpack"])
+        _ensure_tokenizer_files(staging_dir)
 
         has_safetensors = any(f.endswith(".safetensors") for f in os.listdir(staging_dir))
         if not has_safetensors:
