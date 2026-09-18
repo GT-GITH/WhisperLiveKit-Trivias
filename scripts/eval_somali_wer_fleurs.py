@@ -47,6 +47,7 @@ model-downloads -- steja/sunbird zijn elk ~3GB, reken op wat tijd):
 """
 
 import io
+import json
 import os
 import re
 import shutil
@@ -98,6 +99,29 @@ def _ensure_tokenizer_files(staging_dir: str) -> None:
         shutil.copy(src, os.path.join(staging_dir, fname))
 
 
+def _fix_extra_special_tokens(staging_dir: str) -> None:
+    """Sunbird/asr-whisper-51-african-languages serialiseert tokenizer_config.json's
+    extra_special_tokens als lege lijst i.p.v. dict -- transformers' PreTrainedTokenizerBase
+    roept hier altijd .keys() op aan en crasht dan met AttributeError. Upgraden van
+    transformers loste dit niet op (geen versieregressie, een eigenaardigheid van dit
+    specifieke bestand), dus patch het bestand hier gericht."""
+    path = os.path.join(staging_dir, "tokenizer_config.json")
+    if not os.path.isfile(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    if isinstance(config.get("extra_special_tokens"), list):
+        if config["extra_special_tokens"]:
+            print(
+                f"WAARSCHUWING: extra_special_tokens in {path} is een niet-lege lijst "
+                f"({config['extra_special_tokens']}) -- automatisch geleegd naar {{}} "
+                f"i.p.v. omgezet, mogelijk verlies van info."
+            )
+        config["extra_special_tokens"] = {}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(config, f)
+
+
 def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
     """Idempotente CT2-conversie + preprocessor_config.json-aanvulling --
     zelfde twee stappen als prepare_somali_batch_model() in scripts/init.sh.
@@ -116,6 +140,7 @@ def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
         print(f"Download {hf_repo} -> {staging_dir}...")
         snapshot_download(hf_repo, local_dir=staging_dir, ignore_patterns=["*.h5", "*.msgpack"])
         _ensure_tokenizer_files(staging_dir)
+        _fix_extra_special_tokens(staging_dir)
 
         has_safetensors = any(f.endswith(".safetensors") for f in os.listdir(staging_dir))
         if not has_safetensors:
