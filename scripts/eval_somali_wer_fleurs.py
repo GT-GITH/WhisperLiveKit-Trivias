@@ -3,11 +3,32 @@
 Doel: objectieve, native-speaker-onafhankelijke ASR-kwaliteitsmeting voor
 Somalisch. Gebruikt google/fleurs (Google's meertalige ASR-benchmark --
 102 talen, elk fragment met een geverifieerd correct referentietranscript)
-en berekent Word Error Rate (WER) / Character Error Rate (CER) voor zowel
-het huidige PoC-kandidaatmodel (Paza) als het server-brede standaardmodel
-(large-v3), op DEZELFDE fragmenten, met dezelfde instellingen als de
+en berekent Word Error Rate (WER) / Character Error Rate (CER) voor vier
+kandidaten op DEZELFDE fragmenten, met dezelfde instellingen als de
 productiepijplijn (beam_size=7, temperature=[0.0, 0.2], vad_filter=True,
-no_speech_threshold=0.9 -- zie simul_whisper/config.py's batch-defaults).
+no_speech_threshold=0.9 -- zie simul_whisper/config.py's batch-defaults):
+  - paza     microsoft/paza-whisper-large-v3-turbo (eerste PoC-kandidaat;
+             FLEURS-test 2026-09-18: WER 3.41 -- systematische herhalings-
+             hallucinatie op alle 10 samples, ongeschikt)
+  - large-v3 het server-brede standaardmodel (FLEURS-test 2026-09-18:
+             WER 0.92 / CER 0.34 -- de WER is kunstmatig hoog door
+             woordgrens-verschillen, CER geeft een eerlijker beeld)
+  - steja    steja/whisper-large-somali, fine-tune van whisper-large-v2 OP
+             de FLEURS so_so-trainingsset (dus mogelijk optimistisch op de
+             testset t.o.v. audio in het wild) -- eigen modelkaart claimt
+             WER 55.0 op de FLEURS-testset
+  - sunbird  Sunbird/asr-whisper-51-african-languages, fine-tune van
+             whisper-large-v3 op 51 Afrikaanse talen (Sunbird AI, juli 2026)
+             -- eigen modelkaart claimt WER 0.381 / CER 0.127 voor Somalisch.
+             LET OP: modelkaart labelt dit expliciet als "preview release,
+             gewichten kunnen nog wijzigen"
+
+steja en sunbird worden bij de eerste run automatisch naar CTranslate2
+geconverteerd (zelfde twee stappen als scripts/init.sh's
+prepare_somali_batch_model(): transformers<5 i.v.m. de torch-pin, en
+preprocessor_config.json omdat ct2-transformers-converter die zelf niet
+meeneemt -- zie commits a264f78/6ec48a7 voor de achtergrond), daarna
+hergebruikt uit /workspace/models/.
 
 LET OP: FLEURS is schone, ingesproken (gescripte) studio-spraak -- makkelijker
 dan een spontaan, geaccentueerd interview. Een goede score hier is een
@@ -20,23 +41,58 @@ omstandigheden" -- niet "presteert het goed genoeg voor een echt gehoor".
 Vereist (eenmalig, niet in pyproject.toml -- dit is een wegwerpscript):
     pip install datasets jiwer
 
-Gebruik op de RunPod-pod (venv actief, internet nodig voor de FLEURS- en
-large-v3-download):
+Gebruik op de RunPod-pod (venv actief, internet nodig voor FLEURS + de
+model-downloads -- steja/sunbird zijn elk ~3GB, reken op wat tijd):
     python scripts/eval_somali_wer_fleurs.py
 """
 
 import io
+import os
 import re
+import shutil
+import subprocess
 
 import soundfile as sf
 from datasets import Audio, get_dataset_config_names, load_dataset
 from faster_whisper import WhisperModel
+from huggingface_hub import hf_hub_download
 from jiwer import cer, wer
 
 PAZA_MODEL_DIR = "/workspace/models/paza-whisper-large-v3-turbo-ct2"
 STOCK_MODEL_NAME = "large-v3"
+STEJA_HF_REPO = "steja/whisper-large-somali"
+STEJA_MODEL_DIR = "/workspace/models/steja-whisper-large-somali-ct2"
+SUNBIRD_HF_REPO = "Sunbird/asr-whisper-51-african-languages"
+SUNBIRD_MODEL_DIR = "/workspace/models/sunbird-asr-whisper-51-african-ct2"
 N_SAMPLES = 10
 SPLIT = "test"
+
+
+def ensure_ct2_model(hf_repo: str, local_dir: str) -> str:
+    """Idempotente CT2-conversie + preprocessor_config.json-aanvulling --
+    zelfde twee stappen als prepare_somali_batch_model() in scripts/init.sh."""
+    os.makedirs(local_dir, exist_ok=True)
+    if not os.path.isfile(os.path.join(local_dir, "model.bin")):
+        print(f"Converteer {hf_repo} -> {local_dir} (CT2, float16, kan even duren)...")
+        subprocess.run(
+            [
+                "ct2-transformers-converter",
+                "--model", hf_repo,
+                "--output_dir", local_dir,
+                "--quantization", "float16",
+                "--force",
+            ],
+            check=True,
+        )
+    else:
+        print(f"{local_dir} al aanwezig -> conversie skip")
+
+    preproc_path = os.path.join(local_dir, "preprocessor_config.json")
+    if not os.path.isfile(preproc_path):
+        print(f"Haal preprocessor_config.json op voor {hf_repo}...")
+        src = hf_hub_download(hf_repo, "preprocessor_config.json")
+        shutil.copy(src, preproc_path)
+    return local_dir
 
 
 def resolve_somali_config() -> str:
@@ -84,6 +140,12 @@ def main() -> None:
     models = {
         "paza": WhisperModel(PAZA_MODEL_DIR, device="cuda", compute_type="float16"),
         "large-v3": WhisperModel(STOCK_MODEL_NAME, device="cuda", compute_type="float16"),
+        "steja": WhisperModel(
+            ensure_ct2_model(STEJA_HF_REPO, STEJA_MODEL_DIR), device="cuda", compute_type="float16"
+        ),
+        "sunbird": WhisperModel(
+            ensure_ct2_model(SUNBIRD_HF_REPO, SUNBIRD_MODEL_DIR), device="cuda", compute_type="float16"
+        ),
     }
 
     results = {name: {"refs": [], "hyps": []} for name in models}
