@@ -1719,6 +1719,7 @@ class AudioProcessor:
                     use_batch_as_final, _reject_reason = evaluate_batch_segment(
                         batch_avg_logprob, batch_compression, result.get("no_speech_prob"),
                         batch_txt, no_speech_threshold=no_speech_threshold,
+                        duration_s=audio_duration_s,
                     )
                     if not use_batch_as_final:
                         logger.warning(

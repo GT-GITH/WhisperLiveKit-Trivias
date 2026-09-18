@@ -593,6 +593,7 @@ def rebuild_channel_transcript(
         accepted, reason = evaluate_batch_segment(
             seg["avg_logprob"], seg["compression_ratio"], seg["no_speech_prob"], seg["text"],
             no_speech_threshold=None,
+            duration_s=seg["end"] - seg["start"],
         )
         if accepted:
             n_accepted += 1

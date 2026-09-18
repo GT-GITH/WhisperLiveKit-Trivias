@@ -201,9 +201,22 @@ def evaluate_batch_segment(
     no_speech_prob: float | None,
     text: str,
     no_speech_threshold: float | None = 0.6,
+    duration_s: float | None = None,
 ) -> tuple[bool, str]:
     """Kernbeslissing: is dit batch-resultaat betrouwbaar genoeg om als bevestigd
     (met vinkje) te tonen? Retourneert (geaccepteerd, reden-voor-logging).
+
+    duration_s (optioneel, lengte van het gedecodeerde audiofragment in seconden):
+    vangt een ander faalpatroon dan de bestaande checks hierboven. Geconstateerd
+    2026-09-18 (foreign_so-modelroutering-PoC): na uitputting van de temperatuur-
+    fallback-ladder op repetitie kan faster-whisper voor een venster van 25+
+    seconden spraak een tekst van een paar tekens teruggeven (bv. "baki nda") --
+    en omdat zo'n triviaal korte tekst per definitie een lage compression_ratio
+    heeft, kwam die ondanks de mislukking gewoon door de bestaande checks heen.
+    Alleen toegepast vanaf 3s (kortere fragmenten zijn te ruisgevoelig om op
+    tekens/seconde te beoordelen) en met een bewust lage vloer (1 teken/seconde
+    -- ruim onder normale spreeksnelheid van 10-15 tekens/seconde) zodat dit
+    geen echte, beknopte uitspraken afkeurt.
 
     no_speech_threshold=None schakelt de no_speech_prob-check helemaal uit. Nodig
     voor "Ververs Transcriptie" (2026-07-19): faster-whisper berekent no_speech_prob
@@ -232,8 +245,15 @@ def evaluate_batch_segment(
         (no_speech_prob < 0.92 and avg_logprob is not None and avg_logprob > -0.3)
     )
     has_hallucination_pattern = any(p in text for p in HALLUCINATION_PATTERNS)
+    MIN_CHARS_PER_SECOND = 1.0
+    MIN_DURATION_FOR_DENSITY_CHECK_S = 3.0
+    ok_density = (
+        duration_s is None or
+        duration_s < MIN_DURATION_FOR_DENSITY_CHECK_S or
+        (len(text) / duration_s) >= MIN_CHARS_PER_SECOND
+    )
 
-    if ok_logprob and ok_compr and ok_no_speech and not has_hallucination_pattern:
+    if ok_logprob and ok_compr and ok_no_speech and ok_density and not has_hallucination_pattern:
         return True, "accepted"
 
     reasons = []
@@ -243,6 +263,8 @@ def evaluate_batch_segment(
         reasons.append(f"compr={compression_ratio}")
     if not ok_no_speech:
         reasons.append(f"no_speech_prob={no_speech_prob}")
+    if not ok_density:
+        reasons.append(f"implausibly_short_for_duration=len={len(text)}/{duration_s:.1f}s")
     if has_hallucination_pattern:
         reasons.append("hallucination_pattern")
     return False, ",".join(reasons)
