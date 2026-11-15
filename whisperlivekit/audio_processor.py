@@ -75,6 +75,15 @@ BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
 # compleet. Daarom: sluiten pas als de stilte minstens zo lang duurt.
 BATCH_CLOSE_MIN_SILENCE_MS = 500
 
+# Duurt een stilte zo lang, dan sluit het venster OOK als het de minimumlengte
+# (BATCH_TARGET_WINDOW_MS) nog niet haalde -- mits er sinds het vensterbegin spraak was.
+# Zonder dit wachtte de definitieve tekst van een kanaal dat stilviel (terwijl in een
+# gehoor een ander kanaal praat) tot die persoon weer iets zei of tot Stop: 40-52 s
+# gemeten met de e2e-suite (2026-11-15).
+BATCH_IDLE_CLOSE_SILENCE_MS = 2000
+# Minimaal zoveel spraak (vensterbegin -> begin van de stilte) voor zo'n gedwongen sluiting.
+BATCH_IDLE_CLOSE_MIN_SPEECH_MS = 300
+
 
 class BatchCloseSignal:
     """Marker in transcription_queue: de huidige stilte duurt nu lang genoeg
@@ -92,8 +101,10 @@ class BatchCloseSignal:
     venster alsnog midden in de zin begon ("op volwassenen. op
     volwassenenpornografie.")."""
 
-    def __init__(self, speech_end_ms: int):
+    def __init__(self, speech_end_ms: int, force: bool = False):
         self.speech_end_ms = int(speech_end_ms)
+        # force=True: stilte >= BATCH_IDLE_CLOSE_SILENCE_MS -> sluiten ongeacht vensterlengte.
+        self.force = bool(force)
 
 _STATE_TOKENS_MAX_DURATION_S: float = 600.0  # maximaal 10 minuten tokens in state.tokens
 _STATE_TOKENS_PRUNE_TRIGGER: int = 13_000    # alleen prunen boven deze grens
@@ -265,6 +276,7 @@ class AudioProcessor:
         # Voor welke stilte (op start-tijd) BatchCloseSignal al verstuurd is -- één
         # signaal per stilte.
         self._batch_close_signalled_for: Optional[float] = None
+        self._batch_idle_signalled_for: Optional[float] = None  # idem voor de gedwongen sluiting
         # [DIAG][LIVEFEED] (2026-11-15): tellers per ~5 s stream-tijd -- wat gaat er
         # naar de live-pass (client-gate, VAC-stilte, niveau). Puur observerend.
         self._diag_feed = {"t0": 0.0, "n": 0, "gate_closed": 0, "in_silence": 0,
@@ -426,11 +438,15 @@ class AudioProcessor:
         if silence is None or not self.transcription_queue:
             return
         start = float(silence.start or 0.0)
-        if self._batch_close_signalled_for == start:
+        if self._batch_close_signalled_for == start and self._batch_idle_signalled_for == start:
             return
-        if (now_sample / self.sample_rate - start) * 1000.0 >= BATCH_CLOSE_MIN_SILENCE_MS:
+        silence_ms = (now_sample / self.sample_rate - start) * 1000.0
+        if self._batch_close_signalled_for != start and silence_ms >= BATCH_CLOSE_MIN_SILENCE_MS:
             self._batch_close_signalled_for = start
             await self.transcription_queue.put(BatchCloseSignal(speech_end_ms=round(start * 1000.0)))
+        if self._batch_idle_signalled_for != start and silence_ms >= BATCH_IDLE_CLOSE_SILENCE_MS:
+            self._batch_idle_signalled_for = start
+            await self.transcription_queue.put(BatchCloseSignal(speech_end_ms=round(start * 1000.0), force=True))
 
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
@@ -684,7 +700,8 @@ class AudioProcessor:
         return int(fallback_ms)
 
     async def _batch_on_silence_boundary(
-        self, stream_time_ms: int, boundary: str, speech_end_ms: Optional[int] = None
+        self, stream_time_ms: int, boundary: str, speech_end_ms: Optional[int] = None,
+        force: bool = False,
     ) -> None:
         """
         Stap 1: 30s hard-grens, stilte is afrondingshint.
@@ -712,6 +729,11 @@ class AudioProcessor:
             window_end_ms = self._get_last_speech_end_ms(fallback_ms=stream_time_ms)
         window_len_ms = window_end_ms - window_start_ms
 
+        # 0) Gedwongen sluiting na lange stilte (BATCH_IDLE_CLOSE_SILENCE_MS): ook als het
+        #    venster de minimumlengte nog niet haalde, mits er spraak in zat.
+        if force and window_len_ms >= BATCH_IDLE_CLOSE_MIN_SPEECH_MS:
+            self._batch_ready_to_close = True
+
         # 1) Markeer ready zodra target gehaald is
         if (not self._batch_ready_to_close) and (window_len_ms >= BATCH_TARGET_WINDOW_MS):
             self._batch_ready_to_close = True
@@ -733,8 +755,8 @@ class AudioProcessor:
             )
             return
 
-        # Enqueue alleen als window ook echt lang genoeg is
-        if window_len_ms < BATCH_TARGET_WINDOW_MS:
+        # Enqueue alleen als window ook echt lang genoeg is (behalve bij gedwongen sluiting)
+        if window_len_ms < BATCH_TARGET_WINDOW_MS and not (force and window_len_ms >= BATCH_IDLE_CLOSE_MIN_SPEECH_MS):
             logger.info(
                 f"[BATCH][WINDOW] ready_to_close but len too short: {window_len_ms/1000.0:.2f}s"
             )
@@ -1000,8 +1022,9 @@ class AudioProcessor:
                         stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
                         await self._batch_on_silence_boundary(
                             stream_time_ms=stream_time_ms,
-                            boundary="silence_confirmed",
+                            boundary="silence_idle" if item.force else "silence_confirmed",
                             speech_end_ms=item.speech_end_ms,
+                            force=item.force,
                         )
                     except Exception as e:
                         logger.warning(f"[BATCH][WINDOW] silence-confirmed handler failed: {e}")
