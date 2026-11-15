@@ -111,7 +111,7 @@ class BatchFasterWhisperASR:
         )
 
     def _decode(self, audio_f32: np.ndarray, lang: str | None, word_timestamps: bool,
-                coverage_start_s: float = 0.0):
+                coverage_start_s: float = 0.0, vad_context_f32: np.ndarray | None = None):
         """Decodeer alleen de spraakstukken, bepaald met chunked_vad (frisse VAD-toestand
         per kort stuk) i.p.v. faster-whisper's vad_filter (één VAD-pass met opgebouwde
         toestand die na lange muziek/stilte spraak mist -- zie chunked_vad.py).
@@ -172,7 +172,21 @@ class BatchFasterWhisperASR:
         # scheiden; de mens beslist door te luisteren.
         coverage_ids: set = set()
         if COVERAGE_ENABLED:
-            evidence = speech_intervals(audio_f32, threshold=COVERAGE_VAD_THRESHOLD)
+            # VAD-context (alleen voor de spraak-aanwijzing, NIET gedecodeerd): Silero
+            # begint per stuk zonder toestand en mist zo spraak aan het begin van een
+            # kort incrementeel venster. Offline (yt4, 16 vensters naspeeld): met 10 s
+            # audio ervoor gevonden -> "İstanbulluyum." (venster van 3 s) en de intro;
+            # zonder niet.
+            if vad_context_f32 is not None and len(vad_context_f32):
+                ctx_s = len(vad_context_f32) / 16000
+                evidence = [
+                    (s - ctx_s, e - ctx_s)
+                    for s, e in speech_intervals(np.concatenate([vad_context_f32, audio_f32]),
+                                                 threshold=COVERAGE_VAD_THRESHOLD)
+                    if e - ctx_s > 0
+                ]
+            else:
+                evidence = speech_intervals(audio_f32, threshold=COVERAGE_VAD_THRESHOLD)
             # Audio vóór coverage_start_s (linkermarge van een incrementeel venster) is
             # van het vorige venster en daar al gedekt: niet nog eens decoderen.
             evidence = [(max(a, coverage_start_s), b) for a, b in evidence if b > coverage_start_s]
@@ -193,9 +207,10 @@ class BatchFasterWhisperASR:
         return segments, coverage_ids
 
     def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False, language_override: str | None = None,
-                   coverage_start_s: float = 0.0) -> dict:
+                   coverage_start_s: float = 0.0, vad_context_f32: np.ndarray | None = None) -> dict:
         lang = language_override if language_override is not None else self.language
-        segments, coverage_ids = self._decode(audio_f32, lang, word_timestamps, coverage_start_s)
+        segments, coverage_ids = self._decode(audio_f32, lang, word_timestamps, coverage_start_s,
+                                              vad_context_f32)
 
         texts = []
         avg_logprobs = []
@@ -303,6 +318,8 @@ def gate_batch_sentence(seg: dict) -> tuple[bool, str]:
 
     coverage=True (tekst uit de dekkingscontrole, zie BatchFasterWhisperASR._decode):
     nooit automatisch bevestigd -- zichtbaar en terugluisterbaar, maar zonder vinkje."""
+    if seg.get("unreliable"):
+        return False, "hallucination_pattern"
     if seg.get("coverage"):
         return False, "coverage_redecode (onbevestigd: alleen door ruimere VAD gevonden)"
     return evaluate_batch_segment(
@@ -311,6 +328,26 @@ def gate_batch_sentence(seg: dict) -> tuple[bool, str]:
         no_speech_threshold=None,
         duration_s=(seg["end"] - seg["start"]) if seg.get("end") is not None and seg.get("start") is not None else None,
     )
+
+
+# Verliesplek V4 (ontwerpplan "geen stille audioverliezen", 2026-11-15): een zin met een
+# bekend hallucinatiepatroon werd in beide batch-paden stil verwijderd. Maar Whisper
+# hallucineert zo'n patroon ook OVER ECHTE SPRAAK: gezien op yt4 117.1 s, waar
+# "Sultanahmet'e götürdüm." (bevestigd gesproken) als "İzlediğiniz için teşekkür ederim."
+# uit de decoder kwam en daarna spoorloos verdween. De hallucinatietekst zelf tonen is
+# geen optie (onzin), verwijderen maakt het gat onzichtbaar. Daarom: de plek blijft staan
+# als onbevestigde regel met deze markering -- met tijdstempel, dus terugluisterbaar.
+UNRELIABLE_TEXT_MARKER = "[geen betrouwbare tekst]"
+
+
+def mark_unreliable(seg: dict) -> dict:
+    """Zin met een hallucinatiepatroon -> markering i.p.v. de hallucinatietekst
+    (originele tekst bewaard in 'hallucination_text' voor de logs). Gedeeld door de
+    incrementele batch-worker en "Ververs Transcriptie"."""
+    if any(p in (seg.get("text") or "") for p in HALLUCINATION_PATTERNS):
+        return {**seg, "text": UNRELIABLE_TEXT_MARKER, "hallucination_text": seg.get("text"),
+                "unreliable": True}
+    return seg
 
 
 def evaluate_batch_segment(

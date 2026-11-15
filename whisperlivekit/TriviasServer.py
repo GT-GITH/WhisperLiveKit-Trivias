@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
-from whisperlivekit.simul_whisper.backend import gate_batch_sentence
+from whisperlivekit.simul_whisper.backend import gate_batch_sentence, mark_unreliable
 from whisperlivekit.simul_whisper.config import get_channel_config, strip_dialect_suffix
 from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
 from whisperlivekit.gehoorverslag import build_gehoorverslag_docx
@@ -581,6 +581,10 @@ def rebuild_channel_transcript(
     for seg in segments:
         start_ms = int(round(seg["start"] * 1000.0))
         end_ms = int(round(seg["end"] * 1000.0))
+        # Hallucinatiepatroon -> markering "[geen betrouwbare tekst]" i.p.v. overslaan:
+        # Whisper hallucineert zo'n patroon ook over echte spraak, en overslaan maakte
+        # die plek onzichtbaar (zie backend.mark_unreliable; zelfde in _batch_worker).
+        seg = mark_unreliable(seg)
         # Gedeelde keuring per zin (zelfde functie als de incrementele batch-worker).
         accepted, reason = gate_batch_sentence(seg)
         if accepted:
@@ -588,16 +592,9 @@ def rebuild_channel_transcript(
         else:
             logger.info(
                 f"[REFRESH][REJECTED] session={session_id} channel={channel_id} "
-                f"ms={start_ms}..{end_ms} reason={reason} text='{seg['text'][:80]}'"
+                f"ms={start_ms}..{end_ms} reason={reason} "
+                f"text='{(seg.get('hallucination_text') or seg['text'])[:80]}'"
             )
-            if reason == "hallucination_pattern":
-                # Net als _batch_worker()'s [BATCH][FILTER] (audio_processor.py): een
-                # bekend hallucinatiepatroon is per definitie geen spraak, dus -- anders
-                # dan bij een laag-confidence maar wél mogelijk echte zin (80c6a09) --
-                # helemaal overslaan i.p.v. onbevestigd te bewaren. Zonder deze skip
-                # bleef de hallucinatietekst (zonder vinkje) toch zichtbaar in het
-                # ververste transcript, terwijl live 'm nooit liet zien.
-                continue
         entries.append({
             "type": "segment_update",
             "id": f"refresh_{start_ms}",

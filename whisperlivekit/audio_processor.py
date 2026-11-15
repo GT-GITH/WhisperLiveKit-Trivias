@@ -25,7 +25,8 @@ from whisperlivekit.core import (TranscriptionEngine,
                                  online_translation_factory)
 from whisperlivekit.ffmpeg_manager import FFmpegManager, FFmpegState
 from whisperlivekit.silero_vad_iterator import FixedVADIterator, OnnxWrapper, load_jit_vad
-from whisperlivekit.simul_whisper.backend import HALLUCINATION_PATTERNS, gate_batch_sentence
+from whisperlivekit.simul_whisper.backend import (
+    HALLUCINATION_PATTERNS, UNRELIABLE_TEXT_MARKER, gate_batch_sentence, mark_unreliable)
 from whisperlivekit.simul_whisper.config import strip_dialect_suffix
 from whisperlivekit.timed_objects import (ASRToken, ChangeSpeaker, FrontData,
                                           Segment, Silence, State, Transcript)
@@ -57,6 +58,9 @@ ENABLE_HARD_CAP = False
 # starttijd 2.08 s te vroeg, 3/3 runs. Dat is audio van het vorige venster.
 BATCH_CONTEXT_PAD_LEFT_MS = 600
 BATCH_CONTEXT_PAD_RIGHT_MS = 0
+# Audio vóór een batch-venster die de dekkingscontrole als VAD-context krijgt (zie
+# BatchFasterWhisperASR._decode, vad_context_f32). Alleen spraakdetectie, geen decodering.
+BATCH_VAD_CONTEXT_MS = 10000
 
 # Batch windowing (Stap 1)
 # Minimale vensterlengte vóór een batch-venster op een pauze mag sluiten. Tijdelijk
@@ -1824,6 +1828,14 @@ class AudioProcessor:
                     _lang_override,
                     getattr(self.batch_asr, "language", None),
                 )
+                # VAD-context voor de dekkingscontrole: de BATCH_VAD_CONTEXT_MS audio vóór
+                # het gedecodeerde stuk (alleen voor spraakdetectie, wordt niet gedecodeerd).
+                vad_ctx_f32 = None
+                if decode_start_ms > 0:
+                    vad_ctx_f32, _ = await asyncio.to_thread(
+                        self._read_wav_slice_float32,
+                        max(0, decode_start_ms - BATCH_VAD_CONTEXT_MS), decode_start_ms,
+                    )
                 _batch_perf_t0 = time()
                 result = await asyncio.to_thread(
                     self.batch_asr.transcribe,
@@ -1832,6 +1844,7 @@ class AudioProcessor:
                     language_override=_lang_override,
                     # linkermarge hoort bij het vorige venster: geen dekkingscontrole daar
                     coverage_start_s=(start_ms - decode_start_ms) / 1000.0,
+                    vad_context_f32=vad_ctx_f32,
                 )
                 logger.info(
                     f"[DIAG][BATCH_PERF] job={job['job_id']} transcribe_duration="
@@ -1854,20 +1867,19 @@ class AudioProcessor:
                 # HALLUCINATION_PATTERNS komt uit simul_whisper.backend -- gedeeld met
                 # evaluate_batch_segment() hieronder en met "Ververs Transcriptie", zodat
                 # deze lijst nooit tussen de twee paden uiteen kan lopen.
+                # Niet meer verwijderen (V4, zie backend.mark_unreliable): de plek blijft
+                # als onbevestigde regel "[geen betrouwbare tekst]" staan, terugluisterbaar.
                 if sentence_segments:
-                    clean_sentences = [
-                        s for s in sentence_segments
-                        if not any(p in (s.get("text") or "") for p in HALLUCINATION_PATTERNS)
-                    ]
-                    if len(clean_sentences) < len(sentence_segments):
-                        removed = len(sentence_segments) - len(clean_sentences)
+                    marked = [mark_unreliable(s) for s in sentence_segments]
+                    n_marked = sum(1 for s in marked if s.get("unreliable"))
+                    if n_marked:
                         logger.info(
-                            f"[BATCH][FILTER] job={job['job_id']} "
-                            f"removed {removed} hallucination sentence(s) "
-                            f"from {len(sentence_segments)} → {len(clean_sentences)} clean"
+                            f"[BATCH][FILTER] job={job['job_id']} {n_marked} hallucinatie-zin(nen) "
+                            f"gemarkeerd als '{UNRELIABLE_TEXT_MARKER}': "
+                            f"{[(round(s['start'], 2), round(s['end'], 2), s['hallucination_text'][:40]) for s in marked if s.get('unreliable')]}"
                         )
-                        sentence_segments = clean_sentences
-                        batch_txt = " ".join(s["text"] for s in clean_sentences).strip()
+                        sentence_segments = marked
+                        batch_txt = " ".join(s["text"] for s in marked if not s.get("unreliable")).strip()
 
                 logger.info(
                     f"[BATCH][TEXT][DBG] job={job['job_id']} "

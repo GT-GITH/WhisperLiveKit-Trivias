@@ -261,7 +261,9 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
         for ch, m in per_ch.items():
             if m["missed"] > 0:
                 result["errors"].setdefault(f"{ch}/{pad}", []).append(
-                    f"{m['missed']}/{m['n_ref_utterances']} uiting(en) ontbreken in de definitieve tekst")
+                    f"{m['missed']}/{m['n_ref_utterances']} uiting(en) ontbreken in de definitieve tekst "
+                    f"(waarvan {m.get('missed_marked', 0)} zichtbaar als '[geen betrouwbare tekst]', "
+                    f"{m['missed'] - m.get('missed_marked', 0)} onzichtbaar)")
     # Serverlog: exceptions/time-outs tijdens deze run zijn fouten.
     result["server_log"] = server_log_errors(server_log, log_offset)
     if result["server_log"]:

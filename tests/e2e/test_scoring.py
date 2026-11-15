@@ -127,6 +127,14 @@ def test_empty_segments_ignored():
     assert r["n_segments"] == 0 and r["missed"] == 1 and r["wer"] == 1.0
 
 
+def test_marker_is_not_coverage_but_counted_as_visible():
+    # "[geen betrouwbare tekst]" maakt een gat zichtbaar, maar de uiting blijft gemist.
+    utts = [{"start_ms": 0, "end_ms": 1000, "text": "Sultanahmet'e götürdüm"}]
+    seg = {"start_ms": 0, "end_ms": 1000, "text_final": "[geen betrouwbare tekst]", "text_batch": None}
+    r = score_channel(utts, [seg])
+    assert r["missed"] == 1 and r["missed_marked"] == 1 and r["markers"] == 1 and r["wer"] == 1.0, r
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_") and callable(v)]
     for t in tests:

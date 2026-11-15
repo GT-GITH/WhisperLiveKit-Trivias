@@ -67,6 +67,9 @@ def cer(ref_text: str, hyp_text: str) -> Optional[float]:
     return edit_distance(ref, normalize(hyp_text).replace(" ", "")) / len(ref)
 
 
+UNRELIABLE_TEXT_MARKER = "[geen betrouwbare tekst]"  # = whisperlivekit.simul_whisper.backend
+
+
 def segment_text(seg: dict) -> str:
     """Citeerbare tekst van een opgeslagen segment: batch indien aanwezig,
     anders wat er als final staat (live-fallback)."""
@@ -223,6 +226,12 @@ def score_channel(utterances: List[dict], segments: List[dict]) -> Dict[str, obj
     """utterances: [{start_ms, end_ms, text}] (referentie, op tijd gesorteerd).
     segments: opgeslagen transcriptsegmenten van de server voor dit kanaal."""
     segs = sorted((s for s in segments if segment_text(s)), key=lambda s: s.get("start_ms") or 0)
+    # Markering "[geen betrouwbare tekst]" (zichtbaar gat, server: backend.
+    # UNRELIABLE_TEXT_MARKER) is GEEN tekst: telt niet als dekking, niet in WER.
+    # Wel apart gerapporteerd: een gemiste uiting met markering is zichtbaar,
+    # zonder markering onzichtbaar -- maar beide blijven "gemist".
+    markers = [s for s in segs if segment_text(s) == UNRELIABLE_TEXT_MARKER]
+    segs = [s for s in segs if segment_text(s) != UNRELIABLE_TEXT_MARKER]
     utts = sorted(utterances, key=lambda u: u["start_ms"])
 
     ref_text = " ".join(u["text"] for u in utts)
@@ -255,6 +264,8 @@ def score_channel(utterances: List[dict], segments: List[dict]) -> Dict[str, obj
         "n_segments": len(segs),
         "missed": len(missed),
         "missed_utterances": [utts[i]["text"][:80] for i in missed],
+        "missed_marked": sum(1 for i in missed if any(_overlaps(m, utts[i], 0) for m in markers)),
+        "markers": len(markers),
         "spurious": len(spurious),
         "spurious_segments": [
             {"start_ms": s.get("start_ms"), "end_ms": s.get("end_ms"), "text": segment_text(s)[:120]}
