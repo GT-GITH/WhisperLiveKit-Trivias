@@ -1,0 +1,270 @@
+"""End-to-end testrunner (laag 1): stuurt gebouwde scenario's door de echte server.
+
+Doet per scenario precies wat de browser-frontend doet: per kanaal een eigen
+WebSocket (/asr, gedeelde session_id, gate_framed=1), 16 kHz s16le PCM in
+realtime-tempo, daarna een leeg bericht = Stop. Dan worden twee transcriptpaden
+gescoord tegen de referentie:
+  - incremental: het tijdens de sessie opgebouwde, opgeslagen transcript
+    (GET /sessions/{id}/transcript?channel_id=...)
+  - refresh: "Ververs Transcriptie" (POST /sessions/{id}/refresh_transcript),
+    de volledige batch-herbouw vanaf de WAV.
+
+Alleen stdlib + `websockets` (al een projectdependency). Draai op de pod,
+naast de server:
+    python tests/e2e/run_e2e.py                       # alle scenario's
+    python tests/e2e/run_e2e.py nl_basis --speed 1    # één scenario
+    python tests/e2e/run_e2e.py --save-baseline       # huidige uitkomst = nieuwe basislijn
+
+Uitvoer: tests/e2e/results/<tijdstempel>/report.json + report.md (+ ruwe
+server-berichten per kanaal). Exitcode 1 bij fouten of regressie t.o.v.
+tests/e2e/baseline.json.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+import time
+import urllib.request
+import uuid
+import wave
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlencode
+
+import websockets
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from scoring import score_channel  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+SCENARIOS = HERE / "scenarios"
+RESULTS = HERE / "results"
+BASELINE = HERE / "baseline.json"
+SR = 16000
+
+# Regressiedrempels t.o.v. de basislijn (absolute toename).
+WER_REGRESSION = 0.03
+COUNT_REGRESSION = 0  # missed/spurious/live_fallback: elke toename telt
+TS_REGRESSION_MS = 300
+
+
+def http_json(method: str, url: str, timeout: float = 600) -> dict:
+    req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def read_pcm(path: Path) -> bytes:
+    with wave.open(str(path), "rb") as w:
+        assert w.getframerate() == SR and w.getnchannels() == 1 and w.getsampwidth() == 2, path
+        return w.readframes(w.getnframes())
+
+
+async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: dict, pcm: bytes,
+                         start_evt: asyncio.Event, t0_holder: dict, speed: float, chunk_ms: int,
+                         stop_timeout: float) -> dict:
+    params = {"session_id": session_id, "channel_id": channel_id, "lang": cfg["lang"],
+              "gate_framed": "1", "gate_threshold": "0"}
+    if cfg.get("lang2"):
+        params["lang2"] = cfg["lang2"]
+    url = f"{ws_base}/asr?{urlencode(params)}"
+    messages, errors = [], []
+    got_ready = asyncio.Event()
+
+    async with websockets.connect(url, max_size=None, open_timeout=30) as ws:
+        async def receiver():
+            try:
+                async for raw in ws:
+                    msg = json.loads(raw) if isinstance(raw, str) else {"_binary": len(raw)}
+                    messages.append({"t": round(time.monotonic() - t0_holder.get("t0", time.monotonic()), 3),
+                                     "msg": msg})
+                    if msg.get("type") == "ready_to_stop":
+                        got_ready.set()
+                    if msg.get("error"):
+                        errors.append(str(msg.get("error")))
+            except websockets.ConnectionClosed:
+                pass
+
+        recv_task = asyncio.create_task(receiver())
+        await start_evt.wait()
+        t0 = t0_holder["t0"]
+        step = int(SR * 2 * chunk_ms / 1000)
+        for i, off in enumerate(range(0, len(pcm), step)):
+            target = t0 + (i * chunk_ms / 1000) / speed
+            delay = target - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            await ws.send(b"\x01" + pcm[off:off + step])  # vlag 1 = naar ASR (gate open)
+        await ws.send(b"")  # leeg bericht = Stop (zie audio_processor.process_audio)
+        try:
+            await asyncio.wait_for(got_ready.wait(), timeout=stop_timeout)
+        except asyncio.TimeoutError:
+            errors.append(f"geen ready_to_stop binnen {stop_timeout}s na Stop")
+        await ws.close()
+        await asyncio.wait_for(recv_task, timeout=10)
+    return {"messages": messages, "errors": errors}
+
+
+async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_refresh: bool,
+                       out_dir: Path) -> dict:
+    sdir = SCENARIOS / name
+    ref = json.loads((sdir / "reference.json").read_text(encoding="utf-8"))
+    session_id = str(uuid.uuid4())
+    ws_base = server.replace("http://", "ws://").replace("https://", "wss://")
+    print(f"[{name}] session={session_id} duur={ref['duration_ms'] / 1000:.0f}s speed={speed}")
+
+    start_evt, t0_holder = asyncio.Event(), {}
+    tasks = {
+        ch: asyncio.create_task(stream_channel(
+            ws_base, session_id, ch, cfg, read_pcm(sdir / f"{ch}.wav"), start_evt, t0_holder,
+            speed, chunk_ms, stop_timeout=180 + ref["duration_ms"] / 1000))
+        for ch, cfg in ref["channels"].items()
+    }
+    await asyncio.sleep(2.0)  # alle kanalen verbonden voor de gezamenlijke start
+    t0_holder["t0"] = time.monotonic()
+    start_evt.set()
+    streamed = {}
+    for ch, task in tasks.items():
+        try:
+            streamed[ch] = await task
+        except Exception as e:
+            streamed[ch] = {"messages": [], "errors": [f"{type(e).__name__}: {e}"]}
+    wall = time.monotonic() - t0_holder["t0"]
+
+    (out_dir / f"{name}.messages.json").write_text(
+        json.dumps({ch: s["messages"] for ch, s in streamed.items()}, ensure_ascii=False), encoding="utf-8")
+
+    result = {"scenario": name, "session_id": session_id, "wall_s": round(wall, 1),
+              "errors": {ch: s["errors"] for ch, s in streamed.items() if s["errors"]}, "paths": {}}
+
+    await asyncio.sleep(2.0)
+    incremental = {}
+    for ch in ref["channels"]:
+        try:
+            data = http_json("GET", f"{server}/sessions/{session_id}/transcript?{urlencode({'channel_id': ch})}")
+            incremental[ch] = data.get("segments", [])
+        except Exception as e:
+            result["errors"].setdefault(ch, []).append(f"transcript ophalen: {e}")
+            incremental[ch] = []
+    result["paths"]["incremental"] = {
+        ch: score_channel(ref["channels"][ch]["utterances"], incremental[ch]) for ch in ref["channels"]}
+
+    if do_refresh:
+        try:
+            t = time.monotonic()
+            data = http_json("POST", f"{server}/sessions/{session_id}/refresh_transcript")
+            result["refresh_s"] = round(time.monotonic() - t, 1)
+            by_ch = {ch: [s for s in data.get("segments", []) if s.get("channel_id") == ch] for ch in ref["channels"]}
+            result["paths"]["refresh"] = {
+                ch: score_channel(ref["channels"][ch]["utterances"], by_ch[ch]) for ch in ref["channels"]}
+        except Exception as e:
+            result["errors"].setdefault("_refresh", []).append(str(e))
+    return result
+
+
+def compare(results: list, baseline: dict) -> list:
+    """Regressies t.o.v. de basislijn, als leesbare regels."""
+    regressions = []
+    base = {r["scenario"]: r for r in baseline.get("results", [])}
+    for r in results:
+        b = base.get(r["scenario"])
+        if not b:
+            continue
+        for path, chans in r["paths"].items():
+            for ch, m in chans.items():
+                bm = b.get("paths", {}).get(path, {}).get(ch)
+                if not bm:
+                    continue
+                tag = f"{r['scenario']}/{path}/{ch}"
+                if m["wer"] is not None and bm["wer"] is not None and m["wer"] - bm["wer"] > WER_REGRESSION:
+                    regressions.append(f"{tag}: WER {bm['wer']:.3f} -> {m['wer']:.3f}")
+                for k in ("missed", "spurious", "live_fallback"):
+                    if m[k] - bm[k] > COUNT_REGRESSION:
+                        regressions.append(f"{tag}: {k} {bm[k]} -> {m[k]}")
+                if m["ts_max_ms"] is not None and bm["ts_max_ms"] is not None \
+                        and m["ts_max_ms"] - bm["ts_max_ms"] > TS_REGRESSION_MS:
+                    regressions.append(f"{tag}: ts_max {bm['ts_max_ms']} -> {m['ts_max_ms']} ms")
+    return regressions
+
+
+def fmt(v, pct=False):
+    if v is None:
+        return "-"
+    return f"{v * 100:.1f}%" if pct else str(v)
+
+
+def write_markdown(path: Path, results: list, regressions: list, health: dict) -> None:
+    lines = [f"# E2E-rapport {datetime.now(timezone.utc).isoformat(timespec='seconds')}", "",
+             f"Server: model={health.get('model', '?')} ", ""]
+    lines += ["| scenario | pad | kanaal | WER | CER | gemist | spurious | live-fallback | ts med/max ms |",
+              "|---|---|---|---|---|---|---|---|---|"]
+    for r in results:
+        for path, chans in r["paths"].items():
+            for ch, m in chans.items():
+                lines.append(f"| {r['scenario']} | {path} | {ch} | {fmt(m['wer'], True)} | {fmt(m['cer'], True)} | "
+                             f"{m['missed']}/{m['n_ref_utterances']} | {m['spurious']} | {m['live_fallback']} | "
+                             f"{fmt(m['ts_median_ms'])}/{fmt(m['ts_max_ms'])} |")
+    errs = [(r["scenario"], ch, e) for r in results for ch, es in r["errors"].items() for e in es]
+    lines += ["", "## Fouten", ""] + ([f"- {s}/{c}: {e}" for s, c, e in errs] or ["Geen."])
+    lines += ["", "## Regressies t.o.v. basislijn", ""] + ([f"- {x}" for x in regressions] or ["Geen."])
+    for r in results:
+        for path, chans in r["paths"].items():
+            for ch, m in chans.items():
+                if m["spurious_segments"] or m["missed_utterances"]:
+                    lines += ["", f"### {r['scenario']} / {path} / {ch}"]
+                    lines += [f"- spurious @{s['start_ms']}ms: {s['text']}" for s in m["spurious_segments"]]
+                    lines += [f"- gemist: {t}" for t in m["missed_utterances"]]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("scenarios", nargs="*", help="namen; leeg = alle gebouwde scenario's")
+    ap.add_argument("--server", default="http://127.0.0.1:8000")
+    ap.add_argument("--speed", type=float, default=1.0, help="1.0 = realtime (zoals een echte microfoon)")
+    ap.add_argument("--chunk-ms", type=int, default=100)
+    ap.add_argument("--no-refresh", action="store_true")
+    ap.add_argument("--save-baseline", action="store_true")
+    args = ap.parse_args()
+
+    try:
+        health = http_json("GET", f"{args.server}/health", timeout=10)
+    except Exception as e:
+        print(f"Server niet bereikbaar op {args.server}: {e}")
+        return 2
+
+    names = args.scenarios or sorted(p.name for p in SCENARIOS.iterdir() if (p / "reference.json").exists())
+    if not names:
+        print("Geen scenario's gevonden -- eerst: python tests/e2e/build_scenarios.py")
+        return 2
+
+    out_dir = RESULTS / datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    for name in names:
+        try:
+            results.append(asyncio.run(run_scenario(name, args.server, args.speed, args.chunk_ms,
+                                                    not args.no_refresh, out_dir)))
+        except Exception as e:
+            results.append({"scenario": name, "errors": {"_run": [f"{type(e).__name__}: {e}"]}, "paths": {}})
+
+    baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
+    regressions = compare(results, baseline)
+    report = {"health": health, "args": vars(args), "results": results, "regressions": regressions}
+    (out_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    write_markdown(out_dir / "report.md", results, regressions, health)
+    print((out_dir / "report.md").read_text(encoding="utf-8"))
+    if args.save_baseline:
+        BASELINE.write_text(json.dumps({"saved": out_dir.name, "results": results}, ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+        print(f"Basislijn opgeslagen: {BASELINE}")
+
+    has_errors = any(r["errors"] for r in results)
+    return 1 if (has_errors or regressions) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

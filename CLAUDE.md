@@ -57,7 +57,9 @@ docker run --gpus all -p 8000:8000 wlk --model large-v3
 - `scripts/determine_alignment_heads.py` — extract alignment heads for custom models
 - `scripts/convert_hf_whisper.py` — convert HuggingFace Whisper format to WLK
 
-There is no test suite in this repository.
+**Tests** (no pytest dependency — each file runs standalone):
+- `python tests/test_*.py` — unit tests for individual modules (cross-channel gate, tokens alignment, translation, NLLB, gehoorverslag).
+- `tests/e2e/` — end-to-end suite: builds scenarios with known reference text from datasets, streams them through the real server exactly like the browser does, and scores WER/CER, missed/spurious segments, live-fallback and timestamp accuracy for both the incremental and the refresh path. Runs on the pod; see `tests/e2e/README.md`.
 
 ## Architecture
 
@@ -117,7 +119,7 @@ Models are loaded once into `TranscriptionEngine` (singleton per server process)
 | `--diarization-backend` | `sortformer` | `sortformer` (2025) or `diart` (legacy) |
 | `--pcm-input` | off | Raw PCM (s16le) instead of WebM |
 | `--no-vad` / `--no-vac` | off | Disable voice detection / controller |
-| `--llm-backend-url` | none | Base URL of an on-prem OpenAI-compatible LLM endpoint (e.g. Ollama at `http://localhost:11434/v1`), used for gehoorverslag section classification. Never a cloud endpoint. Unset = feature runs in fail-safe fallback (no classification). |
+| `--llm-backend-url` | none | Base URL of an on-prem OpenAI-compatible LLM endpoint (e.g. Ollama at `http://localhost:11434/v1`). **Currently not called by any active feature** — reserved for the kennisondersteuning roadmap phase (translation moved to NLLB, see `--nllb-model`). Never a cloud endpoint. `scripts/init.sh` starts Ollama by default; `LLM_ENABLED=0` skips it and saves ~5–6 GB VRAM. |
 | `--llm-model` | none | Model name as known to the LLM endpoint (e.g. `llama3.1:8b`). |
 | `--llm-api-key` | none | API key for the LLM endpoint, if required (most local runtimes don't need one). |
 

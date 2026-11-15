@@ -127,6 +127,11 @@ run_*.sh
 # Debug & testing
 test_*.py
 !/tests/test_*.py
+!/tests/e2e/test_*.py
+# E2E-testsuite: gebouwde scenario-audio (afgeleid van datasets, o.a. cc-by-nc-nd)
+# en run-resultaten blijven lokaal op de pod
+/tests/e2e/scenarios/
+/tests/e2e/results/
 launch.json
 .DS_Store
 test/*

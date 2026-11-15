@@ -1,0 +1,14 @@
+{
+  "name": "nl_lange_pauze",
+  "description": "Eén kanaal (NL) met een stilte van 45 s halverwege. Vangt tijdstempel-drift na lange stiltes (eerdere pause-drift-bugklasse) en hallucinatie tijdens de stilte.",
+  "channels": {"employee": {"lang": "nl"}},
+  "timeline": [
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 6}},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 7}, "gap_before_ms": 2000},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 8}, "gap_before_ms": 2000},
+    {"silence_ms": 45000},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 9}},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 10}, "gap_before_ms": 2000},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 11}, "gap_before_ms": 2000}
+  ]
+}

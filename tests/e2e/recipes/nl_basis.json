@@ -1,0 +1,13 @@
+{
+  "name": "nl_basis",
+  "description": "Eén kanaal (hoorder, NL), zes uitingen met korte pauzes. Basislijn voor WER, tijdstempels en hallucinatie in stilte.",
+  "channels": {"employee": {"lang": "nl"}},
+  "timeline": [
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 0}},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 1}, "gap_before_ms": 2500},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 2}, "gap_before_ms": 1200},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 3}, "gap_before_ms": 3500},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 4}, "gap_before_ms": 2000},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 5}, "gap_before_ms": 1500}
+  ]
+}

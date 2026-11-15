@@ -1,0 +1,20 @@
+{
+  "name": "gehoor_tr_3kanaal",
+  "description": "Gehoorpatroon met drie kanalen: hoorder (NL), vreemdeling (Turks), tolk (NL, taalpaar tr). Beurtwisseling, schone kanalen zonder overspraak. Test gelijktijdige kanalen en taal per kanaal.",
+  "channels": {
+    "employee": {"lang": "nl"},
+    "foreign_tr": {"lang": "tr"},
+    "interpreter": {"lang": "nl", "lang2": "tr"}
+  },
+  "timeline": [
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 12}},
+    {"channel": "interpreter", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 13}, "gap_before_ms": 800},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 0}, "gap_before_ms": 1000},
+    {"channel": "interpreter", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 14}, "gap_before_ms": 900},
+    {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 15}, "gap_before_ms": 1500},
+    {"channel": "interpreter", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 16}, "gap_before_ms": 700},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 1}, "gap_before_ms": 1200},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 2}, "gap_before_ms": 600},
+    {"channel": "interpreter", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 17}, "gap_before_ms": 1000}
+  ]
+}
