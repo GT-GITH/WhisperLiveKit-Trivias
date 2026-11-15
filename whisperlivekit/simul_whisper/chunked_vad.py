@@ -27,6 +27,13 @@ HOP_S = 5.0
 # Zelfde samenvoeggedrag als faster-whisper's eigen VadOptions-default
 # (min_silence_duration_ms=2000): spraak met < 2 s ertussen is één clip.
 MERGE_GAP_S = 2.0
+# Silero heeft aan het begin van de invoer (frisse toestand) een fractie van een
+# seconde nodig om spraak te herkennen. Begint de spraak direct bij de venstergrens,
+# dan start de eerste clip midden in een woord en slaat Whisper het hele eerste stuk
+# over (bewezen 2026-11-15: venster 238.05-253.78 s, VAD-start 0.53 s terwijl de spraak
+# op 0 s begon -> 1 van 11 zinnen; zelfde venster vanaf 0 s -> alle 11). Midden in het
+# venster speelt dit niet: daar heeft het overlappende vorige stuk de toestand al warm.
+EDGE_SNAP_S = 1.0  # begint de eerste clip binnen deze tijd na het begin: vanaf 0
 
 Detector = Callable[["object"], List[dict]]  # audio-stuk -> [{"start": sample, "end": sample}]
 
@@ -67,7 +74,11 @@ def speech_clips(audio, sr: int = SR, chunk_s: float = CHUNK_S, hop_s: float = H
         if off + n >= total:
             break
         off += hop
-    return merge_intervals(found)
+    clips = merge_intervals(found)
+    # Spraak die bij de venstergrens begint: clip vanaf 0 (zie EDGE_SNAP_S).
+    if clips and 0.0 < clips[0][0] < EDGE_SNAP_S:
+        clips[0] = (0.0, clips[0][1])
+    return clips
 
 
 def to_clip_timestamps(clips: List[Tuple[float, float]]) -> List[float]:

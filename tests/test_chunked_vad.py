@@ -68,6 +68,13 @@ def test_deafness_beyond_context_is_recovered_by_short_chunks():
     assert clips == [(305.0, 316.0)], clips
 
 
+def test_first_clip_near_start_snaps_to_zero():
+    # VAD mist het eerste woord (spraak vanaf 0, gedetecteerd vanaf 0.53 s): de clip
+    # moet vanaf 0 beginnen, anders slaat Whisper het hele eerste stuk over.
+    clips = cv.speech_clips(FakeAudio(16), detector=make_detector([(0.53, 15.7)]))
+    assert clips[0][0] == 0.0, clips
+
+
 def test_to_clip_timestamps():
     assert cv.to_clip_timestamps([(1.0, 2.5), (4.0, 5.0)]) == [1.0, 2.5, 4.0, 5.0]
     assert cv.to_clip_timestamps([]) == []
