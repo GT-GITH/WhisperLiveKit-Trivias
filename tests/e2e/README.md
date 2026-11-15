@@ -14,7 +14,7 @@ cd /workspace/WhisperLiveKit-Trivias
 # huggingface-hub>=1.0 en numpy>=2 binnen en breekt daarmee transformers/
 # tokenizers en de numpy-1.x-stack van de server (gebeurd op 2026-11-15).
 python3 -m venv /workspace/e2e-venv
-/workspace/e2e-venv/bin/pip install datasets soundfile librosa
+/workspace/e2e-venv/bin/pip install datasets soundfile librosa faster-whisper  # faster-whisper alleen voor de Silero-VAD
 /workspace/e2e-venv/bin/python tests/e2e/build_scenarios.py   # scenario's bouwen
 
 # Runner: server-venv is prima (alleen stdlib + websockets)

@@ -4,7 +4,7 @@ Draait op de pod (internet nodig voor de datasets), in een EIGEN venv -- niet
 in de server-.venv: `datasets` trekt huggingface-hub>=1.0 en numpy>=2 binnen
 en breekt daarmee transformers/tokenizers van de server:
     python3 -m venv /workspace/e2e-venv
-    /workspace/e2e-venv/bin/pip install datasets soundfile librosa
+    /workspace/e2e-venv/bin/pip install datasets soundfile librosa faster-whisper
 
 Gebruik:
     /workspace/e2e-venv/bin/python tests/e2e/build_scenarios.py            # alle recepten
@@ -63,6 +63,30 @@ DATASETS = {
 
 _cache: dict = {}
 
+try:  # zelfde Silero-VAD als faster-whisper (pip install faster-whisper in de e2e-venv)
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+except Exception:  # pragma: no cover
+    get_speech_timestamps = None
+VAD_MARGIN_S = 0.1
+
+
+def trim_to_speech(audio: np.ndarray) -> np.ndarray:
+    """Knip niet-spraak aan begin en eind weg, zodat start_ms/end_ms in de
+    referentie echt het begin/einde van de spraak zijn.
+
+    Met VAD, niet met een energiedrempel: FLEURS-fragmenten hebben soms seconden
+    luide ruis vóór de spraak. Eerste e2e-runs (2026-11-15) gaven daardoor een
+    referentiestart 5 s te vroeg (librosa top_db=35 liet -25 dB ruis staan),
+    wat als tijdstempelfout van de server werd gemeld terwijl de server gelijk had."""
+    if get_speech_timestamps is not None:
+        ts = get_speech_timestamps(audio, VadOptions(min_silence_duration_ms=300))
+        if ts:
+            m = int(VAD_MARGIN_S * SR)
+            return audio[max(0, ts[0]["start"] - m): min(len(audio), ts[-1]["end"] + m)]
+    print("  WAARSCHUWING: geen VAD beschikbaar, val terug op energie-trim (minder nauwkeurig)")
+    trimmed, _ = librosa.effects.trim(audio, top_db=35)
+    return trimmed
+
 
 def load_clip(source: dict) -> tuple[np.ndarray, str]:
     repo, text_field, default_split = DATASETS[source["dataset"]]
@@ -78,9 +102,7 @@ def load_clip(source: dict) -> tuple[np.ndarray, str]:
         audio = audio.mean(axis=1)
     if sr != SR:
         audio = librosa.resample(audio, orig_sr=sr, target_sr=SR)
-    # Stilte aan begin/eind eraf, zodat start_ms/end_ms in de referentie echt
-    # het begin/einde van de spraak zijn (anders meten we datasetpadding).
-    audio, _ = librosa.effects.trim(audio, top_db=35)
+    audio = trim_to_speech(audio)
     rms = float(np.sqrt(np.mean(audio**2))) or 1e-9
     audio = audio * (10 ** (TARGET_RMS_DBFS / 20) / rms)
     return np.clip(audio, -1.0, 1.0), sample[text_field]
