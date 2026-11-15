@@ -142,23 +142,33 @@ redirect_home_cache_to_workspace() {
 
 # --- deps ---
 install_deps() {
-  local marker="$WORKSPACE/.os_deps_installed"
-  if [[ -f "$marker" ]]; then
-    log "OS deps al gedaan → skip"
-    return 0
-  fi
-
-  log "Install OS deps..."
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y >/dev/null
-  apt-get install -y git curl ffmpeg python3-venv >/dev/null
-  apt-get install -y python3.11 python3.11-venv >/dev/null
+  # Controleert wat er ECHT aanwezig is i.p.v. een markeerbestand. De apt-pakketten
+  # staan op de container-schijf, die bij elke nieuwe pod én bij stop/start van
+  # dezelfde pod leeg begint; het oude markeerbestand (/workspace/.os_deps_installed)
+  # stond op het blijvende netwerkvolume. Gevolg: op een schone container werd de
+  # installatie overgeslagen terwijl o.a. python3.11 (waar de .venv naar verwijst;
+  # de image heeft standaard 3.12) en ffmpeg ontbraken -> server startte niet.
+  local missing=()
+  command -v git      >/dev/null 2>&1 || missing+=(git)
+  command -v curl     >/dev/null 2>&1 || missing+=(curl)
+  command -v ffmpeg   >/dev/null 2>&1 || missing+=(ffmpeg)
   # pciutils (lspci) -- de Ollama-installer gebruikt dit om de NVIDIA-GPU te
   # detecteren en de CUDA-runtime te installeren. Zonder lspci installeert
   # Ollama stilzwijgend CPU-only, ook als nvidia-smi prima werkt.
-  apt-get install -y pciutils >/dev/null
+  command -v lspci    >/dev/null 2>&1 || missing+=(pciutils)
+  command -v python3.11 >/dev/null 2>&1 || missing+=(python3.11)
+  python3.11 -c "import ensurepip, venv" >/dev/null 2>&1 || missing+=(python3.11-venv)
+  python3 -c "import ensurepip, venv" >/dev/null 2>&1 || missing+=(python3-venv)
 
-  touch "$marker"
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    log "OS deps aanwezig → skip"
+    return 0
+  fi
+
+  log "Install ontbrekende OS deps: ${missing[*]}"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y >/dev/null
+  apt-get install -y "${missing[@]}" >/dev/null
 }
 
 # --- repo ---
@@ -428,9 +438,18 @@ PY
 }
 
 startlive() {
-  # IMPORTANT: --start should NOT do setup. It assumes repo+venv are already ready.
+  # IMPORTANT: --start should NOT do setup. It assumes repo+venv are already ready
+  # (op het netwerkvolume). Wat NIET op het volume staat, maar op de container-
+  # schijf die bij een nieuwe/herstarte pod leeg begint, wordt hier wel hersteld:
+  # de ~/.cache-symlink (anders downloadt HF alle modellen opnieuw naar de kleine
+  # container-schijf) en ontbrekende apt-pakketten (o.a. python3.11 voor de .venv).
+  # Beide zijn idempotent en kosten niets als alles al in orde is.
+  redirect_home_cache_to_workspace
+  install_deps
   [[ -d "$APP_DIR/.git" ]] || die "Repo niet gevonden in $APP_DIR. Run eerst: bash scripts/init.sh --setup"
   [[ -d "$VENV_DIR" ]] || die "Venv niet gevonden in $VENV_DIR. Run eerst: bash scripts/init.sh --setup"
+  "$VENV_DIR/bin/python" -c "import sys" >/dev/null 2>&1 \
+    || die "Venv-python werkt niet ($VENV_DIR/bin/python) -- ontbrekend systeem-python? Run: bash scripts/init.sh --setup-start"
 
   # RunPod's "Open Web Terminal" heeft een eigen idle-timeout, los van de pod
   # zelf -- valt die verbinding weg, dan verdween voorheen ook meteen de hele
