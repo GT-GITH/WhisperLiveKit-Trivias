@@ -8,9 +8,17 @@ aanpassen → opnieuw testen.
 ## Op de pod
 
 ```bash
-cd /workspace/WhisperLiveKit-Trivias && source .venv/bin/activate
-pip install datasets soundfile librosa          # eenmalig, alleen voor de builder
-python tests/e2e/build_scenarios.py             # eenmalig: scenario's bouwen
+cd /workspace/WhisperLiveKit-Trivias
+
+# Builder: EIGEN venv. Niet in de server-.venv installeren -- `datasets` trekt
+# huggingface-hub>=1.0 en numpy>=2 binnen en breekt daarmee transformers/
+# tokenizers en de numpy-1.x-stack van de server (gebeurd op 2026-11-15).
+python3 -m venv /workspace/e2e-venv
+/workspace/e2e-venv/bin/pip install datasets soundfile librosa
+/workspace/e2e-venv/bin/python tests/e2e/build_scenarios.py   # scenario's bouwen
+
+# Runner: server-venv is prima (alleen stdlib + websockets)
+source .venv/bin/activate
 python tests/e2e/run_e2e.py                     # alle scenario's draaien
 python tests/e2e/run_e2e.py nl_basis            # één scenario
 python tests/e2e/run_e2e.py --save-baseline     # huidige uitkomst = basislijn

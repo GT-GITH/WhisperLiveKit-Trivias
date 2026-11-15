@@ -1,12 +1,14 @@
 """Bouwt testscenario's (per-kanaal-WAV's + referentie) uit recepten.
 
-Draait op de pod (internet nodig voor de datasets). Eenmalige extra deps,
-niet in pyproject.toml:
-    pip install datasets soundfile librosa
+Draait op de pod (internet nodig voor de datasets), in een EIGEN venv -- niet
+in de server-.venv: `datasets` trekt huggingface-hub>=1.0 en numpy>=2 binnen
+en breekt daarmee transformers/tokenizers van de server:
+    python3 -m venv /workspace/e2e-venv
+    /workspace/e2e-venv/bin/pip install datasets soundfile librosa
 
 Gebruik:
-    python tests/e2e/build_scenarios.py              # alle recepten
-    python tests/e2e/build_scenarios.py nl_basis     # één recept
+    /workspace/e2e-venv/bin/python tests/e2e/build_scenarios.py            # alle recepten
+    /workspace/e2e-venv/bin/python tests/e2e/build_scenarios.py nl_basis   # één recept
 
 Recept (tests/e2e/recipes/<naam>.json):
 {
