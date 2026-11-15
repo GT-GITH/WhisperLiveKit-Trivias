@@ -42,6 +42,27 @@ else:
 
 MIN_DURATION_REAL_SILENCE = 5
 
+
+def resolve_batch_precision() -> Tuple[str, str]:
+    """Device + compute_type voor het batch-model: ALTIJD volle precisie.
+
+    GPU -> float16, CPU -> float32. Bewust niet instelbaar en nooit "auto":
+    met compute_type="auto" koos CTranslate2 op een RTX 4090 stilzwijgend
+    int8_float16, en in die modus viel een complete Turkse uiting weg (6/6
+    keer; in float16 6/6 keer aanwezig, zelfde audio en instellingen --
+    e2e-suite, 2026-11-15). De batch-pass is de juridisch citeerbare bron
+    (CLAUDE.md); een kleine VRAM-besparing weegt daar niet tegen op. Op CPU
+    is float16 niet efficiënt, dus float32: trager, maar even nauwkeurig --
+    batch hoeft niet realtime te zijn.
+    """
+    try:
+        import ctranslate2
+        has_cuda = ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        has_cuda = False
+    return ("cuda", "float16") if has_cuda else ("cpu", "float32")
+
+
 class BatchFasterWhisperASR:
     """
     Offline/batch ASR op basis van faster-whisper WhisperModel.
@@ -50,8 +71,6 @@ class BatchFasterWhisperASR:
     def __init__(
         self,
         model: str,
-        device: str = "auto",
-        compute_type: str = "auto",
         language: str = "nl",
         beam_size: int = 5,
         condition_on_previous_text: bool = False,
@@ -69,10 +88,15 @@ class BatchFasterWhisperASR:
         self.condition_on_previous_text = condition_on_previous_text
         self.temperature = temperature
         self.initial_prompt = initial_prompt
+        self.device, self.compute_type = resolve_batch_precision()
         self.model = WhisperModel(
             model,
-            device=device,
-            compute_type=compute_type,
+            device=self.device,
+            compute_type=self.compute_type,
+        )
+        logger.info(
+            f"[BATCH][PRECISION] model={model} device={self.device} "
+            f"compute_type={self.compute_type} (volle precisie, vast -- zie resolve_batch_precision)"
         )
 
     def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False, language_override: str | None = None) -> dict:
