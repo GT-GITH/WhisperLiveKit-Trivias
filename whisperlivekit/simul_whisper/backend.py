@@ -17,6 +17,7 @@ from whisperlivekit.backend_support import (faster_backend_available,
                                             mlx_backend_available)
 from whisperlivekit.model_paths import detect_model_format, resolve_model_path
 from whisperlivekit.simul_whisper.config import AlignAttConfig
+from whisperlivekit.simul_whisper.chunked_vad import speech_clips, to_clip_timestamps
 from whisperlivekit.simul_whisper.segment_split import split_on_word_gaps
 from whisperlivekit.simul_whisper.simul_whisper import AlignAtt
 from whisperlivekit.timed_objects import ASRToken, ChangeSpeaker, Transcript
@@ -99,19 +100,37 @@ class BatchFasterWhisperASR:
             f"compute_type={self.compute_type} (volle precisie, vast -- zie resolve_batch_precision)"
         )
 
-    def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False, language_override: str | None = None) -> dict:
-        lang = language_override if language_override is not None else self.language
-        segments, info = self.model.transcribe(
+    def _decode(self, audio_f32: np.ndarray, lang: str | None, word_timestamps: bool):
+        """Decodeer alleen de spraakstukken, bepaald met chunked_vad (frisse VAD-toestand
+        per kort stuk) i.p.v. faster-whisper's vad_filter (één VAD-pass met opgebouwde
+        toestand die na lange muziek/stilte spraak mist -- zie chunked_vad.py).
+        clip_timestamps: faster-whisper decodeert de stukken op hun echte plek, zonder
+        ze aan elkaar te plakken. Geen spraak gevonden -> geen segmenten."""
+        clips = speech_clips(audio_f32)
+        if not clips:
+            logger.info("[BATCH][VAD] geen spraak gevonden in dit fragment -> niets te decoderen")
+            return []
+        logger.info(
+            f"[BATCH][VAD] {len(clips)} spraakstuk(ken), "
+            f"{sum(e - s for s, e in clips):.1f}s van {len(audio_f32) / 16000:.1f}s"
+        )
+        segments, _info = self.model.transcribe(
             audio_f32,
             language=lang if lang and lang != "auto" else None,
             beam_size=self.beam_size,
             condition_on_previous_text=self.condition_on_previous_text,
             temperature=self.temperature,
             initial_prompt=self.initial_prompt,
-            vad_filter=True,
+            vad_filter=False,
+            clip_timestamps=to_clip_timestamps(clips),
             word_timestamps=word_timestamps,
             no_speech_threshold=0.9,
         )
+        return segments
+
+    def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False, language_override: str | None = None) -> dict:
+        lang = language_override if language_override is not None else self.language
+        segments = self._decode(audio_f32, lang, word_timestamps)
 
         texts = []
         avg_logprobs = []
@@ -170,17 +189,7 @@ class BatchFasterWhisperASR:
         doorgeven (i.p.v. ze te middelen) maakt een latere gate-beslissing per zin
         mogelijk, preciezer dan de huidige per-venster aanpak."""
         lang = language_override if language_override is not None else self.language
-        segments, _info = self.model.transcribe(
-            audio_f32,
-            language=lang if lang and lang != "auto" else None,
-            beam_size=self.beam_size,
-            condition_on_previous_text=self.condition_on_previous_text,
-            temperature=self.temperature,
-            initial_prompt=self.initial_prompt,
-            vad_filter=True,
-            word_timestamps=True,
-            no_speech_threshold=0.9,
-        )
+        segments = self._decode(audio_f32, lang, word_timestamps=True)
 
         result = []
         for s in segments:
