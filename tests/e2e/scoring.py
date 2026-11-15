@@ -82,6 +82,32 @@ def _overlaps(seg: dict, utt: dict, tol: int = OVERLAP_TOLERANCE_MS) -> bool:
     return s < utt["end_ms"] + tol and e > utt["start_ms"] - tol
 
 
+MIN_COVERAGE = 0.3
+
+
+def _coverage(utt: dict, segs: List[dict]) -> float:
+    """Fractie van de uiting die door (de vereniging van) segmenten gedekt wordt."""
+    dur = utt["end_ms"] - utt["start_ms"]
+    if dur <= 0:
+        return 1.0
+    spans = sorted(
+        (max(utt["start_ms"], s.get("start_ms") or 0), min(utt["end_ms"], s.get("end_ms") or 0)) for s in segs
+    )
+    covered, cur_s, cur_e = 0, None, None
+    for a, b in spans:
+        if b <= a:
+            continue
+        if cur_e is None or a > cur_e:
+            if cur_e is not None:
+                covered += cur_e - cur_s
+            cur_s, cur_e = a, b
+        else:
+            cur_e = max(cur_e, b)
+    if cur_e is not None:
+        covered += cur_e - cur_s
+    return covered / dur
+
+
 def score_channel(utterances: List[dict], segments: List[dict]) -> Dict[str, object]:
     """utterances: [{start_ms, end_ms, text}] (referentie, op tijd gesorteerd).
     segments: opgeslagen transcriptsegmenten van de server voor dit kanaal."""
@@ -91,7 +117,11 @@ def score_channel(utterances: List[dict], segments: List[dict]) -> Dict[str, obj
     ref_text = " ".join(u["text"] for u in utts)
     hyp_text = " ".join(segment_text(s) for s in segs)
 
-    missed = [i for i, u in enumerate(utts) if not any(_overlaps(s, u) for s in segs)]
+    # Gemist = minder dan MIN_COVERAGE van de uiting wordt echt door segmenten
+    # gedekt (zonder tolerantiemarge). Alleen "raakt binnen 500 ms" was te
+    # mild: een volledig weggevallen Turkse uiting telde zo als gedekt omdat het
+    # segment van de VOLGENDE uiting de marge net raakte (run 2026-11-15).
+    missed = [i for i, u in enumerate(utts) if _coverage(u, segs) < MIN_COVERAGE]
     spurious = [s for s in segs if not any(_overlaps(s, u) for u in utts)]
 
     # Per referentie-uiting: klopt de tijdstempel van het BEGIN van die uiting?

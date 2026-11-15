@@ -65,6 +65,15 @@ def test_split_utterance_is_not_a_timestamp_error():
     assert r["ts_median_ms"] == 100 and r["ts_max_ms"] == 100, r
 
 
+def test_touching_next_segment_does_not_count_as_covered():
+    # Uiting 71.6-79.8 s volledig weggevallen; het segment van de volgende
+    # uiting begint op 80.32 s en raakt alleen de 500 ms-marge.
+    utts = [{"start_ms": 71624, "end_ms": 79824, "text": "romantizm"},
+            {"start_ms": 80424, "end_ms": 88112, "text": "japonya"}]
+    r = score_channel(utts, [_seg(80320, 88000, "japonya")])
+    assert r["missed"] == 1 and r["missed_utterances"] == ["romantizm"], r
+
+
 def test_empty_segments_ignored():
     utts = [{"start_ms": 0, "end_ms": 1000, "text": "ja"}]
     r = score_channel(utts, [{"start_ms": 0, "end_ms": 500, "text_final": "  ", "text_batch": None}])
