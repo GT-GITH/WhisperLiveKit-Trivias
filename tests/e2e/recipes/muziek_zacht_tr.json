@@ -1,0 +1,17 @@
+{
+  "name": "muziek_zacht_tr",
+  "description": "Laag 2, nauwkeuriger nabootsing van de live YouTube-test (2026-11-15): daar was het geluid minutenlang zeer zacht (-44..-54 dB) en kwam de spraak daarna zachter binnen (~-34 dB); Silero-VAD (opgebouwde toestand) miste die spraak. Hier: 120 s instrumentale muziek op -48 dBFS, dan 3 Turkse uitingen op -34 dBFS met de muziek eronder, dan 2 op -34 zonder muziek. Verwacht: niets gemist, geen tekst tijdens alleen-muziek.",
+  "channels": {"foreign_tr": {"lang": "tr"}},
+  "timeline": [
+    {"silence_ms": 120000},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 9}, "gap_before_ms": 0, "rms_dbfs": -34},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 10}, "gap_before_ms": 1500, "rms_dbfs": -34},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 11}, "gap_before_ms": 1500, "rms_dbfs": -34},
+    {"mark": "muziek_uit"},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 12}, "gap_before_ms": 2500, "rms_dbfs": -34},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 13}, "gap_before_ms": 1500, "rms_dbfs": -34}
+  ],
+  "background": [
+    {"channel": "foreign_tr", "source": {"dataset": "fma_instrumental", "index": 2}, "from": "begin", "to": "muziek_uit", "rms_dbfs": -48}
+  ]
+}

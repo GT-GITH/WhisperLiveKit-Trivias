@@ -162,7 +162,7 @@ def mix_background(buf: np.ndarray, music: np.ndarray, start_ms: int, end_ms: in
     buf[s:e] += bed
 
 
-def load_clip(source: dict) -> tuple[np.ndarray, str]:
+def load_clip(source: dict, rms_dbfs: float = TARGET_RMS_DBFS) -> tuple[np.ndarray, str]:
     repo, text_field, default_split = DATASETS[source["dataset"]]
     split = source.get("split", default_split)
     key = (repo, source["config"], split)
@@ -178,7 +178,7 @@ def load_clip(source: dict) -> tuple[np.ndarray, str]:
         audio = librosa.resample(audio, orig_sr=sr, target_sr=SR)
     audio = trim_to_speech(audio)
     rms = float(np.sqrt(np.mean(audio**2))) or 1e-9
-    audio = audio * (10 ** (TARGET_RMS_DBFS / 20) / rms)
+    audio = audio * (10 ** (rms_dbfs / 20) / rms)
     return np.clip(audio, -1.0, 1.0), sample[text_field]
 
 
@@ -200,7 +200,7 @@ def build(recipe_path: Path) -> None:
         ch = item["channel"]
         if ch not in channels:
             raise ValueError(f"{name}: kanaal {ch} staat niet in 'channels'")
-        audio, text = load_clip(item["source"])
+        audio, text = load_clip(item["source"], float(item.get("rms_dbfs", TARGET_RMS_DBFS)))
         start = max(0, cursor + int(item.get("gap_before_ms", DEFAULT_GAP_MS)))
         placed[ch].append((start, audio, text))
         cursor = start + int(len(audio) * 1000 / SR)
