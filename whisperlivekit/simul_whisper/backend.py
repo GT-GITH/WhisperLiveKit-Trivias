@@ -134,7 +134,15 @@ class BatchFasterWhisperASR:
                 # een VAD-stilte heen / één segment voor meerdere uitingen).
                 parts = split_on_word_gaps(getattr(s, "words", None)) or [(s.text.strip(), s.start, s.end)]
                 for text, start, end in parts:
-                    sentence_segments.append({"text": text, "start": start, "end": end})
+                    # Vertrouwenswaarden per zin (geërfd van het faster-whisper-
+                    # segment), zodat de batch-worker PER ZIN kan keuren i.p.v.
+                    # één oordeel over het hele venster -- zie gate_batch_sentence().
+                    sentence_segments.append({
+                        "text": text, "start": start, "end": end,
+                        "avg_logprob": getattr(s, "avg_logprob", None),
+                        "compression_ratio": getattr(s, "compression_ratio", None),
+                        "no_speech_prob": getattr(s, "no_speech_prob", None),
+                    })
 
         full_text = " ".join([t for t in texts if t]).strip()
 
@@ -223,6 +231,27 @@ HALLUCINATION_PATTERNS = [
     "izlediğiniz için",
     "abone olmayı",
 ]
+
+
+def gate_batch_sentence(seg: dict) -> tuple[bool, str]:
+    """De ENIGE keuring per batch-zin, gedeeld door de incrementele batch-worker
+    (audio_processor._batch_worker) en "Ververs Transcriptie" (TriviasServer), zodat
+    beide paden nooit meer uiteen kunnen lopen.
+
+    Per zin, nooit per venster: in een live-test (2026-11-15) keurde de incrementele
+    worker een heel venster van 31 s met 10 prima zinnen af omdat het venster-
+    gemiddelde no_speech_prob 0.66 was (> 0.6), opgetrokken door een paar korte,
+    onduidelijke fragmenten. Eén zwakke zin mag nooit de rest meeslepen.
+    no_speech_threshold=None: faster-whisper berekent no_speech_prob per intern
+    ~30s-decodeerblok, niet per zin (zie evaluate_batch_segment) -- dus geen
+    zinsniveau-signaal. seg: dict met text/start/end/avg_logprob/compression_ratio/
+    no_speech_prob (start/end in seconden)."""
+    return evaluate_batch_segment(
+        seg.get("avg_logprob"), seg.get("compression_ratio"), seg.get("no_speech_prob"),
+        seg.get("text") or "",
+        no_speech_threshold=None,
+        duration_s=(seg["end"] - seg["start"]) if seg.get("end") is not None and seg.get("start") is not None else None,
+    )
 
 
 def evaluate_batch_segment(

@@ -25,7 +25,7 @@ from whisperlivekit.core import (TranscriptionEngine,
                                  online_translation_factory)
 from whisperlivekit.ffmpeg_manager import FFmpegManager, FFmpegState
 from whisperlivekit.silero_vad_iterator import FixedVADIterator, OnnxWrapper, load_jit_vad
-from whisperlivekit.simul_whisper.backend import HALLUCINATION_PATTERNS, evaluate_batch_segment
+from whisperlivekit.simul_whisper.backend import HALLUCINATION_PATTERNS, gate_batch_sentence
 from whisperlivekit.simul_whisper.config import strip_dialect_suffix
 from whisperlivekit.timed_objects import (ASRToken, ChangeSpeaker, FrontData,
                                           Segment, Silence, State, Transcript)
@@ -1787,45 +1787,32 @@ class AudioProcessor:
                     f"len_live={len(live_text)} len_batch={len(batch_txt)}"
                 )
 
-                # 3) CONFIDENCE-based accept policy -- kernbeslissing gedeeld via
-                # evaluate_batch_segment() (simul_whisper/backend.py), zodat dit pad en
-                # "Ververs Transcriptie" nooit uiteenlopende drempels kunnen krijgen.
-                use_batch_as_final = False
-
-                if batch_txt:
-                    # --- Fix 2: ruimere no_speech_prob-drempel voor korte end-of-stream fragmenten ---
-                    # FasterWhisper rapporteert structureel hoge no_speech_prob (0.85+) voor
-                    # korte clips aan het einde van een sessie, ook bij echte spraak. Dit is
-                    # een eigenaardigheid van het venster-getriggerde (incrementele) pad --
-                    # geen onderdeel van de gedeelde kernfunctie.
-                    audio_duration_s = (end_ms - start_ms) / 1000.0
-                    no_speech_threshold = (
-                        0.95 if (reason == "end_of_stream" and audio_duration_s < 8.0) else 0.6
-                    )
-                    use_batch_as_final, _reject_reason = evaluate_batch_segment(
-                        batch_avg_logprob, batch_compression, result.get("no_speech_prob"),
-                        batch_txt, no_speech_threshold=no_speech_threshold,
-                        duration_s=audio_duration_s,
-                    )
-                    if not use_batch_as_final:
+                # 3) Keuring PER ZIN via gate_batch_sentence() -- exact dezelfde functie als
+                # "Ververs Transcriptie", zodat beide paden nooit uiteen kunnen lopen.
+                # Voorheen: één oordeel over het hele venster (gemiddelde no_speech_prob);
+                # in een live-test (2026-11-15) ging zo een venster van 31 s met 10 prima
+                # zinnen volledig verloren door een paar korte, onduidelijke fragmenten.
+                # Net als bij "Ververs Transcriptie": een goedgekeurde zin krijgt een
+                # vinkje (text_batch), een afgekeurde zin blijft zichtbaar maar
+                # onbevestigd (text_batch=None); bekende hallucinatiepatronen zijn
+                # hierboven al per zin verwijderd.
+                sentence_decisions = []  # [(sent, accepted, reason)]
+                for sent in sentence_segments:
+                    ok, why = gate_batch_sentence(sent)
+                    sentence_decisions.append((sent, ok, why))
+                    if not ok:
                         logger.warning(
-                            f"[BATCH][REJECTED] job={job['job_id']} "
-                            f"logprob={batch_avg_logprob} "
-                            f"compr={batch_compression} "
-                            f"no_speech_prob={result.get('no_speech_prob')} "
-                            f"threshold={no_speech_threshold} "
-                            f"reason={_reject_reason} "
-                            f"text='{batch_txt[:80]}'"
+                            f"[BATCH][REJECTED] job={job['job_id']} zin "
+                            f"{sent.get('start')}..{sent.get('end')}s reason={why} "
+                            f"logprob={sent.get('avg_logprob')} compr={sent.get('compression_ratio')} "
+                            f"text='{(sent.get('text') or '')[:80]}'"
                         )
-                # Als batch niet vertrouwd wordt, val terug op live -- maar NOOIT op de
-                # net-afgewezen batch_txt zelf. "Afgewezen" moet ook echt niets betekenen:
-                # als er dan ook geen live-tekst is (bv. omdat de cross-kanaal anti-lek-gate
-                # dit venster grotendeels onderdrukte), is er simpelweg niets betrouwbaars
-                # om te tonen. De oude "anders batch"-fallback liet precies het net
-                # afgewezen, gehallucineerde venster alsnog zien -- het tegenovergestelde
-                # van wat een confidence-gate hoort te doen.
-                if use_batch_as_final:
-                    final_txt = batch_txt
+                accepted_txt = " ".join(s_["text"] for s_, ok, _ in sentence_decisions if ok).strip()
+                use_batch_as_final = bool(accepted_txt)
+                # Zonder zinnen (lege batch-uitkomst) val terug op live -- nooit op een
+                # verzonnen tekst.
+                if sentence_decisions:
+                    final_txt = " ".join(s_["text"] for s_, _, _ in sentence_decisions).strip()
                 else:
                     final_txt = live_text
 
@@ -1844,7 +1831,7 @@ class AudioProcessor:
                         window_start_ms=start_ms,
                         window_end_ms=real_window_end_ms,
                         text_final=final_txt,
-                        text_batch=(batch_txt if (use_batch_as_final and batch_txt) else None),
+                        text_batch=(accepted_txt or None),
                         speaker=-1,
                     )
                     # Het geplande end_ms lag verder dan wat er echt gedecodeerd is
@@ -1874,9 +1861,10 @@ class AudioProcessor:
                 # Als de emit mislukt (bijv. WebSocket disconnect) wordt de batch_group
                 # alsnog opgepikt door de eerstvolgende reguliere FrontData-emissie.
                 try:
-                    if use_batch_as_final and sentence_segments:
-                        # Meerdere klikbare zinnen met eigen tijdstempels
-                        for i, sent in enumerate(sentence_segments):
+                    if sentence_decisions:
+                        # Elke zin klikbaar met eigen tijdstempel; vinkje alleen als
+                        # de zin zelf is goedgekeurd.
+                        for i, (sent, ok, _why) in enumerate(sentence_decisions):
                             sent_start_ms = int(round(sent["start"] * 1000)) + decode_start_ms
                             sent_end_ms = int(round(sent["end"] * 1000)) + decode_start_ms + 300  # 300ms buffer
                             sent_id = f"{group_id}_s{i}"
@@ -1885,7 +1873,7 @@ class AudioProcessor:
                                 state="FINAL",
                                 start_ms=sent_start_ms,
                                 end_ms=sent_end_ms,
-                                text_batch=sent["text"],
+                                text_batch=(sent["text"] if ok else None),
                                 text_final=sent["text"],
                                 is_final=(reason == "end_of_stream"),
                             )
@@ -1897,7 +1885,7 @@ class AudioProcessor:
                             state="FINAL",
                             start_ms=start_ms,
                             end_ms=real_window_end_ms,
-                            text_batch=(batch_txt if (use_batch_as_final and batch_txt) else None),
+                            text_batch=(accepted_txt or None),
                             text_final=final_txt,
                             is_final=(reason == "end_of_stream"),
                         )
