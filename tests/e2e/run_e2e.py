@@ -57,6 +57,35 @@ def http_json(method: str, url: str, timeout: float = 600) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+# Nabootsing van de client-gate in web_trivias/pcm_worklet.js: per AudioWorklet-frame
+# (128 samples @ 48 kHz = 2.67 ms ~ 43 samples @ 16 kHz) RMS >= drempel -> open,
+# daarna ~300 ms nahouden (113 frames). Elk frame is in de browser een eigen
+# WS-bericht met eigen vlag (recorder_worker.js), dus hier ook.
+GATE_FRAME_SAMPLES = 43
+GATE_HOLD_FRAMES = 113
+
+
+def client_gate_frames(pcm: bytes, threshold: float) -> list:
+    """[(vlag, pcm-bytes)] per worklet-frame, zoals de browser ze verstuurt."""
+    import array
+    samples = array.array("h")
+    samples.frombytes(pcm)
+    out, hold, n = [], 0, GATE_FRAME_SAMPLES
+    for i in range(0, len(samples), n):
+        frame = samples[i:i + n]
+        rms = (sum((x / 32768.0) ** 2 for x in frame) / max(1, len(frame))) ** 0.5
+        if rms >= threshold:
+            hold = GATE_HOLD_FRAMES
+            gate = True
+        elif hold > 0:
+            hold -= 1
+            gate = True
+        else:
+            gate = False
+        out.append((1 if gate else 0, frame.tobytes()))
+    return out
+
+
 def read_pcm(path: Path) -> bytes:
     with wave.open(str(path), "rb") as w:
         assert w.getframerate() == SR and w.getnchannels() == 1 and w.getsampwidth() == 2, path
@@ -65,9 +94,9 @@ def read_pcm(path: Path) -> bytes:
 
 async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: dict, pcm: bytes,
                          start_evt: asyncio.Event, t0_holder: dict, speed: float, chunk_ms: int,
-                         stop_timeout: float) -> dict:
+                         stop_timeout: float, client_gate: float | None = None) -> dict:
     params = {"session_id": session_id, "channel_id": channel_id, "lang": cfg["lang"],
-              "gate_framed": "1", "gate_threshold": "0"}
+              "gate_framed": "1", "gate_threshold": str(client_gate or 0)}
     if cfg.get("lang2"):
         params["lang2"] = cfg["lang2"]
     url = f"{ws_base}/asr?{urlencode(params)}"
@@ -91,13 +120,24 @@ async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: di
         recv_task = asyncio.create_task(receiver())
         await start_evt.wait()
         t0 = t0_holder["t0"]
-        step = int(SR * 2 * chunk_ms / 1000)
-        for i, off in enumerate(range(0, len(pcm), step)):
-            target = t0 + (i * chunk_ms / 1000) / speed
-            delay = target - time.monotonic()
-            if delay > 0:
-                await asyncio.sleep(delay)
-            await ws.send(b"\x01" + pcm[off:off + step])  # vlag 1 = naar ASR (gate open)
+        if client_gate:
+            frames = client_gate_frames(pcm, client_gate)
+            per_batch = max(1, int(SR * chunk_ms / 1000 / GATE_FRAME_SAMPLES))
+            for b, i in enumerate(range(0, len(frames), per_batch)):
+                target = t0 + (b * per_batch * GATE_FRAME_SAMPLES / SR) / speed
+                delay = target - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                for flag, data in frames[i:i + per_batch]:
+                    await ws.send(bytes([flag]) + data)
+        else:
+            step = int(SR * 2 * chunk_ms / 1000)
+            for i, off in enumerate(range(0, len(pcm), step)):
+                target = t0 + (i * chunk_ms / 1000) / speed
+                delay = target - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                await ws.send(b"\x01" + pcm[off:off + step])  # vlag 1 = naar ASR (gate open)
         await ws.send(b"")  # leeg bericht = Stop (zie audio_processor.process_audio)
         try:
             await asyncio.wait_for(got_ready.wait(), timeout=stop_timeout)
@@ -109,7 +149,7 @@ async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: di
 
 
 async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_refresh: bool,
-                       out_dir: Path) -> dict:
+                       out_dir: Path, client_gate: float | None = None) -> dict:
     sdir = SCENARIOS / name
     ref = json.loads((sdir / "reference.json").read_text(encoding="utf-8"))
     session_id = str(uuid.uuid4())
@@ -120,7 +160,7 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
     tasks = {
         ch: asyncio.create_task(stream_channel(
             ws_base, session_id, ch, cfg, read_pcm(sdir / f"{ch}.wav"), start_evt, t0_holder,
-            speed, chunk_ms, stop_timeout=180 + ref["duration_ms"] / 1000))
+            speed, chunk_ms, stop_timeout=180 + ref["duration_ms"] / 1000, client_gate=client_gate))
         for ch, cfg in ref["channels"].items()
     }
     await asyncio.sleep(2.0)  # alle kanalen verbonden voor de gezamenlijke start
@@ -228,6 +268,8 @@ def main() -> int:
     ap.add_argument("--chunk-ms", type=int, default=100)
     ap.add_argument("--no-refresh", action="store_true")
     ap.add_argument("--save-baseline", action="store_true")
+    ap.add_argument("--client-gate", type=float, default=None,
+                    help="boots de browser-gate na met deze RMS-drempel (bv. 0.015); standaard altijd open")
     args = ap.parse_args()
 
     try:
@@ -247,7 +289,7 @@ def main() -> int:
     for name in names:
         try:
             results.append(asyncio.run(run_scenario(name, args.server, args.speed, args.chunk_ms,
-                                                    not args.no_refresh, out_dir)))
+                                                    not args.no_refresh, out_dir, args.client_gate)))
         except Exception as e:
             results.append({"scenario": name, "errors": {"_run": [f"{type(e).__name__}: {e}"]}, "paths": {}})
 

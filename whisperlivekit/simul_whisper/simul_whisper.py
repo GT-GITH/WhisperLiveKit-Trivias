@@ -624,7 +624,13 @@ class AlignAtt:
                 probs_at_sot = logits[:, self.state.sot_index, :].float().softmax(dim=-1)
                 no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
                 if no_speech_probs[0] > self.cfg.nonspeech_prob:
-                    logger.info("no speech, stop")
+                    # [DIAG][LIVE_NOSPEECH] (2026-11-15, live-stilstand bij muziek): puur
+                    # observerend -- welke kans, over hoeveel buffer-audio, met welke drempel.
+                    logger.info(
+                        f"no speech, stop [DIAG][LIVE_NOSPEECH] p={no_speech_probs[0]:.3f} "
+                        f"drempel={self.cfg.nonspeech_prob} buffer={self.segments_len():.1f}s "
+                        f"offset={self.state.cumulative_time_offset + self.state.global_time_offset:.1f}s"
+                    )
                     break
 
             logits = logits[:, -1, :]  # logits for the last token

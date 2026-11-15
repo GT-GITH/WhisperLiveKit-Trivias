@@ -262,6 +262,10 @@ class AudioProcessor:
         # Voor welke stilte (op start-tijd) BatchCloseSignal al verstuurd is -- één
         # signaal per stilte.
         self._batch_close_signalled_for: Optional[float] = None
+        # [DIAG][LIVEFEED] (2026-11-15): tellers per ~5 s stream-tijd -- wat gaat er
+        # naar de live-pass (client-gate, VAC-stilte, niveau). Puur observerend.
+        self._diag_feed = {"t0": 0.0, "n": 0, "gate_closed": 0, "in_silence": 0,
+                           "fed": 0, "sum_sq": 0.0, "sil_begin": 0, "sil_end": 0}
         self.state: State = State()
         self.lock: asyncio.Lock = asyncio.Lock()
         self.sep: str = " "  # Default separator
@@ -382,6 +386,35 @@ class AudioProcessor:
                 json.dump(entries, f, ensure_ascii=False)
         except Exception as e:
             logger.warning(f"[TRANSCRIPT][PERSIST] failed: {e}")
+
+    def _diag_log_feed(self, num_samples: int, gate_mask, asr_pcm_array, chunk_sample_end: int) -> None:
+        """[DIAG][LIVEFEED]: per ~5 s stream-tijd een samenvatting van wat de live-pass
+        kreeg. Onderzoek live-stilstand bij muziek (2026-11-15): de live-decoder gaf
+        aanhoudend 'no speech, stop' over een buffer vol muziek; de vraag is of de
+        client-gate en/of de VAC die muziek als geluid doorlaten. Geen gedragswijziging."""
+        try:
+            d = self._diag_feed
+            d["n"] += num_samples
+            if gate_mask is not None:
+                d["gate_closed"] += int((~gate_mask).sum())
+            if self.current_silence:
+                d["in_silence"] += num_samples
+            else:
+                d["fed"] += num_samples
+            d["sum_sq"] += float(np.sum(np.square(asr_pcm_array, dtype=np.float64)))
+            now_s = chunk_sample_end / self.sample_rate
+            if now_s - d["t0"] >= 5.0 and d["n"] > 0:
+                rms = (d["sum_sq"] / d["n"]) ** 0.5
+                logger.info(
+                    f"[DIAG][LIVEFEED] channel={self.channel_id} t={d['t0']:.0f}-{now_s:.0f}s "
+                    f"gate_dicht={d['gate_closed'] / d['n']:.0%} vac_stilte={d['in_silence'] / d['n']:.0%} "
+                    f"naar_live={d['fed'] / d['n']:.0%} rms_asr={20 * np.log10(rms + 1e-9):.1f}dB "
+                    f"stilte_begin={d['sil_begin']} stilte_eind={d['sil_end']}"
+                )
+                self._diag_feed = {"t0": now_s, "n": 0, "gate_closed": 0, "in_silence": 0,
+                                   "fed": 0, "sum_sq": 0.0, "sil_begin": 0, "sil_end": 0}
+        except Exception as e:  # diagnostiek mag nooit de audio-pijplijn raken
+            logger.debug(f"[DIAG][LIVEFEED] mislukt: {e}")
 
     async def _maybe_signal_batch_close(self, now_sample: int) -> None:
         """Stuur één BatchCloseSignal zodra de lopende stilte >= BATCH_CLOSE_MIN_SILENCE_MS
@@ -2157,9 +2190,11 @@ class AudioProcessor:
 
         if res is not None:
             if "start" in res and self.current_silence:
+                self._diag_feed["sil_end"] += 1
                 await self._end_silence()
 
             if "end" in res and not self.current_silence:
+                self._diag_feed["sil_begin"] += 1
                 pre_silence_chunk = self._slice_before_silence(
                     asr_pcm_array, chunk_sample_start, res.get("end")
                 )
@@ -2171,6 +2206,7 @@ class AudioProcessor:
             await self._enqueue_active_audio(asr_pcm_array)
         else:
             await self._maybe_signal_batch_close(chunk_sample_end)
+        self._diag_log_feed(num_samples, gate_mask, asr_pcm_array, chunk_sample_end)
 
         self.total_pcm_samples = chunk_sample_end
 
