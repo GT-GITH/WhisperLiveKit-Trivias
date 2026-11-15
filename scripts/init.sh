@@ -531,6 +531,13 @@ startlive() {
     log "batch_model_registry.json is leeg → geen enkele taal krijgt een specialisatie (ongewijzigd gedrag)"
   fi
 
+  # Housekeeping vlak vóór de nieuwe server zijn log opent: de vorige serverlog wordt
+  # bewaard (gecomprimeerd in logs/) i.p.v. overschreven, losse oude logs worden
+  # gearchiveerd, oude e2e-resultaten opgeruimd. Hier pas -- niet eerder in startlive --
+  # omdat een al draaiende server (zelfde commit) hierboven al via exec tail -f is
+  # overgenomen en zijn lopende log dus nooit verplaatst wordt. Faalt nooit de start.
+  bash "$APP_DIR/scripts/housekeeping.sh" || log "housekeeping mislukt (start gaat door)"
+
   log "Start TriviasServer: host=$HOST port=$PORT model=$MODEL lang=$LANGUAGE llm_enabled=$LLM_ENABLED nllb_enabled=$NLLB_ENABLED"
   nohup python -m whisperlivekit.TriviasServer \
     --host "$HOST" --port "$PORT" \
