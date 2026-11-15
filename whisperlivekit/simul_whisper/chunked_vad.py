@@ -34,6 +34,14 @@ MERGE_GAP_S = 2.0
 # op 0 s begon -> 1 van 11 zinnen; zelfde venster vanaf 0 s -> alle 11). Midden in het
 # venster speelt dit niet: daar heeft het overlappende vorige stuk de toestand al warm.
 EDGE_SNAP_S = 1.0  # begint de eerste clip binnen deze tijd na het begin: vanaf 0
+# Silero (VadOptions: min_silence_duration_ms=2000, speech_pad_ms=400) sluit een
+# spraakstuk pas af na 2 s stilte. Eindigt een stuk audio < 2 s na de laatste spraak, dan
+# blijft het spraakstuk open tot het einde van dat stuk -- valse "spraak" over stilte.
+# Bewezen 2026-11-15: stuk [10,20] gaf spraak tot 20.0 s, het overlappende stuk [15,25]
+# tot 18.66 s, audio erna digitaal stil (-180 dBFS); zelfde bij 30.0/29.4 en 140.0/139.3.
+# Die valse staarten lieten het hervatten stilte decoderen ("***", "Altyazı M.K.", "Oldu.").
+# Moet < CHUNK_S - HOP_S blijven zodat elk tijdstip door een vertrouwd deel gedekt is.
+TRAIL_UNTRUSTED_S = 2.5
 
 Detector = Callable[["object"], List[dict]]  # audio-stuk -> [{"start": sample, "end": sample}]
 
@@ -77,9 +85,16 @@ def speech_intervals(audio, sr: int = SR, chunk_s: float = CHUNK_S, hop_s: float
     found: List[Tuple[float, float]] = []
     off = 0
     while off < total:
+        last = off + n >= total
+        # Niet-laatste stukken tellen maar tot TRAIL_UNTRUSTED_S voor hun einde (zie daar);
+        # het overlappende volgende stuk beoordeelt dat deel midden in zijn eigen bereik.
+        limit = total / sr if last else (off + n) / sr - TRAIL_UNTRUSTED_S
         for t in detect(audio[off:off + n]):
-            found.append(((off + t["start"]) / sr, min(total, off + t["end"]) / sr))
-        if off + n >= total:
+            s, e = (off + t["start"]) / sr, min(total, off + t["end"]) / sr
+            e = min(e, limit)
+            if e > s:
+                found.append((s, e))
+        if last:
             break
         off += hop
     return merge_intervals(found, max_gap=0.0)

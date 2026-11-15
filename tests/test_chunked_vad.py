@@ -93,6 +93,36 @@ def test_tail_of_silence_is_not_resumed():
     assert cv.uncovered_tails(clips, [(0.0, 18.16)], speech) == []
 
 
+def make_open_end_detector(truth, min_silence_s=2.0):
+    """Zoals Silero: een spraakstuk dat < min_silence_s voor het einde van het stuk
+    audio eindigt, blijft open tot het einde van dat stuk."""
+    inner = make_detector(truth)
+
+    def detect(chunk):
+        c1 = (chunk.offset + chunk.n) / SR
+        out = []
+        for t in inner(chunk):
+            e = (chunk.offset + t["end"]) / SR
+            if c1 - e < min_silence_s:
+                t = {"start": t["start"], "end": chunk.n}
+            out.append(t)
+        return out
+    return detect
+
+
+def test_open_end_at_chunk_boundary_is_not_speech():
+    # Echte spraak 11.3-18.66 (dan stilte). Stuk [10,20] ziet het einde niet -> "tot 20";
+    # stuk [15,25] wel. Uitkomst moet het echte einde zijn, niet 20.0.
+    got = cv.speech_intervals(FakeAudio(40), detector=make_open_end_detector([(11.3, 18.66)]))
+    assert got == [(11.3, 18.66)], got
+
+
+def test_open_end_at_final_chunk_is_kept():
+    # Spraak loopt door tot het einde van de audio: geen volgend stuk -> niet inkorten.
+    got = cv.speech_intervals(FakeAudio(20), detector=make_open_end_detector([(16.0, 20.0)]))
+    assert got == [(16.0, 20.0)], got
+
+
 def test_speech_intervals_not_merged_over_pauses():
     truth = [(1.0, 3.0), (4.0, 6.0)]  # 1 s pauze: één decodeer-clip, twee spraakstukken
     assert cv.speech_intervals(FakeAudio(10), detector=make_detector(truth)) == truth
