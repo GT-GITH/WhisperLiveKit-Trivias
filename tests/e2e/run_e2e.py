@@ -37,7 +37,7 @@ from urllib.parse import urlencode
 import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scoring import LIVE_STALL_FAIL_S, score_channel, score_live  # noqa: E402
+from scoring import LIVE_LAG_FAIL_S, LIVE_STALL_FAIL_S, score_channel, score_live  # noqa: E402
 
 # Serverlog-patronen die tijdens een run als FOUT tellen. Les van 2026-11-15: de
 # live-decoder faalde met exceptions/time-outs terwijl het rapport "Fouten: geen" zei,
@@ -249,6 +249,9 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
             if lm["live_max_gap_s"] > LIVE_STALL_FAIL_S:
                 result["errors"].setdefault(f"{ch}/live", []).append(
                     f"live stil tijdens spraak: {lm['live_max_gap_s']}s (bij {lm['live_max_gap_at_s']})")
+            if lm["live_lag_p90_s"] is not None and lm["live_lag_p90_s"] > LIVE_LAG_FAIL_S:
+                result["errors"].setdefault(f"{ch}/live", []).append(
+                    f"live-tijdstempels lopen achter: p90 {lm['live_lag_p90_s']}s (mediaan {lm['live_lag_median_s']}s)")
     # Serverlog: exceptions/time-outs tijdens deze run zijn fouten.
     result["server_log"] = server_log_errors(server_log, log_offset)
     if result["server_log"]:
@@ -307,12 +310,13 @@ def write_markdown(md_path: Path, results: list, regressions: list, health: dict
                 lines.append(f"| {r['scenario']} | {path} | {ch} | {fmt(m['wer'], True)} | {fmt(m['cer'], True)} | "
                              f"{m['missed']}/{m['n_ref_utterances']} | {m['spurious']} | {m['live_fallback']} | "
                              f"{fmt(m['ts_median_ms'])}/{fmt(m['ts_max_ms'])} |")
-    lines += ["", "## Live", "", "| scenario | kanaal | live gemist | langste live-stilte tijdens spraak | updates |",
-              "|---|---|---|---|---|"]
+    lines += ["", "## Live", "", "| scenario | kanaal | live gemist | langste live-stilte tijdens spraak | achterstand mediaan/p90 | updates |",
+              "|---|---|---|---|---|---|"]
     for r in results:
         for ch, lm in r.get("live", {}).items():
             lines.append(f"| {r['scenario']} | {ch} | {lm['live_missed']} | {lm['live_max_gap_s']} s "
-                         f"(bij {lm['live_max_gap_at_s']}) | {lm['live_updates']} |")
+                         f"(bij {lm['live_max_gap_at_s']}) | {lm['live_lag_median_s']}/{lm['live_lag_p90_s']} s | "
+                         f"{lm['live_updates']} |")
     errs = [(r["scenario"], ch, e) for r in results for ch, es in r["errors"].items() for e in es]
     lines += ["", "## Fouten", ""] + ([f"- {s}/{c}: {e}" for s, c, e in errs] or ["Geen."])
     lines += ["", "## Regressies t.o.v. basislijn", ""] + ([f"- {x}" for x in regressions] or ["Geen."])

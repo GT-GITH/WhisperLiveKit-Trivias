@@ -390,8 +390,32 @@ class SimulStreamingOnlineProcessor:
         tokens, processed_upto = self.process_iter(is_last=True)
         return tokens, processed_upto
 
+    def _reanchor_live_clock(self, reason: str) -> None:
+        """Koppel de live-klok opnieuw aan de audioklok na een (gedeeltelijke) buffer-reset.
+
+        Invariant: begin van de live-audiobuffer = self.end (stream-tijd tot waar audio
+        is aangeleverd, uit het aantal ontvangen samples + stilteduren) - bufferlengte.
+        Tokentijd = frame * 0.02 + cumulative_time_offset + global_time_offset, dus na een
+        reset: global = self.end - segments_len(), cumulative = 0.
+
+        Vervangt drie losse reconstructies die elk konden afwijken (live-test 2026-11-15,
+        50-130 s achterstand): rewind-reset die de weggegooide tijd vergat, lange stilte
+        die 'laatste live-woord + stilteduur' nam, en de harde reset die end_buffer in
+        cumulative_time_offset zette naast een al gevulde global_time_offset."""
+        model = self.model
+        buf = model.segments_len() if hasattr(model, "segments_len") else 0.0
+        new_global = max(0.0, float(self.end) - float(buf))
+        old = float(model.state.global_time_offset) + float(model.state.cumulative_time_offset)
+        model.state.global_time_offset = new_global
+        model.state.cumulative_time_offset = 0.0
+        model.state.needs_reanchor = False
+        self.logger.info(
+            f"[LIVE][ANCHOR] reason={reason} buffer_start {old:.2f}s -> {new_global:.2f}s "
+            f"(audioklok {float(self.end):.2f}s - buffer {buf:.2f}s)"
+        )
+
     def end_silence(self, silence_duration, offset):
-        """Handle silence period."""
+        """Handle silence period. `offset` wordt niet meer gebruikt (zie _reanchor_live_clock)."""
         self.end += silence_duration
         long_silence = silence_duration >= MIN_DURATION_REAL_SILENCE
         if not long_silence:
@@ -404,7 +428,7 @@ class SimulStreamingOnlineProcessor:
                 self.model.insert_audio(gap_silence)
         if long_silence:
             self.model.refresh_segment(complete=True)
-            self.model.global_time_offset = silence_duration + offset
+            self._reanchor_live_clock(f"long_silence {silence_duration:.1f}s")
 
     def insert_audio_chunk(self, audio: np.ndarray, audio_stream_end_time):
         """Append an audio chunk to be processed by SimulStreaming."""
@@ -421,6 +445,8 @@ class SimulStreamingOnlineProcessor:
         self.model.refresh_segment(complete=True)
         self.model.speaker = change_speaker.speaker
         self.model.global_time_offset = change_speaker.start
+        # Expliciet gezet (diarization-pad, ongewijzigd gedrag): niet opnieuw ijken.
+        self.model.state.needs_reanchor = False
             
     def get_buffer(self):
         concat_buffer = Transcript.from_tokens(tokens= self.buffer, sep='')
@@ -434,7 +460,11 @@ class SimulStreamingOnlineProcessor:
         """
         try:
             timestamped_words = self.model.infer(is_last=is_last)
-            
+            # Rewind-reset binnen infer() (of OOM-reset hieronder) heeft de buffer
+            # weggegooid -> live-klok opnieuw aan de audioklok koppelen.
+            if getattr(self.model.state, "needs_reanchor", False):
+                self._reanchor_live_clock("refresh_segment in infer (rewind)")
+
             if not timestamped_words:
                 return [], self.end
             
@@ -459,6 +489,7 @@ class SimulStreamingOnlineProcessor:
                 # Reset streaming decoder state so we can continue
                 try:
                     self.model.refresh_segment(complete=True)
+                    self._reanchor_live_clock("cuda_oom")
                 except Exception:
                     pass
 

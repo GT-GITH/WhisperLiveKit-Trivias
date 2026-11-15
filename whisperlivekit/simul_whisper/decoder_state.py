@@ -20,6 +20,10 @@ class DecoderState:
     # ([context] + tokens, zie _current_tokens). sot_index hierboven is de positie
     # binnen alleen de sot-sequentie en klopt dus niet zodra er context voor staat.
     prompt_sot_index: int = 0
+    # Gezet door refresh_segment(): de audiobuffer is (deels) weggegooid, dus de live-
+    # klok moet opnieuw aan de audioklok van de verwerker gekoppeld worden
+    # (SimulStreamingOnlineProcessor._reanchor_live_clock).
+    needs_reanchor: bool = False
 
     align_source: Dict[int, List[Tuple[int, int]]] = field(default_factory=dict)
     num_align_heads: int = 0

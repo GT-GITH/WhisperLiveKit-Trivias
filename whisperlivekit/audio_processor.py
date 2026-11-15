@@ -510,7 +510,14 @@ class AudioProcessor:
                 # tot de eind-flush bij Stop (die wél een eigen fallback heeft en daarom
                 # per ongeluk goed bleef gaan). Herstel de offset naar de echte absolute
                 # positie in de sessie zodat tijdstempels doorlopend blijven.
-                if hasattr(base_asr, "state") and hasattr(base_asr.state, "cumulative_time_offset"):
+                # Live-klok opnieuw aan de audioklok koppelen (één ijkpunt, zie
+                # SimulStreamingOnlineProcessor._reanchor_live_clock). Voorheen werd hier
+                # cumulative_time_offset = state.end_buffer gezet NAAST een al gevulde
+                # global_time_offset -- een derde, afwijkende reconstructie van de live-
+                # tijd (live-test 2026-11-15).
+                if hasattr(self.transcription, "_reanchor_live_clock"):
+                    self.transcription._reanchor_live_clock(f"hard_reset:{reason}")
+                elif hasattr(base_asr, "state") and hasattr(base_asr.state, "cumulative_time_offset"):
                     _diag_restore_value = float(getattr(self.state, "end_buffer", 0.0) or 0.0)
                     base_asr.state.cumulative_time_offset = _diag_restore_value
                     logger.info(

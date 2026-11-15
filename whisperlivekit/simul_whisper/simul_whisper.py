@@ -342,6 +342,12 @@ class AlignAtt:
         else:
             logger.debug("removing all segments.")
             self.state.segments = []
+        # cumulative_time_offset is hierboven op 0 gezet en (een deel van) de buffer is
+        # weg: de tijd van de weggegooide audio zit nergens meer in. Voorheen bleef de
+        # live-klok daardoor tot 30 s per reset achter (live-test 2026-11-15: 50-130 s
+        # achterstand -> live-woorden in al definitieve blokken -> weggesnoeid of midden
+        # tussen de definitieve tekst). De verwerker, die de audioklok kent, ijkt opnieuw.
+        self.state.needs_reanchor = True
 
         # 4) Incomplete hypotheses weggooien
         self.state.pending_incomplete_tokens = []

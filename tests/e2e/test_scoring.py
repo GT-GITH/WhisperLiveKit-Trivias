@@ -34,6 +34,15 @@ def test_score_live_stalled():
     assert r["live_max_gap_s"] >= 30.0, r
 
 
+def test_score_live_lag():
+    # live-regel verschijnt op t=60 s maar eindigt (volgens zijn tijdstempel) op 10 s: 50 s achter
+    utts = [{"start_ms": 1000, "end_ms": 9000, "text": "a"}]
+    msgs = [{"t": 60.0, "msg": {"type": "front_data", "buffer_transcription": "",
+                                "lines": [{"id": "seg_1", "text": "x", "text_batch": None, "start_ms": 8000, "end_ms": 10000}]}}]
+    r = score_live(utts, msgs)
+    assert r["live_lag_median_s"] == 50.0 and r["live_lag_p90_s"] == 50.0, r
+
+
 def test_score_live_ignores_batch_replacement():
     # alleen een batch-regel die verschijnt telt niet als live-activiteit
     utts = [{"start_ms": 1000, "end_ms": 5000, "text": "a"}]

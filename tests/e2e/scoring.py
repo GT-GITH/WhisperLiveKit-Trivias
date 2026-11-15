@@ -110,6 +110,7 @@ def _coverage(utt: dict, segs: List[dict]) -> float:
 
 LIVE_LATENCY_MARGIN_S = 4.0   # live mag zo lang na het einde van een uiting nog reageren
 LIVE_STALL_FAIL_S = 10.0       # langer dan dit geen live-activiteit tijdens spraak = fout
+LIVE_LAG_FAIL_S = 10.0         # p90 van live-tijdstempel-achterstand boven dit = fout
 
 
 def live_signature(msg: dict):
@@ -162,7 +163,28 @@ def score_live(utterances: List[dict], messages: List[dict]) -> Dict[str, object
         for a, b in zip(pts, pts[1:]):
             if b - a > max_gap:
                 max_gap, worst = b - a, (round(a, 1), round(b, 1))
+    # Live-tijdstempel-achterstand: bij elke nieuw verschenen live-regel (zonder batch-
+    # tekst) het verschil tussen het moment van verschijnen en het einde van die regel.
+    # Live-tijdstempels die ver achterlopen belanden in al definitieve blokken en worden
+    # weggesnoeid of komen midden tussen de definitieve tekst (live-test 2026-11-15).
+    seen, lags = set(), []
+    for m in messages:
+        msg = m.get("msg") or {}
+        if msg.get("type") != "front_data":
+            continue
+        for l in msg.get("lines") or []:
+            if l.get("text_batch") or not (l.get("text") or "").strip() or l.get("speaker") == -2:
+                continue
+            key = (l.get("id"), l.get("start_ms"))
+            if key in seen or l.get("end_ms") is None:
+                continue
+            seen.add(key)
+            lags.append(float(m["t"]) - l["end_ms"] / 1000.0)
+    lags.sort()
+    p90 = lags[int(0.9 * (len(lags) - 1))] if lags else None
     return {
+        "live_lag_median_s": round(lags[len(lags) // 2], 1) if lags else None,
+        "live_lag_p90_s": round(p90, 1) if p90 is not None else None,
         "live_missed": len(missed),
         "live_missed_utterances": [u["text"][:80] for u in missed],
         "live_max_gap_s": round(max_gap, 1),
