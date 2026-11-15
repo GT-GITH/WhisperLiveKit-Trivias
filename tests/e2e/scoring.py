@@ -108,6 +108,69 @@ def _coverage(utt: dict, segs: List[dict]) -> float:
     return covered / dur
 
 
+LIVE_LATENCY_MARGIN_S = 4.0   # live mag zo lang na het einde van een uiting nog reageren
+LIVE_STALL_FAIL_S = 10.0       # langer dan dit geen live-activiteit tijdens spraak = fout
+
+
+def live_signature(msg: dict):
+    """Wat de gebruiker LIVE ziet bewegen: de live-buffer plus de tekst van regels
+    zonder batch-tekst. Verandert dit, dan doet live iets. (Batch-vervangingen
+    vallen erbuiten: regels met text_batch tellen niet mee.)"""
+    lines = msg.get("lines") or []
+    live_lines = tuple((l.get("text") or "") for l in lines if not l.get("text_batch"))
+    return (msg.get("buffer_transcription") or "", live_lines)
+
+
+def live_activity_times(messages: List[dict]) -> List[float]:
+    """Tijdstippen (s sinds streamstart) waarop de live-weergave veranderde.
+    messages: [{"t": sec, "msg": {...front_data...}}] zoals de runner ze opslaat."""
+    times, prev = [], None
+    for m in messages:
+        msg = m.get("msg") or {}
+        if msg.get("type") != "front_data":
+            continue
+        sig = live_signature(msg)
+        if prev is not None and sig != prev and any(sig[1]) | bool(sig[0]):
+            times.append(float(m["t"]))
+        prev = sig
+    return times
+
+
+def score_live(utterances: List[dict], messages: List[dict]) -> Dict[str, object]:
+    """Meet of live meebeweegt tijdens echte spraak (de referentie-uitingen).
+
+    - live_missed: uitingen waarbij live tussen hun start en eind + marge nooit
+      veranderde.
+    - live_max_gap_s: langste periode BINNEN spraak (vereniging van uitingen, tot
+      eind + marge) zonder enige live-verandering.
+    Live-tijd = runner-tijd sinds streamstart; bij speed=1 gelijk aan audiotijd."""
+    acts = live_activity_times(messages)
+    utts = sorted(utterances, key=lambda u: u["start_ms"])
+    missed = [u for u in utts
+              if not any(u["start_ms"] / 1000 <= t <= u["end_ms"] / 1000 + LIVE_LATENCY_MARGIN_S for t in acts)]
+    # spraakgebieden (met marge), samengevoegd
+    regions: List[list] = []
+    for u in utts:
+        s, e = u["start_ms"] / 1000, u["end_ms"] / 1000 + LIVE_LATENCY_MARGIN_S
+        if regions and s <= regions[-1][1]:
+            regions[-1][1] = max(regions[-1][1], e)
+        else:
+            regions.append([s, e])
+    max_gap, worst = 0.0, None
+    for s, e in regions:
+        pts = [s] + [t for t in acts if s <= t <= e] + [e]
+        for a, b in zip(pts, pts[1:]):
+            if b - a > max_gap:
+                max_gap, worst = b - a, (round(a, 1), round(b, 1))
+    return {
+        "live_missed": len(missed),
+        "live_missed_utterances": [u["text"][:80] for u in missed],
+        "live_max_gap_s": round(max_gap, 1),
+        "live_max_gap_at_s": worst,
+        "live_updates": len(acts),
+    }
+
+
 def score_channel(utterances: List[dict], segments: List[dict]) -> Dict[str, object]:
     """utterances: [{start_ms, end_ms, text}] (referentie, op tijd gesorteerd).
     segments: opgeslagen transcriptsegmenten van de server voor dit kanaal."""

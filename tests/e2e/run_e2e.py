@@ -37,7 +37,40 @@ from urllib.parse import urlencode
 import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scoring import score_channel  # noqa: E402
+from scoring import LIVE_STALL_FAIL_S, score_channel, score_live  # noqa: E402
+
+# Serverlog-patronen die tijdens een run als FOUT tellen. Les van 2026-11-15: de
+# live-decoder faalde met exceptions/time-outs terwijl het rapport "Fouten: geen" zei,
+# omdat alleen de WebSocket werd bekeken.
+SERVER_LOG_ERROR_PATTERNS = {
+    "Traceback": "Traceback",
+    "live-time-out": "[LIVE][TIMEOUT]",
+    "live-abort": "[LIVE][ABORT]",
+    "lusbeveiliging": "[Loop Detection]",
+    "transcriptie-exception": "Exception in transcription_processor",
+}
+LIVE_GAP_REGRESSION_S = 3.0
+
+
+def server_log_offset(path: str | None) -> int:
+    try:
+        return Path(path).stat().st_size if path else -1
+    except OSError:
+        return -1
+
+
+def server_log_errors(path: str | None, offset: int) -> dict:
+    """Tel foutpatronen in het deel van de serverlog dat tijdens deze run is bijgeschreven."""
+    if not path or offset < 0:
+        return {}
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            text = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return {}
+    counts = {name: text.count(pat) for name, pat in SERVER_LOG_ERROR_PATTERNS.items()}
+    return {k: v for k, v in counts.items() if v}
 
 HERE = Path(__file__).resolve().parent
 SCENARIOS = HERE / "scenarios"
@@ -149,13 +182,15 @@ async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: di
 
 
 async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_refresh: bool,
-                       out_dir: Path, client_gate: float | None = None) -> dict:
+                       out_dir: Path, client_gate: float | None = None,
+                       server_log: str | None = None) -> dict:
     sdir = SCENARIOS / name
     ref = json.loads((sdir / "reference.json").read_text(encoding="utf-8"))
     session_id = str(uuid.uuid4())
     ws_base = server.replace("http://", "ws://").replace("https://", "wss://")
     print(f"[{name}] session={session_id} duur={ref['duration_ms'] / 1000:.0f}s speed={speed}")
 
+    log_offset = server_log_offset(server_log)
     start_evt, t0_holder = asyncio.Event(), {}
     tasks = {
         ch: asyncio.create_task(stream_channel(
@@ -202,6 +237,22 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
                 ch: score_channel(ref["channels"][ch]["utterances"], by_ch[ch]) for ch in ref["channels"]}
         except Exception as e:
             result["errors"].setdefault("_refresh", []).append(str(e))
+
+    # Live: beweegt live mee tijdens echte spraak? Een live-stilte langer dan
+    # LIVE_STALL_FAIL_S binnen spraak is een fout (live-stilstand, 2026-11-15).
+    result["live"] = {ch: score_live(ref["channels"][ch]["utterances"], streamed[ch]["messages"])
+                      for ch in ref["channels"]}
+    if speed != 1.0:
+        result["live_note"] = "speed != 1: live-timing niet vergelijkbaar met audiotijd"
+    else:
+        for ch, lm in result["live"].items():
+            if lm["live_max_gap_s"] > LIVE_STALL_FAIL_S:
+                result["errors"].setdefault(f"{ch}/live", []).append(
+                    f"live stil tijdens spraak: {lm['live_max_gap_s']}s (bij {lm['live_max_gap_at_s']})")
+    # Serverlog: exceptions/time-outs tijdens deze run zijn fouten.
+    result["server_log"] = server_log_errors(server_log, log_offset)
+    if result["server_log"]:
+        result["errors"].setdefault("_serverlog", []).extend(f"{k}: {v}x" for k, v in result["server_log"].items())
     return result
 
 
@@ -227,6 +278,15 @@ def compare(results: list, baseline: dict) -> list:
                 if m["ts_max_ms"] is not None and bm["ts_max_ms"] is not None \
                         and m["ts_max_ms"] - bm["ts_max_ms"] > TS_REGRESSION_MS:
                     regressions.append(f"{tag}: ts_max {bm['ts_max_ms']} -> {m['ts_max_ms']} ms")
+        for ch, lm in r.get("live", {}).items():
+            blm = b.get("live", {}).get(ch)
+            if not blm:
+                continue
+            tag = f"{r['scenario']}/live/{ch}"
+            if lm["live_missed"] > blm["live_missed"]:
+                regressions.append(f"{tag}: live_missed {blm['live_missed']} -> {lm['live_missed']}")
+            if lm["live_max_gap_s"] - blm["live_max_gap_s"] > LIVE_GAP_REGRESSION_S:
+                regressions.append(f"{tag}: live_max_gap {blm['live_max_gap_s']} -> {lm['live_max_gap_s']} s")
     return regressions
 
 
@@ -247,6 +307,12 @@ def write_markdown(md_path: Path, results: list, regressions: list, health: dict
                 lines.append(f"| {r['scenario']} | {path} | {ch} | {fmt(m['wer'], True)} | {fmt(m['cer'], True)} | "
                              f"{m['missed']}/{m['n_ref_utterances']} | {m['spurious']} | {m['live_fallback']} | "
                              f"{fmt(m['ts_median_ms'])}/{fmt(m['ts_max_ms'])} |")
+    lines += ["", "## Live", "", "| scenario | kanaal | live gemist | langste live-stilte tijdens spraak | updates |",
+              "|---|---|---|---|---|"]
+    for r in results:
+        for ch, lm in r.get("live", {}).items():
+            lines.append(f"| {r['scenario']} | {ch} | {lm['live_missed']} | {lm['live_max_gap_s']} s "
+                         f"(bij {lm['live_max_gap_at_s']}) | {lm['live_updates']} |")
     errs = [(r["scenario"], ch, e) for r in results for ch, es in r["errors"].items() for e in es]
     lines += ["", "## Fouten", ""] + ([f"- {s}/{c}: {e}" for s, c, e in errs] or ["Geen."])
     lines += ["", "## Regressies t.o.v. basislijn", ""] + ([f"- {x}" for x in regressions] or ["Geen."])
@@ -268,6 +334,8 @@ def main() -> int:
     ap.add_argument("--chunk-ms", type=int, default=100)
     ap.add_argument("--no-refresh", action="store_true")
     ap.add_argument("--save-baseline", action="store_true")
+    ap.add_argument("--server-log", default="/workspace/trivias.log",
+                    help="serverlog om foutpatronen in te tellen (leeg = overslaan)")
     ap.add_argument("--client-gate", type=float, default=None,
                     help="boots de browser-gate na met deze RMS-drempel (bv. 0.015); standaard altijd open")
     args = ap.parse_args()
@@ -289,7 +357,8 @@ def main() -> int:
     for name in names:
         try:
             results.append(asyncio.run(run_scenario(name, args.server, args.speed, args.chunk_ms,
-                                                    not args.no_refresh, out_dir, args.client_gate)))
+                                                    not args.no_refresh, out_dir, args.client_gate,
+                                                    args.server_log or None)))
         except Exception as e:
             results.append({"scenario": name, "errors": {"_run": [f"{type(e).__name__}: {e}"]}, "paths": {}})
 

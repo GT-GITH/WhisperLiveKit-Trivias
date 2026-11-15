@@ -9,7 +9,37 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scoring import cer, edit_distance, normalize, score_channel, wer  # noqa: E402
+from scoring import cer, edit_distance, normalize, score_channel, score_live, wer  # noqa: E402
+
+
+def _fd(t, buffer="", lines=()):
+    return {"t": t, "msg": {"type": "front_data", "buffer_transcription": buffer,
+                            "lines": [{"text": x, "text_batch": None} for x in lines]}}
+
+
+def test_score_live_moving():
+    utts = [{"start_ms": 1000, "end_ms": 5000, "text": "a"}, {"start_ms": 8000, "end_ms": 12000, "text": "b"}]
+    msgs = [_fd(0.5), _fd(2.0, "goe"), _fd(3.0, "goede"), _fd(9.0, "", ["goede"]), _fd(10.0, "ho", ["goede"])]
+    r = score_live(utts, msgs)
+    assert r["live_missed"] == 0, r
+    assert r["live_max_gap_s"] < 8.0, r
+
+
+def test_score_live_stalled():
+    # live stopt na 3 s, terwijl er tot 30 s spraak is (zoals de live-stilstand 2026-11-15)
+    utts = [{"start_ms": 1000, "end_ms": 10000, "text": "a"}, {"start_ms": 11000, "end_ms": 30000, "text": "b"}]
+    msgs = [_fd(0.5), _fd(2.0, "x"), _fd(3.0, "xy")] + [_fd(t, "xy") for t in range(4, 34)]
+    r = score_live(utts, msgs)
+    assert r["live_missed"] == 1 and r["live_missed_utterances"] == ["b"], r
+    assert r["live_max_gap_s"] >= 30.0, r
+
+
+def test_score_live_ignores_batch_replacement():
+    # alleen een batch-regel die verschijnt telt niet als live-activiteit
+    utts = [{"start_ms": 1000, "end_ms": 5000, "text": "a"}]
+    msgs = [_fd(0.5), {"t": 3.0, "msg": {"type": "front_data", "buffer_transcription": "",
+                                         "lines": [{"text": "a", "text_batch": "a"}]}}]
+    assert score_live(utts, msgs)["live_missed"] == 1
 
 
 def test_normalize():
