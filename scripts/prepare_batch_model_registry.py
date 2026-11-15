@@ -35,11 +35,31 @@ import shutil
 import subprocess
 import sys
 
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 REGISTRY_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "batch_model_registry.json"
 )
+
+
+def _fix_extra_special_tokens(staging_dir: str) -> None:
+    """Meerdere Whisper-finetunes (Sunbird, oddadmix) publiceren in
+    tokenizer_config.json `extra_special_tokens` als lijst i.p.v. dict;
+    transformers roept daar .keys() op aan en crasht (AttributeError: 'list'
+    object has no attribute 'keys'). Zelfde patch als in
+    scripts/eval_arabic_wer_casablanca.py -- die stond daar wel, maar ontbrak
+    hier, waardoor de conversie op een schone pod (2026-11-15) faalde: op de
+    oude pod had het evaluatiescript het model al geconverteerd."""
+    path = os.path.join(staging_dir, "tokenizer_config.json")
+    if not os.path.isfile(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    if isinstance(config.get("extra_special_tokens"), list):
+        print(f"patch {path}: extra_special_tokens lijst -> dict")
+        config["extra_special_tokens"] = {}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(config, f)
 
 
 def ensure_ct2_model(lang: str, hf_repo: str, ct2_dir: str, preprocessor_fallback_repo: str = None) -> None:
@@ -47,17 +67,25 @@ def ensure_ct2_model(lang: str, hf_repo: str, ct2_dir: str, preprocessor_fallbac
     if os.path.isfile(os.path.join(ct2_dir, "model.bin")):
         print(f"[{lang}] {ct2_dir} al aanwezig -> conversie skip")
     else:
-        print(f"[{lang}] converteer {hf_repo} -> {ct2_dir} (CT2, float16, kan even duren)...")
+        # Eerst zelf lokaal downloaden (i.p.v. de repo-naam rechtstreeks aan de
+        # converter te geven), zodat een kapotte tokenizer_config.json gepatcht
+        # kan worden vóór de conversie.
+        staging_dir = ct2_dir.rstrip("/") + "-hf-src"
+        print(f"[{lang}] download {hf_repo} -> {staging_dir}...")
+        snapshot_download(hf_repo, local_dir=staging_dir, ignore_patterns=["*.h5", "*.msgpack"])
+        _fix_extra_special_tokens(staging_dir)
+        print(f"[{lang}] converteer {staging_dir} -> {ct2_dir} (CT2, float16, kan even duren)...")
         subprocess.run(
             [
                 "ct2-transformers-converter",
-                "--model", hf_repo,
+                "--model", staging_dir,
                 "--output_dir", ct2_dir,
                 "--quantization", "float16",
                 "--force",
             ],
             check=True,
         )
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
     # ct2-transformers-converter neemt nooit preprocessor_config.json mee (alleen
     # gewichten + tokenizer) -- zonder dat bestand valt faster-whisper terug op
