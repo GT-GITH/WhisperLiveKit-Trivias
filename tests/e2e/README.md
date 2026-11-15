@@ -49,5 +49,11 @@ gebouwde audio staat niet in git. Zie `build_scenarios.py` voor het formaat.
 - `nl_lange_pauze` — 45 s stilte halverwege (drift, hallucinatie in stilte)
 - `gehoor_tr_3kanaal` — hoorder + vreemdeling (Turks) + tolk
 - `ar_ma_routering` — Marokkaans Arabisch via de oddadmix-routering
+- `muziek_tr` — laag 2: 75 s instrumentale muziek, dan Turkse spraak met muziek
+  eronder, dan schoon, dan weer muziek (spraak na lange muziek; tekst in muziek)
+
+Achtergrondmuziek komt uit de Free Music Archive (alleen CC-BY e.d., ook
+commercieel); de builder kiest zelf instrumentale tracks (frisse VAD < 3% spraak)
+en zet titel/artiest/licentie in `reference.json` (naamsvermelding).
 
 Scoring-unit-tests (lokaal te draaien): `python tests/e2e/test_scoring.py`.

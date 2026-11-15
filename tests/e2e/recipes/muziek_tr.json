@@ -1,0 +1,21 @@
+{
+  "name": "muziek_tr",
+  "description": "Laag 2: achtergrondmuziek. Bootst de live YouTube-test na (2026-11-15) waarin spraak na een lange muziekperiode door de VAD gemist werd. 75 s zachte instrumentale muziek zonder spraak, dan 3 Turkse uitingen met muziek eronder (~10 dB SNR), muziek stopt, 3 schone uitingen, 20 s muziek aan het eind. Verwacht: niets gemist, geen tekst tijdens alleen-muziek.",
+  "channels": {"foreign_tr": {"lang": "tr"}},
+  "timeline": [
+    {"silence_ms": 75000},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 3}, "gap_before_ms": 0},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 4}, "gap_before_ms": 1500},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 5}, "gap_before_ms": 1500},
+    {"mark": "muziek_uit"},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 6}, "gap_before_ms": 2500},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 7}, "gap_before_ms": 1500},
+    {"channel": "foreign_tr", "source": {"dataset": "fleurs", "config": "tr_tr", "index": 8}, "gap_before_ms": 1500},
+    {"mark": "staart_muziek"}
+  ],
+  "tail_ms": 20000,
+  "background": [
+    {"channel": "foreign_tr", "source": {"dataset": "fma_instrumental", "index": 0}, "from": "begin", "to": "muziek_uit", "rms_dbfs": -32},
+    {"channel": "foreign_tr", "source": {"dataset": "fma_instrumental", "index": 1}, "from": "staart_muziek", "to": "end", "rms_dbfs": -32}
+  ]
+}
