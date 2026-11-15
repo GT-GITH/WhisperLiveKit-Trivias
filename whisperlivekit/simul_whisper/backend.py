@@ -17,6 +17,7 @@ from whisperlivekit.backend_support import (faster_backend_available,
                                             mlx_backend_available)
 from whisperlivekit.model_paths import detect_model_format, resolve_model_path
 from whisperlivekit.simul_whisper.config import AlignAttConfig
+from whisperlivekit.simul_whisper.segment_split import split_on_word_gaps
 from whisperlivekit.simul_whisper.simul_whisper import AlignAtt
 from whisperlivekit.timed_objects import ASRToken, ChangeSpeaker, Transcript
 from whisperlivekit.warmup import load_file
@@ -105,11 +106,11 @@ class BatchFasterWhisperASR:
             if hasattr(s, "no_speech_prob"):
                 no_speech_probs.append(s.no_speech_prob)
             if word_timestamps:
-                sentence_segments.append({
-                    "text": s.text.strip(),
-                    "start": s.start,
-                    "end": s.end,
-                })
+                # Splits op grote woordgaten -- zie segment_split.py (segment over
+                # een VAD-stilte heen / één segment voor meerdere uitingen).
+                parts = split_on_word_gaps(getattr(s, "words", None)) or [(s.text.strip(), s.start, s.end)]
+                for text, start, end in parts:
+                    sentence_segments.append({"text": text, "start": start, "end": end})
 
         full_text = " ".join([t for t in texts if t]).strip()
 
@@ -154,14 +155,19 @@ class BatchFasterWhisperASR:
             text = (getattr(s, "text", None) or "").strip()
             if not text:
                 continue
-            result.append({
-                "text": text,
-                "start": s.start,
-                "end": s.end,
-                "avg_logprob": getattr(s, "avg_logprob", None),
-                "compression_ratio": getattr(s, "compression_ratio", None),
-                "no_speech_prob": getattr(s, "no_speech_prob", None),
-            })
+            # Splits op grote woordgaten (zie segment_split.py). De vertrouwens-
+            # waarden zijn per faster-whisper-segment bekend, niet per deel: elk
+            # deel erft die van zijn oorspronkelijke segment.
+            parts = split_on_word_gaps(getattr(s, "words", None)) or [(text, s.start, s.end)]
+            for part_text, start, end in parts:
+                result.append({
+                    "text": part_text,
+                    "start": start,
+                    "end": end,
+                    "avg_logprob": getattr(s, "avg_logprob", None),
+                    "compression_ratio": getattr(s, "compression_ratio", None),
+                    "no_speech_prob": getattr(s, "no_speech_prob", None),
+                })
         return result
 
 

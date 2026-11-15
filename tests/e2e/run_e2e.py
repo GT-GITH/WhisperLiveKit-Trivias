@@ -217,7 +217,7 @@ def write_markdown(md_path: Path, results: list, regressions: list, health: dict
                     lines += ["", f"### {r['scenario']} / {path} / {ch}"]
                     lines += [f"- spurious @{s['start_ms']}ms: {s['text']}" for s in m["spurious_segments"]]
                     lines += [f"- gemist: {t}" for t in m["missed_utterances"]]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> int:
