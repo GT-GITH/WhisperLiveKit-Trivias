@@ -178,7 +178,12 @@ class Segment(TimedText):
         """Serialize the segment for frontend consumption."""
         _dict: Dict[str, Any] = {
             # BACKWARD compatible fields:
-            'speaker': int(self.speaker) if self.speaker != -1 else 1,
+            # -1 = geen spreker bekend (diarization uit) en wordt als -1 doorgegeven.
+            # Voorheen werd -1 hier naar 1 omgezet ("backward compatible" met de
+            # upstream-UI); de Trivias-UI toonde daardoor '[1]' voor elke live-regel
+            # zonder diarization, en een echte diarization-spreker 1 was er niet van te
+            # onderscheiden. Diarization-sprekers (1, 2, ...) en -2 (stilte) ongewijzigd.
+            'speaker': int(self.speaker),
             'text': self.text,  # keep old UI working (this is 'final display text')
 
             # Existing formatted times:

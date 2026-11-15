@@ -136,7 +136,7 @@ Principles:
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `number` | Unique identifier for this segment. Used by clients to update specific segments efficiently. |
-| `speaker` | `number` | Speaker ID (1, 2, 3...). Special value `-2` indicates silence. |
+| `speaker` | `number` | Speaker ID from diarization (1, 2, 3...). `-1` = no speaker known (diarization off). Special value `-2` indicates silence. |
 | `text` | `string` | Validated transcription text for this update. Should be **appended** to the segment's text on the client side.  |
 | `start_speaker` | `float` | Timestamp (seconds) when this speaker segment began. |
 | `start` | `float` | Timestamp (seconds) of the first word in this update. |

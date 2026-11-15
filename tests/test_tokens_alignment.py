@@ -44,6 +44,7 @@ if "whisperlivekit" not in sys.modules:
     sys.modules["whisperlivekit"] = types.ModuleType("whisperlivekit")
 
 _load_from_path("whisperlivekit.timed_objects", "whisperlivekit/timed_objects.py")
+_load_from_path("whisperlivekit.hallucination_patterns", "whisperlivekit/hallucination_patterns.py")
 _ta = _load_from_path("whisperlivekit.tokens_alignment", "whisperlivekit/tokens_alignment.py")
 
 TokensAlignment = _ta.TokensAlignment
@@ -151,8 +152,34 @@ def test_apply_batch_group_rejects_empty_or_inverted_window():
     print("OK test_apply_batch_group_rejects_empty_or_inverted_window")
 
 
+def test_live_line_with_known_hallucination_is_dropped():
+    """Live-test 2026-11-15: 'İzlediğiniz için teşekkür ederim' verscheen als live-regel.
+    Een live-regel met een bekend hallucinatiepatroon moet in zijn geheel weg; een
+    gewone live-regel en een gewoon bedankje ('teşekkür ederim' alleen) blijven."""
+    ta = _make_alignment()
+    ta.validated_segments = [
+        _seg(1.0, 2.0, "Nereye götürürdün onları?", "seg_normal"),
+        _seg(3.0, 6.0, "iniz için teşekkür ederim İzlediğiniz için teşekkür ederim", "seg_halluc"),
+        _seg(7.0, 8.0, "Çok teşekkür ederim.", "seg_thanks"),
+    ]
+    lines, _, _ = ta.get_lines()
+    ids = {getattr(l, "id", None) for l in lines}
+    assert "seg_normal" in ids and "seg_thanks" in ids, ids
+    assert "seg_halluc" not in ids, ids
+    print("OK test_live_line_with_known_hallucination_is_dropped")
+
+
+def test_segment_to_dict_keeps_unknown_speaker():
+    """Zonder diarization (speaker -1) mag de browser geen '[1]' tonen: to_dict()
+    geeft -1 door i.p.v. het oude 'backward compatible' 1."""
+    assert _seg(1.0, 2.0, "x", "seg_x").to_dict()["speaker"] == -1
+    print("OK test_segment_to_dict_keeps_unknown_speaker")
+
+
 if __name__ == "__main__":
     tests = [
+        test_live_line_with_known_hallucination_is_dropped,
+        test_segment_to_dict_keeps_unknown_speaker,
         test_suppressed_range_only_prunes_overlapping_segments,
         test_apply_batch_group_with_correct_window_end_preserves_undecoded_tail,
         test_apply_batch_group_with_inflated_window_end_drops_the_tail,

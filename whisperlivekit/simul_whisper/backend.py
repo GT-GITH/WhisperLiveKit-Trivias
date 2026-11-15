@@ -215,31 +215,9 @@ class BatchFasterWhisperASR:
 # Kernlogica van de confidence-gate, gedeeld tussen de incrementele batch-worker
 # (audio_processor.py, _batch_worker()) en "Ververs Transcriptie" (TriviasServer.py) --
 # zodat de drempelwaarden nooit uiteen kunnen lopen tussen de twee paden.
-HALLUCINATION_PATTERNS = [
-    "***",
-    "Ondertiteling",
-    "ondertiteling",
-    "Ondertitels",
-    "ondertitels",
-    "www.",
-    ".com",
-    "Abonneer",
-    "abonneer",
-    "Subtitles by",
-    "Subscribe",
-    "subscribe",
-    "Altyazı",
-    "altyazı",
-    "Altyazi",
-    "altyazi",
-    # Turkse YouTube-outro-hallucinaties (waargenomen 2026-07-19 en herbevestigd
-    # 2026-08-15, zie CLAUDE.md/refresh transcript-context) -- specifiek genoeg
-    # om echte spraak niet te raken: "teşekkür ederim" alleen (gewoon "dankjewel")
-    # zou wél te breed zijn en legitieme bedankjes afkeuren.
-    "İzlediğiniz için",
-    "izlediğiniz için",
-    "abone olmayı",
-]
+# De lijst zelf staat in whisperlivekit/hallucination_patterns.py (gedeeld met de
+# live-weergave in tokens_alignment); hier doorgegeven onder dezelfde naam.
+from whisperlivekit.hallucination_patterns import HALLUCINATION_PATTERNS  # noqa: E402
 
 
 def gate_batch_sentence(seg: dict) -> tuple[bool, str]:

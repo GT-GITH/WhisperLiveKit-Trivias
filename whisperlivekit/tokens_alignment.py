@@ -2,6 +2,7 @@ import re
 from time import time
 from typing import Any, List, Optional, Tuple, Union
 
+from whisperlivekit.hallucination_patterns import contains_hallucination
 from whisperlivekit.timed_objects import (ASRToken, Segment, PuncSegment, Silence,
                                           SilentSegment, SpeakerSegment,
                                           TimedText)
@@ -578,6 +579,20 @@ class TokensAlignment:
                 seg.start = ov["start_ms"] / 1000.0
             if ov.get("end_ms") is not None:
                 seg.end = ov["end_ms"] / 1000.0
+
+        # --- Live-regels met een bekende hallucinatie weglaten ---
+        # Zelfde lijst als de batch-paden (hallucination_patterns.py), per hele regel:
+        # live is een fragmentenstroom, dus een patroon als "İzlediğiniz için" is pas in
+        # de samengevoegde regel herkenbaar. Live-test 2026-11-15: "İzlediğiniz için
+        # teşekkür ederim" (3x) als live-regel tussen het transcript, terwijl het
+        # definitieve transcript die al wegfilterde. Batch-groepen (bg_*) blijven buiten
+        # beschouwing; die zijn al per zin gefilterd.
+        segments = [
+            s for s in segments
+            if (isinstance(getattr(s, "id", None), str) and s.id.startswith("bg_"))
+            or getattr(s, "text_batch", None)
+            or not contains_hallucination(getattr(s, "text", "") or "")
+        ]
 
         # --- Prune segments that overlap canonical batch windows ---
         # Canonical windows = batch_groups or suppressed_ranges_ms
