@@ -94,12 +94,17 @@ def score_channel(utterances: List[dict], segments: List[dict]) -> Dict[str, obj
     missed = [i for i, u in enumerate(utts) if not any(_overlaps(s, u) for s in segs)]
     spurious = [s for s in segs if not any(_overlaps(s, u) for u in utts)]
 
+    # Per referentie-uiting: klopt de tijdstempel van het BEGIN van die uiting?
+    # = afstand tussen utt.start en de vroegste start van de segmenten die ermee
+    # overlappen. Niet per segment meten: Whisper knipt een lange uiting vaak in
+    # meerdere segmenten, en dan ligt de start van segment 2 terecht midden in de
+    # uiting -- dat is geen tijdstempelfout (eerste run 2026-11-15 gaf zo een
+    # vals ts_max van 4.9-7.3 s).
     offsets = []
-    for s in segs:
-        cands = [u for u in utts if _overlaps(s, u)]
-        if cands:
-            nearest = min(cands, key=lambda u: abs(u["start_ms"] - (s.get("start_ms") or 0)))
-            offsets.append(abs(nearest["start_ms"] - (s.get("start_ms") or 0)))
+    for u in utts:
+        starts = [s.get("start_ms") or 0 for s in segs if _overlaps(s, u)]
+        if starts:
+            offsets.append(abs(min(starts) - u["start_ms"]))
 
     return {
         "wer": wer(ref_text, hyp_text),

@@ -196,7 +196,7 @@ def fmt(v, pct=False):
     return f"{v * 100:.1f}%" if pct else str(v)
 
 
-def write_markdown(path: Path, results: list, regressions: list, health: dict) -> None:
+def write_markdown(md_path: Path, results: list, regressions: list, health: dict) -> None:
     lines = [f"# E2E-rapport {datetime.now(timezone.utc).isoformat(timespec='seconds')}", "",
              f"Server: model={health.get('model', '?')} ", ""]
     lines += ["| scenario | pad | kanaal | WER | CER | gemist | spurious | live-fallback | ts med/max ms |",

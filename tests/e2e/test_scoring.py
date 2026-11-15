@@ -56,6 +56,15 @@ def test_score_channel_missed_spurious_fallback():
     assert r["live_fallback"] == 1
 
 
+def test_split_utterance_is_not_a_timestamp_error():
+    # Whisper knipt één lange uiting in twee segmenten: de start van het
+    # tweede segment mag de tijdstempel-afwijking niet opblazen.
+    utts = [{"start_ms": 1000, "end_ms": 12000, "text": "een heel lange zin die doorloopt"}]
+    segs = [_seg(1100, 6000, "een heel lange zin"), _seg(6000, 11900, "die doorloopt")]
+    r = score_channel(utts, segs)
+    assert r["ts_median_ms"] == 100 and r["ts_max_ms"] == 100, r
+
+
 def test_empty_segments_ignored():
     utts = [{"start_ms": 0, "end_ms": 1000, "text": "ja"}]
     r = score_channel(utts, [{"start_ms": 0, "end_ms": 500, "text_final": "  ", "text_batch": None}])
