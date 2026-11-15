@@ -1035,13 +1035,32 @@ class AudioProcessor:
                     self._decode_in_progress = True
                     self._decode_in_progress_since = time()
                     _diag_process_iter_start = time()  # [DIAG][LIVE_PERF], zie live-lag-onderzoek
+                    decode_task = asyncio.ensure_future(asyncio.to_thread(self.transcription.process_iter))
                     try:
+                        # shield(): bij een time-out blijft decode_task bestaan, zodat we
+                        # hieronder kunnen wachten tot de thread echt klaar is.
                         new_tokens, current_audio_processed_upto = await asyncio.wait_for(
-                            asyncio.to_thread(self.transcription.process_iter),
+                            asyncio.shield(decode_task),
                             timeout=15.0
                         )
                     except asyncio.TimeoutError:
-                        logger.warning("[LIVE][TIMEOUT] process_iter exceeded 15s — forcing decoder reset")
+                        logger.warning("[LIVE][TIMEOUT] process_iter exceeded 15s — stop de decodeerlus, dan reset")
+                        # De thread loopt door (asyncio kan hem niet stoppen). Eerst de
+                        # decodeerlus laten stoppen en WACHTEN tot hij klaar is; pas dan
+                        # resetten. Voorheen liep de reset parallel aan de nog draaiende
+                        # infer() -> beschadigde kv-cache, daarna faalde elke stap
+                        # ('size of tensor a (6) must match ... (4)'), live dood
+                        # (live-test 2026-11-15).
+                        live_model = getattr(self.transcription, "model", None)
+                        if live_model is not None:
+                            live_model.abort_requested = True
+                        try:
+                            await decode_task
+                        except Exception as e:
+                            logger.warning(f"[LIVE][TIMEOUT] afgebroken decodeerstap eindigde met fout: {e}")
+                        finally:
+                            if live_model is not None:
+                                live_model.abort_requested = False
                         await asyncio.to_thread(self._hard_reset_live_decoder, "process_iter_timeout")
                         new_tokens = []
                         current_audio_processed_upto = self.state.end_buffer

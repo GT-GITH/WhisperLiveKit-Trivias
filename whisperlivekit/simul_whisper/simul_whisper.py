@@ -29,6 +29,11 @@ from .token_buffer import TokenBuffer
 DEC_PAD = 50257
 logger = logging.getLogger(__name__)
 
+# Bovengrens voor nieuwe TEKST-tokens per seconde audio in één infer()-aanroep (zie de
+# lusbeveiliging in infer()). Whisper's eigen maximum: n_text_ctx // 2 = 224 tokens per
+# 30 s-venster ~ 7.5/s; normale spraak ligt rond 3-7/s.
+MAX_TEXT_TOKENS_PER_S = 8
+
 # [DIAG][GPU] (2026-08-23) onderzoek naar sporadisch trage encoder-aanroepen
 # (zie [DIAG][LIVE_PERF] hieronder): op verzoek rechtstreeks in het serverlog
 # opgenomen i.p.v. een losse handmatige `nvidia-smi -l 1`-sessie ernaast nodig
@@ -164,6 +169,12 @@ class AlignAtt:
         # Initialize per-session state
         self.state = DecoderState()
         self._init_state(cfg)
+        # Coöperatief stopsignaal voor de decodeerlus (gezet door audio_processor bij een
+        # time-out). asyncio.wait_for kan de thread waarin infer() draait niet stoppen;
+        # zonder dit signaal liep een vastgelopen infer() door terwijl de time-out-reset
+        # dezelfde decoderstatus al aanpaste -> beschadigde kv-cache en een reeks
+        # 'size of tensor a (6) must match ... (4)'-fouten (live YouTube-test 2026-11-15).
+        self.abort_requested = False
         
     def _init_state(self, cfg: AlignAttConfig):
         """Initialize the per-session decoder state."""
@@ -603,13 +614,28 @@ class AlignAtt:
         accumulated_cross_attns = []
         
         audio_duration_s = self.segments_len()
-        max_tokens_per_chunk = max(50, int(audio_duration_s * TOKENS_PER_SECOND * 2.0))  # 2x margin, min 50
+        # Lusbeveiliging in TEKST-tokens per seconde audio. Voorheen
+        # audio_duration_s * TOKENS_PER_SECOND * 2 -- maar TOKENS_PER_SECOND is 50 AUDIO-
+        # frames/s (whisper/audio.py), geen teksttokens: bij 30 s buffer een grens van
+        # 3000, die een herhalingslus ('Evet, evet, Evet, evet...', live-test
+        # 2026-11-15, 173 stappen) nooit afkapte vóór de 15 s-time-out. Whisper's eigen
+        # maximum is n_text_ctx // 2 = 224 tokens per 30 s-venster (~7.5/s); hier
+        # MAX_TEXT_TOKENS_PER_S = 8/s, min 20 voor korte buffers.
+        max_tokens_per_chunk = max(20, int(audio_duration_s * MAX_TEXT_TOKENS_PER_S))
         tokens_produced_this_chunk = 0
         _diag_decode_loop_start = time()  # [DIAG][LIVE_PERF], zie loggingregel na de lus
 
         while not completed and current_tokens.shape[1] < self.max_text_len:  # bos is 3 tokens
             tokens_produced_this_chunk += 1
-            
+
+            if self.abort_requested:
+                logger.warning(
+                    f"[LIVE][ABORT] decodeerlus gestopt op verzoek (time-out) na "
+                    f"{tokens_produced_this_chunk - 1} tokens; nieuwe tokens weggegooid"
+                )
+                current_tokens = current_tokens[:, :token_len_before_decoding]
+                break
+
             if tokens_produced_this_chunk > max_tokens_per_chunk:
                 logger.warning(f"[Loop Detection] Too many tokens ({tokens_produced_this_chunk}) for {audio_duration_s:.2f}s audio. Breaking.")
                 current_tokens = current_tokens[:, :token_len_before_decoding]  # Discard all new tokens
