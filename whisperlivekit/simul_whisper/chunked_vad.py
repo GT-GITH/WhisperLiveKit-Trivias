@@ -46,9 +46,11 @@ TRAIL_UNTRUSTED_S = 2.5
 Detector = Callable[["object"], List[dict]]  # audio-stuk -> [{"start": sample, "end": sample}]
 
 
-def _default_detector():
+def _default_detector(threshold: Optional[float] = None):
     from faster_whisper.vad import VadOptions, get_speech_timestamps
-    opts = VadOptions()  # zelfde drempel/padding als faster-whisper's vad_filter
+    # zelfde drempel/padding als faster-whisper's vad_filter, tenzij een andere drempel
+    # gevraagd wordt (dekkingscontrole, zie COVERAGE_VAD_THRESHOLD)
+    opts = VadOptions() if threshold is None else VadOptions(threshold=threshold)
 
     def detect(chunk):
         return get_speech_timestamps(chunk, opts)
@@ -75,11 +77,13 @@ def speech_clips(audio, sr: int = SR, chunk_s: float = CHUNK_S, hop_s: float = H
 
 
 def speech_intervals(audio, sr: int = SR, chunk_s: float = CHUNK_S, hop_s: float = HOP_S,
-                     detector: Optional[Detector] = None) -> List[Tuple[float, float]]:
+                     detector: Optional[Detector] = None,
+                     threshold: Optional[float] = None) -> List[Tuple[float, float]]:
     """De gedetecteerde spraak zelf (vereniging over de stukken, NIET samengevoegd over
     pauzes). speech_clips() voegt dit samen tot decodeer-clips; uncovered_tails() heeft
-    juist dit nodig om echte spraak van stilte binnen een clip te onderscheiden."""
-    detect = detector or _default_detector()
+    juist dit nodig om echte spraak van stilte binnen een clip te onderscheiden.
+    threshold: Silero-drempel (standaard die van faster-whisper, 0.5)."""
+    detect = detector or _default_detector(threshold)
     n, hop = int(chunk_s * sr), int(hop_s * sr)
     total = len(audio)
     found: List[Tuple[float, float]] = []
@@ -146,6 +150,44 @@ def uncovered_tails(clips: List[Tuple[float, float]], spans: List[Tuple[float, f
         if speech_after(speech, covered, e) >= min_speech_s:
             tails.append((covered, e))
     return tails
+
+
+# --- Dekkingscontrole (ontwerpplan "geen stille audioverliezen", 2026-11-15) ---
+# Silero op de standaarddrempel (0.5) bepaalt wat Whisper hoort, en mist korte uitingen
+# tegen een achtergrond (bewezen: "İstanbulluyum"/"Bencil" over geroezemoes, spraak over
+# intromuziek -- door de gebruiker naluisterend bevestigd). Daarom een tweede, ruimere
+# VAD-pass als spraak-AANWIJZING: elk stuk aanwijzing zonder tekst wordt apart
+# gedecodeerd. Drempel 0.35 gekozen op offline evaluatie (yt4 + muziek + FLEURS): haalde
+# alle bevestigde missers terug; 0.25 voegde niets toe behalve hallucinatie-kandidaten.
+# Nog NIET gevalideerd op echte gehoor-audio (laag 3) -- daarom instelbaar.
+COVERAGE_VAD_THRESHOLD = 0.35
+COVERAGE_MIN_S = 0.6        # kortere onbedekte aanwijzing: niet opnieuw decoderen
+COVERAGE_TEXT_TOL_S = 0.3   # tekst "dekt" ook zoveel ervoor/erna (woordgrenzen zijn onscherp)
+COVERAGE_PAD_S = 0.2        # marge rond een onbedekt stuk bij het opnieuw decoderen
+
+
+def uncovered_regions(evidence: List[Tuple[float, float]], spans: List[Tuple[float, float]],
+                      min_s: float = COVERAGE_MIN_S,
+                      tol_s: float = COVERAGE_TEXT_TOL_S) -> List[Tuple[float, float]]:
+    """Stukken spraak-aanwijzing (evidence) waar geen tekst (spans, verruimd met tol_s)
+    overheen ligt, van minstens min_s. Begin, midden en staart tellen allemaal."""
+    covered = merge_intervals([(s - tol_s, e + tol_s) for s, e in spans], max_gap=0.0)
+    out: List[Tuple[float, float]] = []
+    for s, e in evidence:
+        pieces = [(s, e)]
+        for cs, ce in covered:
+            nxt = []
+            for ps, pe in pieces:
+                if ce <= ps or cs >= pe:
+                    nxt.append((ps, pe))
+                    continue
+                if cs > ps:
+                    nxt.append((ps, cs))
+                if ce < pe:
+                    nxt.append((ce, pe))
+            pieces = nxt
+        out.extend(p for p in pieces if p[1] - p[0] >= min_s)
+    return out
 
 
 def to_clip_timestamps(clips: List[Tuple[float, float]]) -> List[float]:

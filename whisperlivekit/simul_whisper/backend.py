@@ -18,7 +18,12 @@ from whisperlivekit.backend_support import (faster_backend_available,
 from whisperlivekit.model_paths import detect_model_format, resolve_model_path
 from whisperlivekit.simul_whisper.config import AlignAttConfig
 from whisperlivekit.simul_whisper.chunked_vad import (
-    clips_from_speech, speech_after, speech_intervals, to_clip_timestamps, uncovered_tails)
+    COVERAGE_PAD_S, COVERAGE_VAD_THRESHOLD, clips_from_speech, merge_intervals, speech_after,
+    speech_intervals, to_clip_timestamps, uncovered_regions, uncovered_tails)
+
+# Uitschakelaar dekkingscontrole: TRIVIAS_COVERAGE=0 -> exact de werking van vóór
+# de dekkingscontrole (alleen de standaard-VAD bepaalt wat Whisper hoort).
+COVERAGE_ENABLED = os.environ.get("TRIVIAS_COVERAGE", "1") != "0"
 
 # Max. aantal hervat-rondes per decode (elke ronde dekt alle staarten tegelijk); in de
 # praktijk 1-3, de grens voorkomt alleen een eindeloze lus.
@@ -105,7 +110,8 @@ class BatchFasterWhisperASR:
             f"compute_type={self.compute_type} (volle precisie, vast -- zie resolve_batch_precision)"
         )
 
-    def _decode(self, audio_f32: np.ndarray, lang: str | None, word_timestamps: bool):
+    def _decode(self, audio_f32: np.ndarray, lang: str | None, word_timestamps: bool,
+                coverage_start_s: float = 0.0):
         """Decodeer alleen de spraakstukken, bepaald met chunked_vad (frisse VAD-toestand
         per kort stuk) i.p.v. faster-whisper's vad_filter (één VAD-pass met opgebouwde
         toestand die na lange muziek/stilte spraak mist -- zie chunked_vad.py).
@@ -114,12 +120,12 @@ class BatchFasterWhisperASR:
         speech = speech_intervals(audio_f32)
         clips = clips_from_speech(speech)
         if not clips:
-            logger.info("[BATCH][VAD] geen spraak gevonden in dit fragment -> niets te decoderen")
-            return []
-        logger.info(
-            f"[BATCH][VAD] {len(clips)} spraakstuk(ken), "
-            f"{sum(e - s for s, e in clips):.1f}s van {len(audio_f32) / 16000:.1f}s"
-        )
+            logger.info("[BATCH][VAD] geen spraak gevonden in dit fragment (standaarddrempel)")
+        else:
+            logger.info(
+                f"[BATCH][VAD] {len(clips)} spraakstuk(ken), "
+                f"{sum(e - s for s, e in clips):.1f}s van {len(audio_f32) / 16000:.1f}s"
+            )
         opts = dict(
             language=lang if lang and lang != "auto" else None,
             beam_size=self.beam_size,
@@ -135,7 +141,7 @@ class BatchFasterWhisperASR:
             segs, _info = self.model.transcribe(audio_f32, clip_timestamps=to_clip_timestamps(spans), **opts)
             return list(segs)
 
-        segments = run(clips)
+        segments = run(clips) if clips else []
         # Hervat waar faster-whisper na een losse eindtijdstempel de rest van een clip
         # oversloeg (zie chunked_vad.uncovered_tails). Stopt zodra alles gedekt is of een
         # staart geen nieuwe tekst meer oplevert.
@@ -157,11 +163,39 @@ class BatchFasterWhisperASR:
             if not new:
                 break
             segments = sorted(segments + new, key=lambda s: s.start)
-        return segments
 
-    def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False, language_override: str | None = None) -> dict:
+        # Dekkingscontrole (zie chunked_vad.COVERAGE_VAD_THRESHOLD): spraak-aanwijzing
+        # zonder tekst apart decoderen. ALLEEN TOEVOEGEN: de segmenten hierboven blijven
+        # ongewijzigd, er komt alleen tekst bij waar nu geen tekst staat. Die tekst krijgt
+        # nooit automatisch een vinkje (gate_batch_sentence: coverage) -- offline bleken
+        # Whispers scores echte korte uitingen niet van hallucinaties boven geroezemoes te
+        # scheiden; de mens beslist door te luisteren.
+        coverage_ids: set = set()
+        if COVERAGE_ENABLED:
+            evidence = speech_intervals(audio_f32, threshold=COVERAGE_VAD_THRESHOLD)
+            # Audio vóór coverage_start_s (linkermarge van een incrementeel venster) is
+            # van het vorige venster en daar al gedekt: niet nog eens decoderen.
+            evidence = [(max(a, coverage_start_s), b) for a, b in evidence if b > coverage_start_s]
+            regions = uncovered_regions(evidence, [(s.start, s.end) for s in segments])
+            if regions:
+                dur = len(audio_f32) / 16000
+                padded = merge_intervals(
+                    [(max(0.0, a - COVERAGE_PAD_S), min(dur, b + COVERAGE_PAD_S)) for a, b in regions],
+                    max_gap=0.0)
+                new = run(padded)
+                coverage_ids = {id(s) for s in new}
+                logger.info(
+                    f"[BATCH][COVERAGE] {len(regions)} onbedekt(e) stuk(ken) spraak-aanwijzing "
+                    f"{[(round(a, 2), round(b, 2)) for a, b in regions]} -> {len(new)} segment(en), "
+                    f"onbevestigd: {[(round(s.start, 2), round(s.end, 2), s.text[:30]) for s in new]}"
+                )
+                segments = sorted(segments + new, key=lambda s: s.start)
+        return segments, coverage_ids
+
+    def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False, language_override: str | None = None,
+                   coverage_start_s: float = 0.0) -> dict:
         lang = language_override if language_override is not None else self.language
-        segments = self._decode(audio_f32, lang, word_timestamps)
+        segments, coverage_ids = self._decode(audio_f32, lang, word_timestamps, coverage_start_s)
 
         texts = []
         avg_logprobs = []
@@ -192,6 +226,7 @@ class BatchFasterWhisperASR:
                         "avg_logprob": getattr(s, "avg_logprob", None),
                         "compression_ratio": getattr(s, "compression_ratio", None),
                         "no_speech_prob": getattr(s, "no_speech_prob", None),
+                        "coverage": id(s) in coverage_ids,
                     })
 
         full_text = " ".join([t for t in texts if t]).strip()
@@ -220,7 +255,7 @@ class BatchFasterWhisperASR:
         doorgeven (i.p.v. ze te middelen) maakt een latere gate-beslissing per zin
         mogelijk, preciezer dan de huidige per-venster aanpak."""
         lang = language_override if language_override is not None else self.language
-        segments = self._decode(audio_f32, lang, word_timestamps=True)
+        segments, coverage_ids = self._decode(audio_f32, lang, word_timestamps=True)
 
         result = []
         for s in segments:
@@ -239,6 +274,7 @@ class BatchFasterWhisperASR:
                     "avg_logprob": getattr(s, "avg_logprob", None),
                     "compression_ratio": getattr(s, "compression_ratio", None),
                     "no_speech_prob": getattr(s, "no_speech_prob", None),
+                    "coverage": id(s) in coverage_ids,
                 })
         return result
 
@@ -263,7 +299,12 @@ def gate_batch_sentence(seg: dict) -> tuple[bool, str]:
     no_speech_threshold=None: faster-whisper berekent no_speech_prob per intern
     ~30s-decodeerblok, niet per zin (zie evaluate_batch_segment) -- dus geen
     zinsniveau-signaal. seg: dict met text/start/end/avg_logprob/compression_ratio/
-    no_speech_prob (start/end in seconden)."""
+    no_speech_prob (start/end in seconden).
+
+    coverage=True (tekst uit de dekkingscontrole, zie BatchFasterWhisperASR._decode):
+    nooit automatisch bevestigd -- zichtbaar en terugluisterbaar, maar zonder vinkje."""
+    if seg.get("coverage"):
+        return False, "coverage_redecode (onbevestigd: alleen door ruimere VAD gevonden)"
     return evaluate_batch_segment(
         seg.get("avg_logprob"), seg.get("compression_ratio"), seg.get("no_speech_prob"),
         seg.get("text") or "",

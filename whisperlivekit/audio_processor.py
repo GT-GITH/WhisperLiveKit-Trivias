@@ -1830,6 +1830,8 @@ class AudioProcessor:
                     audio_f32,
                     word_timestamps=True,
                     language_override=_lang_override,
+                    # linkermarge hoort bij het vorige venster: geen dekkingscontrole daar
+                    coverage_start_s=(start_ms - decode_start_ms) / 1000.0,
                 )
                 logger.info(
                     f"[DIAG][BATCH_PERF] job={job['job_id']} transcribe_duration="

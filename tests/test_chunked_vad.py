@@ -129,6 +129,23 @@ def test_speech_intervals_not_merged_over_pauses():
     assert cv.speech_clips(FakeAudio(10), detector=make_detector(truth)) == [(1.0, 6.0)]
 
 
+def test_uncovered_regions_begin_middle_tail():
+    evidence = [(0.0, 20.0)]
+    spans = [(4.8, 7.6), (12.0, 14.0)]  # tekst dekt 4.5-7.9 en 11.7-14.3 (tol 0.3)
+    got = cv.uncovered_regions(evidence, spans)
+    assert [(round(a, 2), round(b, 2)) for a, b in got] == [(0.0, 4.5), (7.9, 11.7), (14.3, 20.0)], got
+
+
+def test_uncovered_regions_ignores_short_and_covered():
+    evidence = [(10.0, 10.5), (20.0, 23.0)]   # 0.5 s < min 0.6 s; tweede helemaal gedekt
+    assert cv.uncovered_regions(evidence, [(19.9, 23.1)]) == []
+
+
+def test_uncovered_regions_no_text_at_all():
+    # Standaard-VAD vond niets, ruimere VAD wel: het hele stuk is onbedekt.
+    assert cv.uncovered_regions([(212.5, 213.9)], []) == [(212.5, 213.9)]
+
+
 def test_to_clip_timestamps():
     assert cv.to_clip_timestamps([(1.0, 2.5), (4.0, 5.0)]) == [1.0, 2.5, 4.0, 5.0]
     assert cv.to_clip_timestamps([]) == []
