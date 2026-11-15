@@ -74,7 +74,17 @@ class BatchCloseSignal:
     Loopt via dezelfde queue als audio en Silence-events zodat de volgorde
     gegarandeerd is: de live-tokens van vóór de stilte (start_silence() bij het
     Silence-start-item) zijn verwerkt voordat dit signaal het venster-einde
-    bepaalt. Wordt door get_all_from_queue() net als Silence ongemengd doorgegeven."""
+    bepaalt. Wordt door get_all_from_queue() net als Silence ongemengd doorgegeven.
+
+    speech_end_ms = begin van de stilte (PCM-sample-tijdbasis, uit de audio zelf):
+    daar eindigt het venster. NIET het einde van het laatste live-token -- de
+    live-decoder loopt achter: in een e2e-run eindigde de spraak op 39.31 s
+    (VAD) terwijl het laatste live-token op 38.18 s stond, waardoor het volgende
+    venster alsnog midden in de zin begon ("op volwassenen. op
+    volwassenenpornografie.")."""
+
+    def __init__(self, speech_end_ms: int):
+        self.speech_end_ms = int(speech_end_ms)
 
 _STATE_TOKENS_MAX_DURATION_S: float = 600.0  # maximaal 10 minuten tokens in state.tokens
 _STATE_TOKENS_PRUNE_TRIGGER: int = 13_000    # alleen prunen boven deze grens
@@ -374,7 +384,7 @@ class AudioProcessor:
             return
         if (now_sample / self.sample_rate - start) * 1000.0 >= BATCH_CLOSE_MIN_SILENCE_MS:
             self._batch_close_signalled_for = start
-            await self.transcription_queue.put(BatchCloseSignal())
+            await self.transcription_queue.put(BatchCloseSignal(speech_end_ms=round(start * 1000.0)))
 
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
@@ -619,7 +629,9 @@ class AudioProcessor:
                 pass
         return int(fallback_ms)
 
-    async def _batch_on_silence_boundary(self, stream_time_ms: int, boundary: str) -> None:
+    async def _batch_on_silence_boundary(
+        self, stream_time_ms: int, boundary: str, speech_end_ms: Optional[int] = None
+    ) -> None:
         """
         Stap 1: 30s hard-grens, stilte is afrondingshint.
         We proberen te sluiten op een stilte-boundary:
@@ -637,8 +649,13 @@ class AudioProcessor:
 
         window_start_ms = int(self._batch_window_start_ms)
 
-        # Einde van spraak is leidend
-        window_end_ms = self._get_last_speech_end_ms(fallback_ms=stream_time_ms)
+        # Einde van spraak is leidend. Bij voorkeur uit de AUDIO (begin van de
+        # VAD-stilte, PCM-tijdbasis); het laatste live-token loopt achter en gaf
+        # vensters die midden in de zin eindigden (zie BatchCloseSignal).
+        if speech_end_ms is not None and speech_end_ms > window_start_ms:
+            window_end_ms = int(speech_end_ms)
+        else:
+            window_end_ms = self._get_last_speech_end_ms(fallback_ms=stream_time_ms)
         window_len_ms = window_end_ms - window_start_ms
 
         # 1) Markeer ready zodra target gehaald is
@@ -897,7 +914,8 @@ class AudioProcessor:
                                 stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
                                 await self._batch_on_silence_boundary(
                                     stream_time_ms=stream_time_ms,
-                                    boundary="silence_end"
+                                    boundary="silence_end",
+                                    speech_end_ms=round(float(item.start or 0.0) * 1000.0),
                                 )
                             except Exception as e:
                                 logger.warning(f"[BATCH][WINDOW] silence-end handler failed: {e}")
@@ -927,6 +945,7 @@ class AudioProcessor:
                         await self._batch_on_silence_boundary(
                             stream_time_ms=stream_time_ms,
                             boundary="silence_confirmed",
+                            speech_end_ms=item.speech_end_ms,
                         )
                     except Exception as e:
                         logger.warning(f"[BATCH][WINDOW] silence-confirmed handler failed: {e}")
