@@ -255,6 +255,13 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
             if lm["live_lag_p90_s"] is not None and lm["live_lag_p90_s"] > LIVE_LAG_FAIL_S:
                 result["errors"].setdefault(f"{ch}/live", []).append(
                     f"live-tijdstempels lopen achter: p90 {lm['live_lag_p90_s']}s (mediaan {lm['live_lag_median_s']}s)")
+    # Definitieve tekst: ELKE gemiste uiting is een fout, ongeacht de basislijn --
+    # voor de doelgroep (gehoren/zittingen) is een ontbrekende zin onacceptabel (2026-11-15).
+    for pad, per_ch in result["paths"].items():
+        for ch, m in per_ch.items():
+            if m["missed"] > 0:
+                result["errors"].setdefault(f"{ch}/{pad}", []).append(
+                    f"{m['missed']}/{m['n_ref_utterances']} uiting(en) ontbreken in de definitieve tekst")
     # Serverlog: exceptions/time-outs tijdens deze run zijn fouten.
     result["server_log"] = server_log_errors(server_log, log_offset)
     if result["server_log"]:

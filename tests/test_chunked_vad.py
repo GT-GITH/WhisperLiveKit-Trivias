@@ -75,6 +75,15 @@ def test_first_clip_near_start_snaps_to_zero():
     assert clips[0][0] == 0.0, clips
 
 
+def test_uncovered_tails():
+    clips = [(0.0, 20.73), (30.0, 40.0), (50.0, 55.0)]
+    # clip 1: tekst tot 2.76 -> staart; clip 2: gedekt tot 39.5 (< 1 s over);
+    # clip 3: helemaal geen tekst -> geen staart (zelfde clip opnieuw = zelfde uitkomst)
+    spans = [(0.0, 2.76), (30.5, 39.5)]
+    assert cv.uncovered_tails(clips, spans) == [(2.76, 20.73)]
+    assert cv.uncovered_tails(clips, spans + [(3.86, 20.5)]) == []
+
+
 def test_to_clip_timestamps():
     assert cv.to_clip_timestamps([(1.0, 2.5), (4.0, 5.0)]) == [1.0, 2.5, 4.0, 5.0]
     assert cv.to_clip_timestamps([]) == []

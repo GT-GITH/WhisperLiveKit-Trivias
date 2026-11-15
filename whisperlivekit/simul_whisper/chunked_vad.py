@@ -81,6 +81,33 @@ def speech_clips(audio, sr: int = SR, chunk_s: float = CHUNK_S, hop_s: float = H
     return clips
 
 
+# Upstream-workaround (faster-whisper 1.2.1 / openai-whisper, _split_segments_by_timestamps):
+# eindigt Whispers uitvoer op één losse tijdstempel, dan neemt de decoder aan "na de
+# laatste tijdstempel geen spraak meer" en springt naar het EINDE van de clip -- de rest
+# wordt nooit gedecodeerd. Bewezen 2026-11-15 (venster 270.9-291.7 s): 1 zin, daarna
+# seek 0 -> 20.73 s; opnieuw decoderen vanaf 2.76 s gaf de 'gemiste' zinnen gewoon terug.
+# Daarom beslist de AUDIO (onze VAD) of er na de laatste tekst nog spraak is, niet de gok
+# van het model: zo'n onbedekte staart wordt opnieuw gedecodeerd.
+RESUME_MIN_S = 1.0  # onbedekte spraak in een clip-staart korter dan dit: niet hervatten
+
+
+def uncovered_tails(clips: List[Tuple[float, float]], spans: List[Tuple[float, float]],
+                    min_s: float = RESUME_MIN_S) -> List[Tuple[float, float]]:
+    """Per spraakclip: het stuk na de laatste gedecodeerde tekst (spans = (start, eind)
+    van segmenten, absolute tijden), als dat >= min_s is. Een clip zonder enige tekst
+    levert niets op: opnieuw decoderen van precies dezelfde clip geeft (temperatuur 0)
+    dezelfde uitkomst, dat is geen overgeslagen staart maar een beslissing over de clip."""
+    tails: List[Tuple[float, float]] = []
+    for s, e in clips:
+        ends = [se for ss, se in spans if ss < e and se > s]
+        if not ends:
+            continue
+        covered = max(ends)
+        if e - covered >= min_s:
+            tails.append((covered, e))
+    return tails
+
+
 def to_clip_timestamps(clips: List[Tuple[float, float]]) -> List[float]:
     """[(s, e), ...] -> [s, e, s, e, ...] zoals faster-whisper's clip_timestamps verwacht."""
     flat: List[float] = []

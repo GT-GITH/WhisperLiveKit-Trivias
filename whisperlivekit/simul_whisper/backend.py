@@ -17,7 +17,11 @@ from whisperlivekit.backend_support import (faster_backend_available,
                                             mlx_backend_available)
 from whisperlivekit.model_paths import detect_model_format, resolve_model_path
 from whisperlivekit.simul_whisper.config import AlignAttConfig
-from whisperlivekit.simul_whisper.chunked_vad import speech_clips, to_clip_timestamps
+from whisperlivekit.simul_whisper.chunked_vad import speech_clips, to_clip_timestamps, uncovered_tails
+
+# Max. aantal hervat-rondes per decode (elke ronde dekt alle staarten tegelijk); in de
+# praktijk 1-3, de grens voorkomt alleen een eindeloze lus.
+MAX_RESUME_ROUNDS = 10
 from whisperlivekit.simul_whisper.segment_split import split_on_word_gaps
 from whisperlivekit.simul_whisper.simul_whisper import AlignAtt
 from whisperlivekit.timed_objects import ASRToken, ChangeSpeaker, Transcript
@@ -114,18 +118,42 @@ class BatchFasterWhisperASR:
             f"[BATCH][VAD] {len(clips)} spraakstuk(ken), "
             f"{sum(e - s for s, e in clips):.1f}s van {len(audio_f32) / 16000:.1f}s"
         )
-        segments, _info = self.model.transcribe(
-            audio_f32,
+        opts = dict(
             language=lang if lang and lang != "auto" else None,
             beam_size=self.beam_size,
             condition_on_previous_text=self.condition_on_previous_text,
             temperature=self.temperature,
             initial_prompt=self.initial_prompt,
             vad_filter=False,
-            clip_timestamps=to_clip_timestamps(clips),
             word_timestamps=word_timestamps,
             no_speech_threshold=0.9,
         )
+
+        def run(spans):
+            segs, _info = self.model.transcribe(audio_f32, clip_timestamps=to_clip_timestamps(spans), **opts)
+            return list(segs)
+
+        segments = run(clips)
+        # Hervat waar faster-whisper na een losse eindtijdstempel de rest van een clip
+        # oversloeg (zie chunked_vad.uncovered_tails). Stopt zodra alles gedekt is of een
+        # staart geen nieuwe tekst meer oplevert.
+        done: set = set()
+        for _ in range(MAX_RESUME_ROUNDS):
+            tails = [t for t in uncovered_tails(clips, [(s.start, s.end) for s in segments])
+                     if (round(t[0], 2), round(t[1], 2)) not in done]
+            if not tails:
+                break
+            new = run(tails)
+            for t in tails:
+                done.add((round(t[0], 2), round(t[1], 2)))
+            logger.info(
+                "[BATCH][RESUME] onbedekte spraak na losse eindtijdstempel opnieuw gedecodeerd: "
+                f"{[(round(a, 2), round(b, 2)) for a, b in tails]} -> {len(new)} segment(en) "
+                f"{[(round(s.start, 2), round(s.end, 2), s.text[:30]) for s in new]}"
+            )
+            if not new:
+                break
+            segments = sorted(segments + new, key=lambda s: s.start)
         return segments
 
     def transcribe(self, audio_f32: np.ndarray, word_timestamps: bool = False, language_override: str | None = None) -> dict:
