@@ -77,11 +77,26 @@ def test_first_clip_near_start_snaps_to_zero():
 
 def test_uncovered_tails():
     clips = [(0.0, 20.73), (30.0, 40.0), (50.0, 55.0)]
-    # clip 1: tekst tot 2.76 -> staart; clip 2: gedekt tot 39.5 (< 1 s over);
-    # clip 3: helemaal geen tekst -> geen staart (zelfde clip opnieuw = zelfde uitkomst)
+    speech = [(0.0, 3.0), (3.5, 20.73), (30.0, 39.8), (50.0, 55.0)]
+    # clip 1: tekst tot 2.76, daarna nog 17 s spraak -> staart; clip 2: gedekt tot 39.5
+    # (0.3 s spraak over); clip 3: helemaal geen tekst -> geen staart
     spans = [(0.0, 2.76), (30.5, 39.5)]
-    assert cv.uncovered_tails(clips, spans) == [(2.76, 20.73)]
-    assert cv.uncovered_tails(clips, spans + [(3.86, 20.5)]) == []
+    assert cv.uncovered_tails(clips, spans, speech) == [(2.76, 20.73)]
+    assert cv.uncovered_tails(clips, spans + [(3.86, 20.5)], speech) == []
+
+
+def test_tail_of_silence_is_not_resumed():
+    # Clip loopt door tot 20 s (samengevoegde pauze), maar de spraak stopt op 18.4 s
+    # (laatste woord 18.0 + VAD-marge): stilte decoderen gaf hallucinaties -> niet hervatten.
+    clips = [(0.0, 20.0)]
+    speech = [(0.0, 9.0), (10.5, 18.4), (19.6, 20.0)]
+    assert cv.uncovered_tails(clips, [(0.0, 18.16)], speech) == []
+
+
+def test_speech_intervals_not_merged_over_pauses():
+    truth = [(1.0, 3.0), (4.0, 6.0)]  # 1 s pauze: één decodeer-clip, twee spraakstukken
+    assert cv.speech_intervals(FakeAudio(10), detector=make_detector(truth)) == truth
+    assert cv.speech_clips(FakeAudio(10), detector=make_detector(truth)) == [(1.0, 6.0)]
 
 
 def test_to_clip_timestamps():

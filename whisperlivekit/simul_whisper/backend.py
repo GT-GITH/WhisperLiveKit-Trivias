@@ -17,7 +17,8 @@ from whisperlivekit.backend_support import (faster_backend_available,
                                             mlx_backend_available)
 from whisperlivekit.model_paths import detect_model_format, resolve_model_path
 from whisperlivekit.simul_whisper.config import AlignAttConfig
-from whisperlivekit.simul_whisper.chunked_vad import speech_clips, to_clip_timestamps, uncovered_tails
+from whisperlivekit.simul_whisper.chunked_vad import (
+    clips_from_speech, speech_after, speech_intervals, to_clip_timestamps, uncovered_tails)
 
 # Max. aantal hervat-rondes per decode (elke ronde dekt alle staarten tegelijk); in de
 # praktijk 1-3, de grens voorkomt alleen een eindeloze lus.
@@ -110,7 +111,8 @@ class BatchFasterWhisperASR:
         toestand die na lange muziek/stilte spraak mist -- zie chunked_vad.py).
         clip_timestamps: faster-whisper decodeert de stukken op hun echte plek, zonder
         ze aan elkaar te plakken. Geen spraak gevonden -> geen segmenten."""
-        clips = speech_clips(audio_f32)
+        speech = speech_intervals(audio_f32)
+        clips = clips_from_speech(speech)
         if not clips:
             logger.info("[BATCH][VAD] geen spraak gevonden in dit fragment -> niets te decoderen")
             return []
@@ -139,7 +141,7 @@ class BatchFasterWhisperASR:
         # staart geen nieuwe tekst meer oplevert.
         done: set = set()
         for _ in range(MAX_RESUME_ROUNDS):
-            tails = [t for t in uncovered_tails(clips, [(s.start, s.end) for s in segments])
+            tails = [t for t in uncovered_tails(clips, [(s.start, s.end) for s in segments], speech)
                      if (round(t[0], 2), round(t[1], 2)) not in done]
             if not tails:
                 break
@@ -148,7 +150,8 @@ class BatchFasterWhisperASR:
                 done.add((round(t[0], 2), round(t[1], 2)))
             logger.info(
                 "[BATCH][RESUME] onbedekte spraak na losse eindtijdstempel opnieuw gedecodeerd: "
-                f"{[(round(a, 2), round(b, 2)) for a, b in tails]} -> {len(new)} segment(en) "
+                f"{[(round(a, 2), round(b, 2), f'spraak {speech_after(speech, a, b):.1f}s') for a, b in tails]} "
+                f"-> {len(new)} segment(en) "
                 f"{[(round(s.start, 2), round(s.end, 2), s.text[:30]) for s in new]}"
             )
             if not new:
