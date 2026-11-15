@@ -16,7 +16,11 @@ class DecoderState:
     initial_tokens: Optional[torch.Tensor] = None
     initial_token_length: int = 0
     sot_index: int = 0
-    
+    # Positie van <|startoftranscript|> in de prompt zoals die ECHT naar het model gaat
+    # ([context] + tokens, zie _current_tokens). sot_index hierboven is de positie
+    # binnen alleen de sot-sequentie en klopt dus niet zodra er context voor staat.
+    prompt_sot_index: int = 0
+
     align_source: Dict[int, List[Tuple[int, int]]] = field(default_factory=dict)
     num_align_heads: int = 0
     

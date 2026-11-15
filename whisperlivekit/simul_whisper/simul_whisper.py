@@ -365,9 +365,17 @@ class AlignAtt:
         if toks[0].shape[0] == 1:
             toks[0] = toks[0].repeat_interleave(self.cfg.beam_size, dim=0)
 
+        # Positie van <|startoftranscript|> in de prompt die naar het model gaat. Met
+        # context ervoor schuift die op; de no-speech-kans moet op DEZE positie gelezen
+        # worden. Met de oude vaste sot_index (=0) werd bij gevulde context de positie
+        # van <|startofprev|> gelezen -- betekenisloos getal, vaak > 0.5 -> live viel
+        # stil zodra de buffer vol raakte (bewezen 2026-11-15: 233/233 stops bij volle
+        # buffer hadden gevulde context; op de juiste positie p ~ 0.000).
+        self.state.prompt_sot_index = self.state.sot_index
         if not self.state.context.is_empty():
             context_toks = self.state.context.as_tensor_beam(self.cfg.beam_size, device=self.model.device)
             toks = [context_toks] + toks
+            self.state.prompt_sot_index = context_toks.shape[1] + self.state.sot_index
 
         # make it one tensor
         if len(toks) > 1:
@@ -621,7 +629,7 @@ class AlignAtt:
             accumulated_cross_attns.append(cross_attns)
 
             if new_segment and self.tokenizer.no_speech is not None:
-                probs_at_sot = logits[:, self.state.sot_index, :].float().softmax(dim=-1)
+                probs_at_sot = logits[:, self.state.prompt_sot_index, :].float().softmax(dim=-1)
                 no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
                 if no_speech_probs[0] > self.cfg.nonspeech_prob:
                     # [DIAG][LIVE_NOSPEECH] (2026-11-15, live-stilstand bij muziek): puur
