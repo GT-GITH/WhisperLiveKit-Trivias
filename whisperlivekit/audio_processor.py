@@ -49,6 +49,12 @@ SILENCE_RESET_THRESHOLD = 8.0  # sneller resetten om vervuilde live-state kort t
 ENABLE_HARD_CAP = False
 
 #BATCH_CONTEXT_PAD_MS = 600  # FO default pre/post padding
+# Alleen voor vensters die NIET op een bevestigde pauze beginnen (na Pauze-flush of
+# WINDOW_REWIND, mogelijk midden in spraak): daar geeft extra context houvast.
+# Begint een venster op een pauze (einde spraak, zie BatchCloseSignal), dan zou deze
+# pad juist het einde van de VORIGE uiting opnieuw decoderen -- gezien in de e2e-suite
+# (2026-11-15): Arabisch segment dat uiting 2's staart en uiting 3 samenvoegde,
+# starttijd 2.08 s te vroeg, 3/3 runs. Dat is audio van het vorige venster.
 BATCH_CONTEXT_PAD_LEFT_MS = 600
 BATCH_CONTEXT_PAD_RIGHT_MS = 0
 
@@ -185,6 +191,10 @@ class AudioProcessor:
         
         # Batch window state (Stap 1)
         self._batch_window_start_ms: Optional[int] = None
+        # Begint het lopende venster op een bevestigde pauze (einde spraak)? Dan geen
+        # pad_left: die 600 ms zou het einde van de VORIGE uiting opnieuw decoderen
+        # (zie BATCH_CONTEXT_PAD_LEFT_MS). Sessiestart telt ook als 'op stilte'.
+        self._batch_window_start_at_silence: bool = True
         # Guard: voorkomt dubbele enqueue voor dezelfde window-close
         self._batch_last_close_end_ms: Optional[int] = None
         # Batch window control (Stap 1 refined)
@@ -598,6 +608,7 @@ class AudioProcessor:
             "start_ms": int(window_start_ms),
             "end_ms": int(window_end_ms),
             "reason": reason,
+            "start_at_silence": bool(self._batch_window_start_at_silence),
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
         
@@ -694,8 +705,9 @@ class AudioProcessor:
             reason=boundary
         )
 
-        # Advance window
+        # Advance window -- volgend venster begint op het einde van de spraak
         self._batch_window_start_ms = window_end_ms
+        self._batch_window_start_at_silence = True
         self._batch_ready_to_close = False
         self._batch_ready_at_ms = None
 
@@ -758,6 +770,7 @@ class AudioProcessor:
 
             # Advance zodat cleanup/latere stop niet opnieuw hetzelfde stukje pakt
             self._batch_window_start_ms = window_end_ms
+            self._batch_window_start_at_silence = False  # Pauze kan midden in spraak vallen
             self._batch_ready_to_close = False
             self._batch_ready_at_ms = None
 
@@ -977,6 +990,7 @@ class AudioProcessor:
                                         )
 
                                     self._batch_window_start_ms = window_end_ms
+                                    self._batch_window_start_at_silence = False
                                     self._batch_ready_to_close = False
                                     self._batch_ready_at_ms = None
                         except Exception as e:
@@ -1637,7 +1651,8 @@ class AudioProcessor:
                 live_text = " ".join(live_parts).strip()
 
                 # 2) Decode audio slice met padding (FO)
-                decode_start_ms = max(0, start_ms - BATCH_CONTEXT_PAD_LEFT_MS)
+                pad_left_ms = 0 if job.get("start_at_silence") else BATCH_CONTEXT_PAD_LEFT_MS
+                decode_start_ms = max(0, start_ms - pad_left_ms)
                 decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_RIGHT_MS
 
                 # Synchrone I/O (flush+fsync+wave-read) hoort niet rechtstreeks op de
@@ -1847,6 +1862,7 @@ class AudioProcessor:
                             f"(WAV bevatte nog niet alles op decodeermoment)"
                         )
                         self._batch_window_start_ms = real_window_end_ms
+                        self._batch_window_start_at_silence = False
 
                 logger.info(
                     f"[BATCH][APPLY][DBG] job={job['job_id']} group_id={group_id} "
@@ -1895,7 +1911,7 @@ class AudioProcessor:
                 logger.info(
                     f"[BATCH][WORKER] BATCHGROUP overwrite id={group_id} job={job['job_id']} "
                     f"window={start_ms}..{end_ms} "
-                    f"pad_left={BATCH_CONTEXT_PAD_LEFT_MS}ms "
+                    f"pad_left={pad_left_ms}ms "
                     f"pad_right={BATCH_CONTEXT_PAD_RIGHT_MS}ms "
                     f"use_batch={use_batch_as_final} reason={reason}"
                 )
@@ -1987,6 +2003,7 @@ class AudioProcessor:
             self.tokens_alignment.beg_loop = self.beg_loop
             # Batch window starts at t=0 for this session
             self._batch_window_start_ms = 0
+            self._batch_window_start_at_silence = True
 
         if not message:
             logger.info("Empty audio message received, initiating stop sequence.")
