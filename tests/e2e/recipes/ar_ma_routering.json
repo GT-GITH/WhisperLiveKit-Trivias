@@ -7,12 +7,12 @@
   },
   "timeline": [
     {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 18}},
-    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "morocco", "index": 0}, "gap_before_ms": 1200},
+    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "Morocco", "index": 0}, "gap_before_ms": 1200},
     {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 19}, "gap_before_ms": 1200},
-    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "morocco", "index": 1}, "gap_before_ms": 1000},
-    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "morocco", "index": 2}, "gap_before_ms": 1500},
+    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "Morocco", "index": 1}, "gap_before_ms": 1000},
+    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "Morocco", "index": 2}, "gap_before_ms": 1500},
     {"channel": "employee", "source": {"dataset": "fleurs", "config": "nl_nl", "index": 20}, "gap_before_ms": 1000},
-    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "morocco", "index": 3}, "gap_before_ms": 1200},
-    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "morocco", "index": 4}, "gap_before_ms": 1500}
+    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "Morocco", "index": 3}, "gap_before_ms": 1200},
+    {"channel": "foreign_ar_ma", "source": {"dataset": "casablanca", "config": "Morocco", "index": 4}, "gap_before_ms": 1500}
   ]
 }
