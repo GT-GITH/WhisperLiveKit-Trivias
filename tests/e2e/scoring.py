@@ -193,6 +193,32 @@ def score_live(utterances: List[dict], messages: List[dict]) -> Dict[str, object
     }
 
 
+def score_batch_latency(utterances: List[dict], messages: List[dict]) -> Dict[str, object]:
+    """Wachttijd tot definitief: per referentie-uiting de tijd tussen het einde van de
+    uiting en het eerste segment_update-bericht MET batch-tekst dat die uiting overlapt.
+    Uitingen zonder zo'n bericht tijdens het streamen tellen als 'niet binnen de sessie'
+    (die krijgen pas tekst bij de eind-flush of helemaal niet)."""
+    batch = []
+    for m in messages:
+        msg = m.get("msg") or {}
+        if msg.get("type") == "segment_update" and (msg.get("text_batch") or "").strip():
+            batch.append((float(m["t"]), msg.get("start_ms") or 0, msg.get("end_ms") or 0))
+    lat, none = [], 0
+    for u in utterances:
+        hits = [t for t, s, e in batch if s < u["end_ms"] and e > u["start_ms"]]
+        if hits:
+            lat.append(max(0.0, min(hits) - u["end_ms"] / 1000.0))
+        else:
+            none += 1
+    lat.sort()
+    return {
+        "batch_latency_median_s": round(lat[len(lat) // 2], 1) if lat else None,
+        "batch_latency_p90_s": round(lat[int(0.9 * (len(lat) - 1))], 1) if lat else None,
+        "batch_latency_max_s": round(lat[-1], 1) if lat else None,
+        "batch_not_in_session": none,
+    }
+
+
 def score_channel(utterances: List[dict], segments: List[dict]) -> Dict[str, object]:
     """utterances: [{start_ms, end_ms, text}] (referentie, op tijd gesorteerd).
     segments: opgeslagen transcriptsegmenten van de server voor dit kanaal."""

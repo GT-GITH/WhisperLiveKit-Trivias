@@ -59,7 +59,10 @@ BATCH_CONTEXT_PAD_LEFT_MS = 600
 BATCH_CONTEXT_PAD_RIGHT_MS = 0
 
 # Batch windowing (Stap 1)
-BATCH_TARGET_WINDOW_MS = 30_000   # 30s
+# Minimale vensterlengte vóór een batch-venster op een pauze mag sluiten. Tijdelijk
+# instelbaar via TRIVIAS_BATCH_WINDOW_MS voor het 30 s- vs 15 s-experiment (2026-11-15:
+# definitieve tekst sneller laten verschijnen zonder kwaliteitsverlies?).
+BATCH_TARGET_WINDOW_MS = int(os.environ.get("TRIVIAS_BATCH_WINDOW_MS", "30000"))
 BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
 BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
 

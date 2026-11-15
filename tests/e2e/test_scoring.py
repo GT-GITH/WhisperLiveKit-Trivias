@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scoring import cer, edit_distance, normalize, score_channel, score_live, wer  # noqa: E402
+from scoring import cer, edit_distance, normalize, score_batch_latency, score_channel, score_live, wer  # noqa: E402
 
 
 def _fd(t, buffer="", lines=()):
@@ -41,6 +41,14 @@ def test_score_live_lag():
                                 "lines": [{"id": "seg_1", "text": "x", "text_batch": None, "start_ms": 8000, "end_ms": 10000}]}}]
     r = score_live(utts, msgs)
     assert r["live_lag_median_s"] == 50.0 and r["live_lag_p90_s"] == 50.0, r
+
+
+def test_batch_latency():
+    utts = [{"start_ms": 1000, "end_ms": 5000, "text": "a"}, {"start_ms": 8000, "end_ms": 9000, "text": "b"}]
+    msgs = [{"t": 37.0, "msg": {"type": "segment_update", "text_batch": "a", "start_ms": 1100, "end_ms": 4900}},
+            {"t": 40.0, "msg": {"type": "segment_update", "text_batch": None, "text_final": "b", "start_ms": 8000, "end_ms": 9000}}]
+    r = score_batch_latency(utts, msgs)
+    assert r["batch_latency_median_s"] == 32.0 and r["batch_not_in_session"] == 1, r
 
 
 def test_score_live_ignores_batch_replacement():

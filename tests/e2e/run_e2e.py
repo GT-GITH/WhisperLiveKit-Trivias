@@ -37,7 +37,7 @@ from urllib.parse import urlencode
 import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scoring import LIVE_LAG_FAIL_S, LIVE_STALL_FAIL_S, score_channel, score_live  # noqa: E402
+from scoring import LIVE_LAG_FAIL_S, LIVE_STALL_FAIL_S, score_batch_latency, score_channel, score_live  # noqa: E402
 
 # Serverlog-patronen die tijdens een run als FOUT tellen. Les van 2026-11-15: de
 # live-decoder faalde met exceptions/time-outs terwijl het rapport "Fouten: geen" zei,
@@ -242,6 +242,9 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
     # LIVE_STALL_FAIL_S binnen spraak is een fout (live-stilstand, 2026-11-15).
     result["live"] = {ch: score_live(ref["channels"][ch]["utterances"], streamed[ch]["messages"])
                       for ch in ref["channels"]}
+    # Wachttijd tot definitief: hoe snel verschijnt de batch-tekst na het einde van een uiting.
+    for ch in ref["channels"]:
+        result["live"][ch].update(score_batch_latency(ref["channels"][ch]["utterances"], streamed[ch]["messages"]))
     if speed != 1.0:
         result["live_note"] = "speed != 1: live-timing niet vergelijkbaar met audiotijd"
     else:
@@ -310,13 +313,15 @@ def write_markdown(md_path: Path, results: list, regressions: list, health: dict
                 lines.append(f"| {r['scenario']} | {path} | {ch} | {fmt(m['wer'], True)} | {fmt(m['cer'], True)} | "
                              f"{m['missed']}/{m['n_ref_utterances']} | {m['spurious']} | {m['live_fallback']} | "
                              f"{fmt(m['ts_median_ms'])}/{fmt(m['ts_max_ms'])} |")
-    lines += ["", "## Live", "", "| scenario | kanaal | live gemist | langste live-stilte tijdens spraak | achterstand mediaan/p90 | updates |",
-              "|---|---|---|---|---|---|"]
+    lines += ["", "## Live en wachttijd tot definitief", "",
+              "| scenario | kanaal | live gemist | langste live-stilte | live-achterstand med/p90 | definitief na (med/p90/max) | niet binnen sessie |",
+              "|---|---|---|---|---|---|---|"]
     for r in results:
         for ch, lm in r.get("live", {}).items():
             lines.append(f"| {r['scenario']} | {ch} | {lm['live_missed']} | {lm['live_max_gap_s']} s "
                          f"(bij {lm['live_max_gap_at_s']}) | {lm['live_lag_median_s']}/{lm['live_lag_p90_s']} s | "
-                         f"{lm['live_updates']} |")
+                         f"{lm.get('batch_latency_median_s')}/{lm.get('batch_latency_p90_s')}/{lm.get('batch_latency_max_s')} s | "
+                         f"{lm.get('batch_not_in_session')} |")
     errs = [(r["scenario"], ch, e) for r in results for ch, es in r["errors"].items() for e in es]
     lines += ["", "## Fouten", ""] + ([f"- {s}/{c}: {e}" for s, c, e in errs] or ["Geen."])
     lines += ["", "## Regressies t.o.v. basislijn", ""] + ([f"- {x}" for x in regressions] or ["Geen."])
