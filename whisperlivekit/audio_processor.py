@@ -57,6 +57,25 @@ BATCH_TARGET_WINDOW_MS = 30_000   # 30s
 BATCH_MIN_WINDOW_MS    = 15_000   # (nu nog niet gebruikt, maar handig)
 BATCH_HARD_CAP_MS      = 45_000   # (nu nog niet gebruikt, maar handig)
 
+# Een batch-venster mag alleen sluiten op een ECHTE pauze, niet op elke VAD-stilte.
+# De VAC (FixedVADIterator) meldt al stilte na 100 ms -- een ademhaling midden in
+# een zin. Sloot een venster daarop (bewezen met de e2e-suite, 2026-11-15), dan
+# begon het volgende venster midden in een zin, en Whisper sloeg dan (in float16
+# én int8) tot ~15 s spraak over: hele uitingen weg uit het opgeslagen transcript,
+# plus dubbelingen via de pad_left-context. Venster dat op een echte pauze begint:
+# compleet. Daarom: sluiten pas als de stilte minstens zo lang duurt.
+BATCH_CLOSE_MIN_SILENCE_MS = 500
+
+
+class BatchCloseSignal:
+    """Marker in transcription_queue: de huidige stilte duurt nu lang genoeg
+    (>= BATCH_CLOSE_MIN_SILENCE_MS) om een batch-venster op te mogen sluiten.
+
+    Loopt via dezelfde queue als audio en Silence-events zodat de volgorde
+    gegarandeerd is: de live-tokens van vóór de stilte (start_silence() bij het
+    Silence-start-item) zijn verwerkt voordat dit signaal het venster-einde
+    bepaalt. Wordt door get_all_from_queue() net als Silence ongemengd doorgegeven."""
+
 _STATE_TOKENS_MAX_DURATION_S: float = 600.0  # maximaal 10 minuten tokens in state.tokens
 _STATE_TOKENS_PRUNE_TRIGGER: int = 13_000    # alleen prunen boven deze grens
 
@@ -98,7 +117,7 @@ async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.
     # 1) Sentinels / silence pass through directly
     if first_item is SENTINEL:
         return first_item
-    if isinstance(first_item, Silence):
+    if isinstance(first_item, (Silence, BatchCloseSignal)):
         return first_item
 
     items.append(first_item)
@@ -112,7 +131,7 @@ async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.
             break
 
         # Stop at boundary items; push back so it will be returned next call (order preserved)
-        if nxt is SENTINEL or isinstance(nxt, Silence):
+        if nxt is SENTINEL or isinstance(nxt, (Silence, BatchCloseSignal)):
             _QUEUE_PUSHBACK[queue] = nxt
             break
 
@@ -220,6 +239,9 @@ class AudioProcessor:
         # State management
         self.is_stopping: bool = False
         self.current_silence: Optional[Silence] = None
+        # Voor welke stilte (op start-tijd) BatchCloseSignal al verstuurd is -- één
+        # signaal per stilte.
+        self._batch_close_signalled_for: Optional[float] = None
         self.state: State = State()
         self.lock: asyncio.Lock = asyncio.Lock()
         self.sep: str = " "  # Default separator
@@ -340,6 +362,19 @@ class AudioProcessor:
                 json.dump(entries, f, ensure_ascii=False)
         except Exception as e:
             logger.warning(f"[TRANSCRIPT][PERSIST] failed: {e}")
+
+    async def _maybe_signal_batch_close(self, now_sample: int) -> None:
+        """Stuur één BatchCloseSignal zodra de lopende stilte >= BATCH_CLOSE_MIN_SILENCE_MS
+        duurt (gemeten in ontvangen PCM-samples, dezelfde tijdbasis als _begin_silence)."""
+        silence = self.current_silence
+        if silence is None or not self.transcription_queue:
+            return
+        start = float(silence.start or 0.0)
+        if self._batch_close_signalled_for == start:
+            return
+        if (now_sample / self.sample_rate - start) * 1000.0 >= BATCH_CLOSE_MIN_SILENCE_MS:
+            self._batch_close_signalled_for = start
+            await self.transcription_queue.put(BatchCloseSignal())
 
     async def _push_silence_event(self) -> None:
         if self.transcription_queue:
@@ -588,8 +623,9 @@ class AudioProcessor:
         """
         Stap 1: 30s hard-grens, stilte is afrondingshint.
         We proberen te sluiten op een stilte-boundary:
-        - boundary = "silence_start"  (preferred)
-        - boundary = "silence_end"    (fallback)
+        - boundary = "silence_confirmed" (preferred: stilte duurt >= BATCH_CLOSE_MIN_SILENCE_MS)
+        - boundary = "silence_end"       (vangnet, alleen na een stilte van die lengte)
+        Nooit meer op "silence_start": dat was ook een ademhaling van 100 ms.
         """
 
         if self._batch_window_start_ms is None:
@@ -835,16 +871,10 @@ class AudioProcessor:
                         except Exception as e:
                             logger.warning(f"[LIVE] start_silence failed: {e}")
                             new_tokens = []
-                        # ===== Stap 1: batch windowing proberen te sluiten op silence-start =====
-                        # Loopt altijd, ook als start_silence hierboven faalde.
-                        try:
-                            stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
-                            await self._batch_on_silence_boundary(
-                                stream_time_ms=stream_time_ms,
-                                boundary="silence_start"
-                            )
-                        except Exception as e:
-                            logger.warning(f"[BATCH][WINDOW] silence-start handler failed: {e}")
+                        # Batch-venster sluit hier bewust NIET meer: bij het begin van
+                        # een stilte is nog niet bekend of het een ademhaling (100 ms)
+                        # of een echte pauze is. Sluiten gebeurt bij BatchCloseSignal
+                        # (stilte >= BATCH_CLOSE_MIN_SILENCE_MS), zie hieronder.
 
                     if item.has_ended:
                         # Einde van stilte
@@ -858,15 +888,19 @@ class AudioProcessor:
                             self.state.tokens[-1].end if self.state.tokens else 0
                         )
 
-                        # ===== Stap 1: batch windowing sluiten op silence-end (los van decoder reset) ===== 
-                        try:
-                            stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
-                            await self._batch_on_silence_boundary(
-                                stream_time_ms=stream_time_ms,
-                                boundary="silence_end"
-                           )
-                        except Exception as e:
-                           logger.warning(f"[BATCH][WINDOW] silence-end handler failed: {e}")
+                        # Vangnet: sluit bij silence-end alleen als de stilte een echte
+                        # pauze was. Meestal is het venster dan al gesloten via
+                        # BatchCloseSignal; de duplicate-close-guard in
+                        # _batch_on_silence_boundary() voorkomt een tweede close.
+                        if (item.duration or 0.0) * 1000.0 >= BATCH_CLOSE_MIN_SILENCE_MS:
+                            try:
+                                stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
+                                await self._batch_on_silence_boundary(
+                                    stream_time_ms=stream_time_ms,
+                                    boundary="silence_end"
+                                )
+                            except Exception as e:
+                                logger.warning(f"[BATCH][WINDOW] silence-end handler failed: {e}")
 
                         # Voor nu géén harde live reset op normale stilte.
                         # We willen de doorlopende live transcriptie intact houden
@@ -886,6 +920,17 @@ class AudioProcessor:
                         current_audio_processed_upto,
                         stream_time_end_of_current_pcm
                     )
+                elif isinstance(item, BatchCloseSignal):
+                    # Stilte duurt nu lang genoeg: echte pauze -> venster mag sluiten.
+                    try:
+                        stream_time_ms = int(round(cumulative_pcm_duration_stream_time * 1000.0))
+                        await self._batch_on_silence_boundary(
+                            stream_time_ms=stream_time_ms,
+                            boundary="silence_confirmed",
+                        )
+                    except Exception as e:
+                        logger.warning(f"[BATCH][WINDOW] silence-confirmed handler failed: {e}")
+                    continue
                 elif isinstance(item, ChangeSpeaker):
                     self.transcription.new_speaker(item)
                     continue
@@ -2100,7 +2145,8 @@ class AudioProcessor:
 
         if not self.current_silence:
             await self._enqueue_active_audio(asr_pcm_array)
-
+        else:
+            await self._maybe_signal_batch_close(chunk_sample_end)
 
         self.total_pcm_samples = chunk_sample_end
 
