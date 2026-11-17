@@ -34,6 +34,15 @@ logger = logging.getLogger(__name__)
 # 30 s-venster ~ 7.5/s; normale spraak ligt rond 3-7/s.
 MAX_TEXT_TOKENS_PER_S = 8
 
+# A/B-schakelaars voor het live-buffer-onderzoek (2026-11-17). Standaard ongewijzigd.
+# Commit 7095524 (maart 2026) maakte de rewind-detectie gevoeliger (200 -> 120 frames)
+# EN verving de oorspronkelijke afhandeling ("omit": alleen de tokens van deze stap
+# weggooien) door een volledige reset die tot 30 s audio + alle context weggooit.
+#   TRIVIAS_LIVE_REWIND=reset (standaard, huidig) | omit (oorspronkelijk SimulStreaming)
+#   TRIVIAS_LIVE_REWIND_FRAMES=<n>  drempel in frames (leeg = config.rewind_threshold)
+LIVE_REWIND_MODE = os.environ.get("TRIVIAS_LIVE_REWIND", "reset")
+LIVE_REWIND_FRAMES = int(os.environ.get("TRIVIAS_LIVE_REWIND_FRAMES", "0") or 0)
+
 # [DIAG][GPU] (2026-08-23) onderzoek naar sporadisch trage encoder-aanroepen
 # (zie [DIAG][LIVE_PERF] hieronder): op verzoek rechtstreeks in het serverlog
 # opgenomen i.p.v. een losse handmatige `nvidia-smi -l 1`-sessie ernaast nodig
@@ -753,10 +762,20 @@ class AlignAtt:
                 break
             
             # for some rare cases where the attention fails
-            if not is_last and self.state.last_attend_frame - most_attended_frame > self.cfg.rewind_threshold:
+            if not is_last and self.state.last_attend_frame - most_attended_frame > (LIVE_REWIND_FRAMES or self.cfg.rewind_threshold):
                 if current_tokens.shape[1] > 1 and current_tokens[0, -2] >= DEC_PAD:
                     logger.debug("omit rewinding from special tokens")
                     self.state.last_attend_frame = most_attended_frame
+                elif LIVE_REWIND_MODE == "omit":
+                    # Oorspronkelijke SimulStreaming-afhandeling (vóór 7095524): alleen de
+                    # tokens van DEZE stap weggooien; audiobuffer en context blijven staan.
+                    logger.warning(
+                        f"[rewind detected] current attention pos: {most_attended_frame}, "
+                        f"last attention pos: {self.state.last_attend_frame}; omit this step (mode=omit)"
+                    )
+                    self.state.last_attend_frame = -self.cfg.rewind_threshold
+                    current_tokens = current_tokens[:, :token_len_before_decoding]
+                    break
                 else:
                     logger.warning(
                         f"[rewind detected] current attention pos: {most_attended_frame}, "

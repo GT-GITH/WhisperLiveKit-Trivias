@@ -49,6 +49,13 @@ SERVER_LOG_ERROR_PATTERNS = {
     "lusbeveiliging": "[Loop Detection]",
     "transcriptie-exception": "Exception in transcription_processor",
 }
+# Geen fouten, wel meetwaarden voor het live-buffer-onderzoek (2026-11-17).
+SERVER_LOG_INFO_PATTERNS = {
+    "live_rewinds": "[rewind detected]",
+    "live_rewind_hard_resets": "HARD RESET LIVE SEGMENT",
+    "live_nospeech_stops": "no speech, stop",
+    "live_reanchors": "[LIVE][ANCHOR]",
+}
 LIVE_GAP_REGRESSION_S = 3.0
 
 
@@ -59,7 +66,7 @@ def server_log_offset(path: str | None) -> int:
         return -1
 
 
-def server_log_errors(path: str | None, offset: int) -> dict:
+def server_log_errors(path: str | None, offset: int, patterns: dict = SERVER_LOG_ERROR_PATTERNS) -> dict:
     """Tel foutpatronen in het deel van de serverlog dat tijdens deze run is bijgeschreven."""
     if not path or offset < 0:
         return {}
@@ -69,7 +76,7 @@ def server_log_errors(path: str | None, offset: int) -> dict:
             text = f.read().decode("utf-8", errors="replace")
     except OSError:
         return {}
-    counts = {name: text.count(pat) for name, pat in SERVER_LOG_ERROR_PATTERNS.items()}
+    counts = {name: text.count(pat) for name, pat in patterns.items()}
     return {k: v for k, v in counts.items() if v}
 
 HERE = Path(__file__).resolve().parent
@@ -266,6 +273,7 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
                     f"{m['missed'] - m.get('missed_marked', 0)} onzichtbaar)")
     # Serverlog: exceptions/time-outs tijdens deze run zijn fouten.
     result["server_log"] = server_log_errors(server_log, log_offset)
+    result["server_log_info"] = server_log_errors(server_log, log_offset, SERVER_LOG_INFO_PATTERNS)
     if result["server_log"]:
         result["errors"].setdefault("_serverlog", []).extend(f"{k}: {v}x" for k, v in result["server_log"].items())
     return result
@@ -323,14 +331,17 @@ def write_markdown(md_path: Path, results: list, regressions: list, health: dict
                              f"{m['missed']}/{m['n_ref_utterances']} | {m['spurious']} | {m['live_fallback']} | "
                              f"{fmt(m['ts_median_ms'])}/{fmt(m['ts_max_ms'])} |")
     lines += ["", "## Live en wachttijd tot definitief", "",
-              "| scenario | kanaal | live gemist | langste live-stilte | live-achterstand med/p90 | definitief na (med/p90/max) | niet binnen sessie |",
-              "|---|---|---|---|---|---|---|"]
+              "| scenario | kanaal | live gemist | langste live-stilte | live-achterstand med/p90 | live-tekst WER | definitief na (med/p90/max) | niet binnen sessie |",
+              "|---|---|---|---|---|---|---|---|"]
     for r in results:
         for ch, lm in r.get("live", {}).items():
             lines.append(f"| {r['scenario']} | {ch} | {lm['live_missed']} | {lm['live_max_gap_s']} s "
                          f"(bij {lm['live_max_gap_at_s']}) | {lm['live_lag_median_s']}/{lm['live_lag_p90_s']} s | "
+                         f"{lm.get('live_text_wer')} | "
                          f"{lm.get('batch_latency_median_s')}/{lm.get('batch_latency_p90_s')}/{lm.get('batch_latency_max_s')} s | "
                          f"{lm.get('batch_not_in_session')} |")
+    lines += ["", "Live-decoder (serverlog, per scenario): " + "; ".join(
+        f"{r['scenario']}: {r.get('server_log_info') or {}}" for r in results)]
     errs = [(r["scenario"], ch, e) for r in results for ch, es in r["errors"].items() for e in es]
     lines += ["", "## Fouten", ""] + ([f"- {s}/{c}: {e}" for s, c, e in errs] or ["Geen."])
     lines += ["", "## Regressies t.o.v. basislijn", ""] + ([f"- {x}" for x in regressions] or ["Geen."])

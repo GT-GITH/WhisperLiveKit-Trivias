@@ -185,7 +185,23 @@ def score_live(utterances: List[dict], messages: List[dict]) -> Dict[str, object
             lags.append(float(m["t"]) - l["end_ms"] / 1000.0)
     lags.sort()
     p90 = lags[int(0.9 * (len(lags) - 1))] if lags else None
+    # Kwaliteit van de live-TEKST (2026-11-17, live-buffer-onderzoek): per live-regel
+    # (id) de laatst getoonde versie, op starttijd achter elkaar -> WER tegen de
+    # referentie. Benadering (regels kunnen elkaar deels overlappen), alleen bedoeld
+    # om varianten onderling te vergelijken, niet als absolute maat.
+    last_live: Dict[object, dict] = {}
+    for m in messages:
+        msg = m.get("msg") or {}
+        if msg.get("type") != "front_data":
+            continue
+        for l in msg.get("lines") or []:
+            if l.get("text_batch") or not (l.get("text") or "").strip() or l.get("speaker") == -2:
+                continue
+            last_live[l.get("id") if l.get("id") is not None else l.get("start_ms")] = l
+    live_text = " ".join(l["text"].strip() for l in sorted(last_live.values(), key=lambda l: l.get("start_ms") or 0))
+    ref_text = " ".join(u["text"] for u in utts)
     return {
+        "live_text_wer": round(wer(ref_text, live_text), 3) if ref_text and live_text else None,
         "live_lag_median_s": round(lags[len(lags) // 2], 1) if lags else None,
         "live_lag_p90_s": round(p90, 1) if p90 is not None else None,
         "live_missed": len(missed),
