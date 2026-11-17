@@ -60,7 +60,14 @@ BATCH_CONTEXT_PAD_LEFT_MS = 600
 BATCH_CONTEXT_PAD_RIGHT_MS = 0
 # Audio vóór een batch-venster die de dekkingscontrole als VAD-context krijgt (zie
 # BatchFasterWhisperASR._decode, vad_context_f32). Alleen spraakdetectie, geen decodering.
-BATCH_VAD_CONTEXT_MS = 10000
+# UIT (0) sinds 2026-11-17: met 10 s context liep de spraak-aanwijzing van het vorige
+# venster (Silero voegt pauzes < 2 s samen + 0.4 s marge) door over de stilte aan het
+# begin van het nieuwe venster -> hallucinaties als onbevestigde regels in SCHONE audio
+# ("We'll be right back.", "Thank you.", markeringen; suite 20261117-194458). Strakkere
+# VAD-instellingen verhielpen dat, maar kostten in "Ververs" drie door de gebruiker
+# bevestigde zinnen (offline cov_vadopts*.py). Prijs van UIT: korte uitingen aan het
+# begin van een kort incrementeel venster (yt4 "İstanbulluyum") alleen in Ververs.
+BATCH_VAD_CONTEXT_MS = int(os.environ.get("TRIVIAS_BATCH_VAD_CONTEXT_MS", "0"))
 
 # Batch windowing (Stap 1)
 # Minimale vensterlengte vóór een batch-venster op een pauze mag sluiten. Tijdelijk
@@ -1831,7 +1838,7 @@ class AudioProcessor:
                 # VAD-context voor de dekkingscontrole: de BATCH_VAD_CONTEXT_MS audio vóór
                 # het gedecodeerde stuk (alleen voor spraakdetectie, wordt niet gedecodeerd).
                 vad_ctx_f32 = None
-                if decode_start_ms > 0:
+                if decode_start_ms > 0 and BATCH_VAD_CONTEXT_MS > 0:
                     vad_ctx_f32, _ = await asyncio.to_thread(
                         self._read_wav_slice_float32,
                         max(0, decode_start_ms - BATCH_VAD_CONTEXT_MS), decode_start_ms,
