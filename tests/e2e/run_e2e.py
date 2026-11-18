@@ -191,6 +191,27 @@ async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: di
     return {"messages": messages, "errors": errors}
 
 
+async def wait_auto_refresh(server: str, session_id: str, start_timeout_s: float = 20.0,
+                            done_timeout_s: float = 900.0):
+    """Wacht op het automatische Ververs na Stop. None = niet gestart binnen
+    start_timeout_s (bv. TRIVIAS_AUTO_REFRESH=0); anders de eindstatus."""
+    t0 = time.monotonic()
+    started = False
+    while time.monotonic() - t0 < done_timeout_s:
+        try:
+            st = http_json("GET", f"{server}/sessions/{session_id}/refresh_status")
+        except Exception:
+            st = {}
+        if st.get("trigger") == "auto_after_stop" or st.get("status") == "running":
+            started = True
+            if st.get("status") in ("done", "failed"):
+                return st
+        elif not started and time.monotonic() - t0 > start_timeout_s:
+            return None
+        await asyncio.sleep(1.0)
+    return {"status": "timeout"}
+
+
 async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_refresh: bool,
                        out_dir: Path, client_gate: float | None = None,
                        server_log: str | None = None) -> dict:
@@ -225,11 +246,22 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
     result = {"scenario": name, "session_id": session_id, "wall_s": round(wall, 1),
               "errors": {ch: s["errors"] for ch, s in streamed.items() if s["errors"]}, "paths": {}}
 
-    await asyncio.sleep(2.0)
+    # Sinds 2026-11-18 draait Ververs automatisch na Stop (server). Wacht daarop, dan
+    # het incrementele transcript (bewaard vóór de refresh) en het definitieve lezen.
+    auto = await wait_auto_refresh(server, session_id)
+    if auto is None and do_refresh:
+        result["errors"].setdefault("_refresh", []).append(
+            "geen automatisch Ververs na Stop gestart (binnen 20 s) -- handmatig uitgevoerd")
+    elif auto is not None:
+        result["refresh_auto"] = auto
+        if auto.get("status") != "done":
+            result["errors"].setdefault("_refresh", []).append(f"automatisch Ververs: {auto}")
+
     incremental = {}
     for ch in ref["channels"]:
         try:
-            data = http_json("GET", f"{server}/sessions/{session_id}/transcript?{urlencode({'channel_id': ch})}")
+            q = urlencode({'channel_id': ch, 'version': 'incremental'})
+            data = http_json("GET", f"{server}/sessions/{session_id}/transcript?{q}")
             incremental[ch] = data.get("segments", [])
         except Exception as e:
             result["errors"].setdefault(ch, []).append(f"transcript ophalen: {e}")
@@ -239,9 +271,13 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
 
     if do_refresh:
         try:
-            t = time.monotonic()
-            data = http_json("POST", f"{server}/sessions/{session_id}/refresh_transcript")
-            result["refresh_s"] = round(time.monotonic() - t, 1)
+            if auto is not None and auto.get("status") == "done":
+                result["refresh_s"] = auto.get("duration_s")
+                data = http_json("GET", f"{server}/sessions/{session_id}/transcript?channel_id=all")
+            else:
+                t = time.monotonic()
+                data = http_json("POST", f"{server}/sessions/{session_id}/refresh_transcript")
+                result["refresh_s"] = round(time.monotonic() - t, 1)
             by_ch = {ch: [s for s in data.get("segments", []) if s.get("channel_id") == ch] for ch in ref["channels"]}
             result["paths"]["refresh"] = {
                 ch: score_channel(ref["channels"][ch]["utterances"], by_ch[ch]) for ch in ref["channels"]}

@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import re
+import shutil
 import time
 import uuid
 import json
@@ -216,6 +218,17 @@ class SessionManager:
         if not meta:
             return None
         return (meta.get("channels", {}).get(channel_id) or {}).get("language2")
+
+    def set_refresh_status(self, session_id: str, **fields: Any) -> None:
+        """Status van "Ververs" (handmatig of automatisch na Stop) in meta.json, zodat
+        die een serverherstart overleeft en de UI hem kan pollen."""
+        self._hydrate(session_id)
+        meta = self._sessions.get(session_id, {"session_id": session_id})
+        refresh = dict(meta.get("refresh") or {})
+        refresh.update(fields)
+        meta["refresh"] = refresh
+        self._sessions[session_id] = meta
+        self._persist(session_id)
 
     def all(self) -> Dict[str, Dict[str, Any]]:
         return self._sessions
@@ -606,14 +619,47 @@ def rebuild_channel_transcript(
         })
 
     json_path = wav_path.with_suffix(".json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(entries, f, ensure_ascii=False)
+    _backup_incremental_transcript(json_path)
+    _atomic_write_json(json_path, entries)
 
     logger.info(
         f"[REFRESH] session={session_id} channel={channel_id} lang={lang} "
         f"herbouwd: {len(entries)} segmenten, {n_accepted} bevestigd -> {json_path}"
     )
     return entries
+
+
+# Het incrementele transcript (tijdens de opname opgebouwd) wordt vóór de eerste
+# "Ververs" bewaard in een submap, zodat het niet verloren gaat nu Ververs na Stop
+# automatisch draait (2026-11-18): voor audit/vergelijking en voor de e2e-suite, die
+# zo beide paden blijft meten. Submap, zodat de session_{id}_*-globs het niet oppikken.
+INCREMENTAL_TRANSCRIPT_DIR = Path("recordings") / "incremental"
+
+
+def _backup_incremental_transcript(json_path: Path) -> None:
+    """Eenmalig: kopie van het incrementele transcript vóór de eerste refresh. Een
+    tweede refresh mag deze kopie niet overschrijven met refresh-uitvoer."""
+    try:
+        if not json_path.exists():
+            return
+        dest = INCREMENTAL_TRANSCRIPT_DIR / json_path.name
+        if dest.exists():
+            return
+        INCREMENTAL_TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(json_path, dest)
+    except Exception as e:
+        logger.warning(f"[REFRESH] kon incrementeel transcript niet bewaren ({json_path}): {e}")
+
+
+def _atomic_write_json(path: Path, data: Any) -> None:
+    """Eerst naar een tijdelijk bestand, dan in één keer vervangen: een crash halverwege
+    laat nooit een half geschreven transcript achter."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 @app.get("/sessions/list")
@@ -685,6 +731,8 @@ async def delete_session(session_id: str):
 
     recordings_dir = Path("recordings")
     matches = list(recordings_dir.glob(f"session_{session_id}_*"))
+    # bewaarde incrementele transcripten (zie INCREMENTAL_TRANSCRIPT_DIR) horen erbij
+    matches += list(INCREMENTAL_TRANSCRIPT_DIR.glob(f"session_{session_id}_*"))
     meta_path = recordings_dir / f"session_{session_id}.meta.json"
     if meta_path.exists():
         matches.append(meta_path)
@@ -822,8 +870,13 @@ def _find_session_foreign_language(session_id: str) -> Optional[str]:
 
 
 @app.get("/sessions/{session_id}/transcript")
-async def get_session_transcript(session_id: str, channel_id: str = Query(default="default")):
+async def get_session_transcript(session_id: str, channel_id: str = Query(default="default"),
+                                 version: str = Query(default="final")):
     """Haal het opgeslagen transcript op voor een sessie.
+
+    version="incremental" (alleen per kanaal): het tijdens de opname opgebouwde
+    transcript zoals het vóór de eerste Ververs was (zie INCREMENTAL_TRANSCRIPT_DIR);
+    nog geen Ververs gedraaid -> het huidige transcript, dat dan nog incrementeel is.
 
     channel_id="all" -> gemergd transcript van alle kanalen van deze sessie,
     chronologisch gesorteerd en elk segment getagd met channel_id, zodat de
@@ -874,6 +927,8 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
     # Nieuwste bestand
     json_path = sorted(matches, key=lambda f: f.stat().st_mtime)[-1]
     wav_path = json_path.with_suffix(".wav")
+    if version == "incremental" and (INCREMENTAL_TRANSCRIPT_DIR / json_path.name).exists():
+        json_path = INCREMENTAL_TRANSCRIPT_DIR / json_path.name
 
     try:
         with open(json_path, "r", encoding="utf-8") as f:
@@ -891,6 +946,16 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# Eén "Ververs" tegelijk per sessie (knop en automatisch-na-Stop delen deze lock).
+_refresh_locks: Dict[str, asyncio.Lock] = {}
+# Welke kanalen van een sessie nu een open WebSocket hebben, en of er bewust gestopt
+# is -- voor het automatische Ververs na Stop (pas als het laatste kanaal klaar is).
+_active_ws_channels: Dict[str, set] = {}
+_stop_requested: Dict[str, bool] = {}
+# Uitschakelaar (bv. voor tests die het incrementele pad zonder refresh willen zien).
+AUTO_REFRESH_AFTER_STOP = os.environ.get("TRIVIAS_AUTO_REFRESH", "1") != "0"
+
+
 @app.post("/sessions/{session_id}/refresh_transcript")
 async def refresh_transcript(session_id: str):
     """"Ververs Transcriptie": vervang het transcript van elk kanaal in deze sessie
@@ -899,7 +964,63 @@ async def refresh_transcript(session_id: str):
     Gaat ervan uit dat de WAV-bestanden actueel zijn: bij een gestopte sessie is dat
     altijd zo (WAV al gesloten), bij een gepauzeerde sessie moet de client eerst een
     flag=3 flush-frame over de levende WebSocket sturen (zie audio_processor.py) voor
-    hij dit endpoint aanroept."""
+    hij dit endpoint aanroept.
+
+    Loopt er al een Ververs voor deze sessie (bv. de automatische na Stop), dan 409
+    met status "running": de client pollt dan /refresh_status."""
+    lock = _refresh_locks.setdefault(session_id, asyncio.Lock())
+    if lock.locked():
+        return JSONResponse({"status": "running"}, status_code=409)
+    async with lock:
+        return await _run_refresh(session_id, trigger="manual")
+
+
+@app.get("/sessions/{session_id}/refresh_status")
+async def refresh_status(session_id: str):
+    """Status van Ververs voor deze sessie: idle|running|done|failed (+ tijden, trigger)."""
+    meta = session_manager.get(session_id) or {}
+    status = dict(meta.get("refresh") or {"status": "idle"})
+    lock = _refresh_locks.get(session_id)
+    if lock is not None and lock.locked():
+        status["status"] = "running"
+    return JSONResponse(status)
+
+
+async def _auto_refresh_after_stop(session_id: str) -> None:
+    """Automatisch Ververs na een bewuste Stop (besluit gebruiker 2026-11-18): het
+    opgeslagen, definitieve transcript is altijd dat van het complete pad. Draait op de
+    server, dus ook als de browser na Stop dicht gaat."""
+    lock = _refresh_locks.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        logger.info(f"[REFRESH][AUTO] session={session_id} start na Stop")
+        resp = await _run_refresh(session_id, trigger="auto_after_stop")
+        logger.info(f"[REFRESH][AUTO] session={session_id} klaar (http {resp.status_code})")
+
+
+async def _run_refresh(session_id: str, trigger: str) -> JSONResponse:
+    """Kern van Ververs (gedeeld door de knop en de automatische trigger). Houdt de
+    status bij in meta.json. Aanroeper houdt de per-sessie lock vast."""
+    started = time.monotonic()
+    session_manager.set_refresh_status(
+        session_id, status="running", trigger=trigger,
+        started_at=datetime.utcnow().isoformat() + "Z", finished_at=None, error=None,
+    )
+    try:
+        resp = await _run_refresh_inner(session_id)
+    except Exception as e:
+        logger.exception(f"[REFRESH] session={session_id} mislukt: {e}")
+        resp = JSONResponse({"error": str(e)}, status_code=500)
+    ok = resp.status_code == 200
+    session_manager.set_refresh_status(
+        session_id, status="done" if ok else "failed",
+        finished_at=datetime.utcnow().isoformat() + "Z",
+        duration_s=round(time.monotonic() - started, 1),
+        error=None if ok else (json.loads(resp.body or b"{}").get("error") or f"http {resp.status_code}"),
+    )
+    return resp
+
+
+async def _run_refresh_inner(session_id: str) -> JSONResponse:
     recordings_dir = Path("recordings")
     wav_files: Dict[str, Path] = {}
     for wav_file in recordings_dir.glob(f"session_{session_id}_*.wav"):
@@ -1239,6 +1360,7 @@ async def websocket_endpoint(
 
     await websocket.accept()
     logger.info(f"WebSocket connection opened for session {sid}.")
+    _active_ws_channels.setdefault(sid, set()).add(channel_id or "default")
 
     # Config naar client sturen (zelfde semantics als basic_server)
     try:
@@ -1287,9 +1409,29 @@ async def websocket_endpoint(
             register_wav_path(sid, channel_id or "default", str(audio_processor._wav_path))
         
         logger.info(f"Cleaning up WebSocket endpoint for session {sid}...")
-                
+
+        # Bewuste Stop (client stuurde het einde-signaal -> is_stopping) of storing?
+        # Uitlezen vóór cleanup(), die is_stopping zelf ook zet.
+        deliberate_stop = bool(getattr(audio_processor, "is_stopping", False))
+        if deliberate_stop:
+            _stop_requested[sid] = True
+
         await audio_processor.cleanup()
         logger.info(f"WebSocket endpoint cleaned up successfully for session {sid}.")
+
+        # Automatisch Ververs zodra ALLE kanalen van de sessie klaar zijn en er bewust
+        # gestopt is (niet bij een verbroken verbinding -- zie plan fase 2/3).
+        active = _active_ws_channels.get(sid, set())
+        active.discard(channel_id or "default")
+        if not active:
+            _active_ws_channels.pop(sid, None)
+            if _stop_requested.pop(sid, False):
+                if AUTO_REFRESH_AFTER_STOP:
+                    asyncio.create_task(_auto_refresh_after_stop(sid))
+            else:
+                logger.warning(
+                    f"[SESSION] {sid}: verbinding verbroken zonder Stop -- geen automatisch Ververs"
+                )
 
 @app.websocket("/ws")
 async def websocket_ws(

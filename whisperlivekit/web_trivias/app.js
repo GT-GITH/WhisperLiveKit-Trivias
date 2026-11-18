@@ -597,8 +597,52 @@ function resolveFinalTailChannel(channelId) {
   pendingFinalTailChannels.delete(channelId);
   if (pendingFinalTailChannels.size === 0) {
     if (finalTailTimeoutId) { clearTimeout(finalTailTimeoutId); finalTailTimeoutId = null; }
+    if (awaitingFinalTranscript) return; // spinner/status blijven tot het definitieve transcript er is
     hideFinalizingSpinner();
     setAsrStatus("Klaar");
+  }
+}
+
+// === Definitief transcript na Stop (2026-11-18) ===
+// De server draait na een bewuste Stop zelf "Ververs" (het complete pad, dat geen
+// zinnen mist); hier wachten we daarop en tonen we daarna het definitieve transcript.
+// Tot dan blijft de live/incrementele tekst zichtbaar.
+let awaitingFinalTranscript = false;
+
+async function waitForFinalTranscript(sessionId) {
+  awaitingFinalTranscript = true;
+  showFinalizingSpinner();
+  setAsrStatus("Definitief transcript wordt gemaakt…");
+  const t0 = Date.now();
+  let seenRunning = false;
+  try {
+    while (true) {
+      // Nieuwe opname gestart of andere sessie geopend: niet meer wachten.
+      if (isRecording || currentSessionId !== sessionId) return;
+      let st = {};
+      try {
+        const resp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/refresh_status`);
+        if (resp.ok) st = await resp.json();
+      } catch (e) { /* netwerk even weg: opnieuw proberen */ }
+      if (st.status === "running" || st.trigger === "auto_after_stop") seenRunning = true;
+      if (seenRunning && st.status === "done") {
+        await loadSessionTranscript(sessionId);
+        setAsrStatus("Definitief transcript klaar.");
+        return;
+      }
+      if (seenRunning && st.status === "failed") {
+        setAsrStatus("Definitief transcript maken mislukt — gebruik 'Ververs Transcriptie'.");
+        alert("Het definitieve transcript kon niet automatisch worden gemaakt: " +
+              (st.error || "onbekende fout") + "\nGebruik 'Ververs Transcriptie' om het opnieuw te proberen.");
+        return;
+      }
+      // Niet gestart (bv. automatisch Ververs uitgeschakeld op de server).
+      if (!seenRunning && Date.now() - t0 > 30000) { setAsrStatus("Klaar"); return; }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  } finally {
+    awaitingFinalTranscript = false;
+    hideFinalizingSpinner();
   }
 }
 
@@ -1125,6 +1169,7 @@ async function stopRecording() {
     finalTailTimeoutId = setTimeout(() => {
       finalTailTimeoutId = null;
       pendingFinalTailChannels.clear();
+      if (awaitingFinalTranscript) return;
       hideFinalizingSpinner();
       setAsrStatus("Klaar");
     }, 12000);
@@ -1142,6 +1187,9 @@ async function stopRecording() {
 
   setConnectionStatus(0, channelConfigs.length);
   resetSessionRefs();
+
+  // Server maakt nu het definitieve transcript (automatisch Ververs); wacht en toon het.
+  if (currentSessionId) waitForFinalTranscript(currentSessionId);
 }
 
 async function confirmAndStop() {
@@ -1292,6 +1340,11 @@ async function refreshTranscript() {
     const resp = await fetch(`/sessions/${encodeURIComponent(currentSessionId)}/refresh_transcript`, {
       method: "POST",
     });
+    if (resp.status === 409) {
+      // Er loopt al een Ververs (bv. de automatische na Stop): daarop wachten.
+      await waitForFinalTranscript(currentSessionId);
+      return;
+    }
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       alert("Verversen mislukt: " + (err.error || resp.statusText));
@@ -2330,6 +2383,10 @@ function updateRefreshPlaybackButtonUI() {
 // vanzelf af.
 function downloadGehoorverslag() {
   if (!currentSessionId) return;
+  if (awaitingFinalTranscript) {
+    alert("Het definitieve transcript wordt nog gemaakt. Probeer het gehoorverslag zo opnieuw.");
+    return;
+  }
   window.location.href = `/sessions/${encodeURIComponent(currentSessionId)}/gehoorverslag`;
 }
 
