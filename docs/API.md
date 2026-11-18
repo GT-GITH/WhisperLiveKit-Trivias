@@ -27,6 +27,13 @@ This is used by the bundled Trivias frontend (`whisperlivekit/web_trivias/`) to 
 
 A third value, `0x02`, is reserved as a **pause-flush** control signal: a 1-byte message (flag byte only, no PCM payload). It tells the server to close out the current live segment and batch window immediately — the same finalization the stop sequence does — **without** closing the WAV file or ending the session. Used by the Trivias frontend when the user clicks Pause, so the last few seconds of speech before a pause get transcribed right away instead of waiting indefinitely for the next natural silence boundary. Resuming afterward continues the same session/WAV; no new `session_id` is created.
 
+### Stop vs. connection loss, and resuming (Trivias)
+
+- **Stop** = an empty binary message. The server finalizes the session (last batch window, WAV closed), sends `{"type": "ready_to_stop"}` and then **closes the WebSocket itself**. Once every channel of the session has stopped this way, the server runs "Ververs" (full rebuild from the WAV) automatically; poll `GET /sessions/{id}/refresh_status` → `{"status": "idle|running|done|failed", "trigger": "manual|auto_after_stop", "started_at", "finished_at", "duration_s", "error"}`. A manual `POST /sessions/{id}/refresh_transcript` while one is running returns **409** `{"status": "running"}`. Disable the automatic run with `TRIVIAS_AUTO_REFRESH=0`.
+- **Connection loss** = the socket closes without the empty message. The server does **not** end the session: the channel's processor (WAV writer, batch bookkeeping) stays alive for `TRIVIAS_RECONNECT_GRACE_S` (default 300 s) and `meta.json` records `connection.<channel>.state = "onderbroken"` plus an entry in `interruptions`. After the grace period the channel is finalized as on Stop (no automatic "Ververs" unless the other channels stopped deliberately).
+- **Resume** = reconnect with the same `session_id` + `channel_id` and `?resume=1`. The `config` message then carries `"resumed": true` and `"received_bytes": N` — the number of PCM payload bytes (s16le, flag bytes excluded) the server already has for this channel. The client must resend everything from byte offset `N` (it keeps the last ~2 min of sent audio for this, because audio sent just before a drop may never have arrived), then continue live. The result is one gap-free WAV. If the server still considers the old socket alive, the resume takes it over. Nothing to resume → the server closes with code **4404**.
+- The incremental transcript (as it was before the first "Ververs") is kept in `recordings/incremental/`; read it with `GET /sessions/{id}/transcript?channel_id=<ch>&version=incremental`.
+
 ---
 
 ## Legacy API (Current)
