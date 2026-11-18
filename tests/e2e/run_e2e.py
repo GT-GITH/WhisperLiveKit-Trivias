@@ -135,60 +135,140 @@ def read_pcm(path: Path) -> bytes:
         return w.readframes(w.getnframes())
 
 
+RESEND_RETAIN_BYTES = 120 * SR * 2  # = app.js: laatste 2 min verstuurde audio bewaren
+
+
 async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: dict, pcm: bytes,
                          start_evt: asyncio.Event, t0_holder: dict, speed: float, chunk_ms: int,
-                         stop_timeout: float, client_gate: float | None = None) -> dict:
+                         stop_timeout: float, client_gate: float | None = None,
+                         drop_at_s: float | None = None, drop_for_s: float = 0.0) -> dict:
+    """Streamt één kanaal zoals de browser (app.js) het doet, inclusief het gedrag bij
+    verbindingsverlies (2026-11-18): drop_at_s = audiotijd waarop de verbinding hard
+    wegvalt (geen close-handshake, zoals bij een netwerkstoring); drop_for_s later wordt
+    opnieuw verbonden met resume=1 en vanaf de door de server gemelde received_bytes
+    nagestuurd (tussentijdse audio gebufferd). Na Stop sluit -- net als de browser -- de
+    runner de verbinding NIET zelf; de server moet dat doen (anders: fout). Dat de runner
+    eerder zelf sloot, verborg op 2026-11-18 dat het automatische Ververs niet startte."""
     params = {"session_id": session_id, "channel_id": channel_id, "lang": cfg["lang"],
               "gate_framed": "1", "gate_threshold": str(client_gate or 0)}
     if cfg.get("lang2"):
         params["lang2"] = cfg["lang2"]
     url = f"{ws_base}/asr?{urlencode(params)}"
-    messages, errors = [], []
+    messages, errors, events = [], [], []
     got_ready = asyncio.Event()
+    state = {"ws": None, "recv": None, "connected": False, "closed_by_server": asyncio.Event()}
+    frames_kept: list = []   # [(off, frame-bytes incl. vlag, payload-len)]
+    pos = {"offset": 0, "sent": 0}
 
-    async with websockets.connect(url, max_size=None, open_timeout=30) as ws:
-        async def receiver():
-            try:
-                async for raw in ws:
-                    msg = json.loads(raw) if isinstance(raw, str) else {"_binary": len(raw)}
-                    messages.append({"t": round(time.monotonic() - t0_holder.get("t0", time.monotonic()), 3),
-                                     "msg": msg})
-                    if msg.get("type") == "ready_to_stop":
-                        got_ready.set()
-                    if msg.get("error"):
-                        errors.append(str(msg.get("error")))
-            except websockets.ConnectionClosed:
-                pass
-
-        recv_task = asyncio.create_task(receiver())
-        await start_evt.wait()
-        t0 = t0_holder["t0"]
-        if client_gate:
-            frames = client_gate_frames(pcm, client_gate)
-            per_batch = max(1, int(SR * chunk_ms / 1000 / GATE_FRAME_SAMPLES))
-            for b, i in enumerate(range(0, len(frames), per_batch)):
-                target = t0 + (b * per_batch * GATE_FRAME_SAMPLES / SR) / speed
-                delay = target - time.monotonic()
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                for flag, data in frames[i:i + per_batch]:
-                    await ws.send(bytes([flag]) + data)
-        else:
-            step = int(SR * 2 * chunk_ms / 1000)
-            for i, off in enumerate(range(0, len(pcm), step)):
-                target = t0 + (i * chunk_ms / 1000) / speed
-                delay = target - time.monotonic()
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                await ws.send(b"\x01" + pcm[off:off + step])  # vlag 1 = naar ASR (gate open)
-        await ws.send(b"")  # leeg bericht = Stop (zie audio_processor.process_audio)
+    async def receiver(ws):
         try:
-            await asyncio.wait_for(got_ready.wait(), timeout=stop_timeout)
-        except asyncio.TimeoutError:
-            errors.append(f"geen ready_to_stop binnen {stop_timeout}s na Stop")
-        await ws.close()
-        await asyncio.wait_for(recv_task, timeout=10)
-    return {"messages": messages, "errors": errors}
+            async for raw in ws:
+                msg = json.loads(raw) if isinstance(raw, str) else {"_binary": len(raw)}
+                messages.append({"t": round(time.monotonic() - t0_holder.get("t0", time.monotonic()), 3),
+                                 "msg": msg})
+                if msg.get("type") == "ready_to_stop":
+                    got_ready.set()
+                if msg.get("error"):
+                    errors.append(str(msg.get("error")))
+        except websockets.ConnectionClosed:
+            pass
+        if ws is state["ws"]:
+            state["closed_by_server"].set()
+
+    async def connect(resume: bool):
+        u = url + ("&resume=1" if resume else "")
+        ws = await websockets.connect(u, max_size=None, open_timeout=30)
+        first = json.loads(await ws.recv())  # config-bericht
+        state["ws"], state["connected"] = ws, True
+        state["closed_by_server"] = asyncio.Event()
+        state["recv"] = asyncio.create_task(receiver(ws))
+        return first
+
+    async def send_frame(frame: bytes):
+        n = len(frame) - 1
+        frames_kept.append((pos["offset"], frame, n))
+        pos["offset"] += n
+        if state["connected"]:
+            try:
+                await state["ws"].send(frame)
+                pos["sent"] = pos["offset"]
+            except websockets.ConnectionClosed:
+                state["connected"] = False
+        keep_from = pos["sent"] - RESEND_RETAIN_BYTES
+        while frames_kept and frames_kept[0][0] + frames_kept[0][2] < keep_from:
+            frames_kept.pop(0)
+
+    async def drop_and_reconnect():
+        ws = state["ws"]
+        state["connected"] = False
+        events.append({"drop_at_wall": round(time.monotonic() - t0_holder["t0"], 2)})
+        try:
+            ws.transport.abort()  # hard weg, geen close-frame (netwerkstoring)
+        except Exception:
+            await ws.close()
+        await asyncio.sleep(drop_for_s)
+        cfg_msg = await connect(resume=True)
+        received = int(cfg_msg.get("received_bytes", 0))
+        oldest = frames_kept[0][0] if frames_kept else pos["offset"]
+        if received < oldest:
+            errors.append(f"herverbinding: server mist {received}..{oldest} en dat zit niet meer in de buffer")
+        resent = 0
+        for off, frame, n in list(frames_kept):
+            if off + n <= received:
+                continue
+            if off < received:
+                skip = (received - off) & ~1
+                frame = frame[:1] + frame[1 + skip:]
+            await state["ws"].send(frame)
+            resent += len(frame) - 1
+        pos["sent"] = pos["offset"]
+        events.append({"reconnected": cfg_msg.get("resumed"), "received_bytes": received,
+                       "resent_s": round(resent / (SR * 2), 2)})
+        if not cfg_msg.get("resumed"):
+            errors.append(f"herverbinding niet als hervatting bevestigd: {cfg_msg}")
+
+    await connect(resume=False)
+    await start_evt.wait()
+    t0 = t0_holder["t0"]
+    if client_gate:
+        frames = [bytes([flag]) + data for flag, data in client_gate_frames(pcm, client_gate)]
+        per_batch = max(1, int(SR * chunk_ms / 1000 / GATE_FRAME_SAMPLES))
+        batch_dur = per_batch * GATE_FRAME_SAMPLES / SR
+    else:
+        step = int(SR * 2 * chunk_ms / 1000)
+        frames = [b"\x01" + pcm[off:off + step] for off in range(0, len(pcm), step)]  # vlag 1 = naar ASR
+        per_batch, batch_dur = 1, chunk_ms / 1000
+    reconnect_task = None
+    for b, i in enumerate(range(0, len(frames), per_batch)):
+        audio_t = b * batch_dur
+        target = t0 + audio_t / speed
+        delay = target - time.monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if drop_at_s is not None and reconnect_task is None and audio_t >= drop_at_s:
+            reconnect_task = asyncio.create_task(drop_and_reconnect())
+            await asyncio.sleep(0)
+        for frame in frames[i:i + per_batch]:
+            await send_frame(frame)
+    if reconnect_task is not None:
+        await reconnect_task
+    await state["ws"].send(b"")  # leeg bericht = Stop (zie audio_processor.process_audio)
+    try:
+        await asyncio.wait_for(got_ready.wait(), timeout=stop_timeout)
+    except asyncio.TimeoutError:
+        errors.append(f"geen ready_to_stop binnen {stop_timeout}s na Stop")
+    # Zoals de browser: niet zelf sluiten, de server hoort dat na ready_to_stop te doen.
+    try:
+        await asyncio.wait_for(state["closed_by_server"].wait(), timeout=15)
+    except asyncio.TimeoutError:
+        errors.append("server sloot de verbinding niet na ready_to_stop (geen opruiming/automatisch Ververs)")
+        await state["ws"].close()
+    try:
+        await asyncio.wait_for(state["recv"], timeout=10)
+    except Exception:
+        pass
+    return {"messages": messages, "errors": errors, "events": events,
+            "sent_pcm_bytes": pos["offset"]}
 
 
 async def wait_auto_refresh(server: str, session_id: str, start_timeout_s: float = 20.0,
@@ -214,7 +294,8 @@ async def wait_auto_refresh(server: str, session_id: str, start_timeout_s: float
 
 async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_refresh: bool,
                        out_dir: Path, client_gate: float | None = None,
-                       server_log: str | None = None) -> dict:
+                       server_log: str | None = None,
+                       drop_at_s: float | None = None, drop_for_s: float = 0.0) -> dict:
     sdir = SCENARIOS / name
     ref = json.loads((sdir / "reference.json").read_text(encoding="utf-8"))
     session_id = str(uuid.uuid4())
@@ -226,7 +307,8 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
     tasks = {
         ch: asyncio.create_task(stream_channel(
             ws_base, session_id, ch, cfg, read_pcm(sdir / f"{ch}.wav"), start_evt, t0_holder,
-            speed, chunk_ms, stop_timeout=180 + ref["duration_ms"] / 1000, client_gate=client_gate))
+            speed, chunk_ms, stop_timeout=180 + ref["duration_ms"] / 1000, client_gate=client_gate,
+            drop_at_s=drop_at_s, drop_for_s=drop_for_s))
         for ch, cfg in ref["channels"].items()
     }
     await asyncio.sleep(2.0)  # alle kanalen verbonden voor de gezamenlijke start
@@ -245,6 +327,8 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
 
     result = {"scenario": name, "session_id": session_id, "wall_s": round(wall, 1),
               "errors": {ch: s["errors"] for ch, s in streamed.items() if s["errors"]}, "paths": {}}
+    if drop_at_s is not None:
+        result["connection_events"] = {ch: s.get("events") for ch, s in streamed.items()}
 
     # Sinds 2026-11-18 draait Ververs automatisch na Stop (server). Wacht daarop, dan
     # het incrementele transcript (bewaard vóór de refresh) en het definitieve lezen.
@@ -263,6 +347,14 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
             q = urlencode({'channel_id': ch, 'version': 'incremental'})
             data = http_json("GET", f"{server}/sessions/{session_id}/transcript?{q}")
             incremental[ch] = data.get("segments", [])
+            # Audio compleet? De WAV moet precies alles bevatten wat de client verstuurde --
+            # ook na een storing (audio is het bewijs; 2026-11-18).
+            sent_ms = streamed.get(ch, {}).get("sent_pcm_bytes", 0) / (SR * 2) * 1000
+            wav_ms = data.get("duration_ms") or 0
+            result.setdefault("wav_vs_sent_ms", {})[ch] = (round(wav_ms), round(sent_ms))
+            if sent_ms and abs(wav_ms - sent_ms) > 100:
+                result["errors"].setdefault(ch, []).append(
+                    f"WAV {wav_ms / 1000:.2f}s != verstuurd {sent_ms / 1000:.2f}s (audio ontbreekt of dubbel)")
         except Exception as e:
             result["errors"].setdefault(ch, []).append(f"transcript ophalen: {e}")
             incremental[ch] = []
@@ -406,6 +498,10 @@ def main() -> int:
                     help="serverlog om foutpatronen in te tellen (leeg = overslaan)")
     ap.add_argument("--client-gate", type=float, default=None,
                     help="boots de browser-gate na met deze RMS-drempel (bv. 0.015); standaard altijd open")
+    ap.add_argument("--drop-at", type=float, default=None,
+                    help="laat de verbinding op deze audiotijd (s) hard wegvallen, zoals een netwerkstoring")
+    ap.add_argument("--drop-for", type=float, default=20.0,
+                    help="duur van de storing (s); daarna opnieuw verbinden met resume=1 en nasturen")
     args = ap.parse_args()
 
     try:
@@ -426,7 +522,8 @@ def main() -> int:
         try:
             results.append(asyncio.run(run_scenario(name, args.server, args.speed, args.chunk_ms,
                                                     not args.no_refresh, out_dir, args.client_gate,
-                                                    args.server_log or None)))
+                                                    args.server_log or None,
+                                                    args.drop_at, args.drop_for)))
         except Exception as e:
             results.append({"scenario": name, "errors": {"_run": [f"{type(e).__name__}: {e}"]}, "paths": {}})
 

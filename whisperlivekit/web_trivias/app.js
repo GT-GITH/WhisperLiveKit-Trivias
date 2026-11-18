@@ -637,7 +637,8 @@ async function waitForFinalTranscript(sessionId) {
         return;
       }
       // Niet gestart (bv. automatisch Ververs uitgeschakeld op de server).
-      if (!seenRunning && Date.now() - t0 > 30000) { setAsrStatus("Klaar"); return; }
+      // (Zolang er na een storing nog audio verstuurd moet worden, blijven wachten.)
+      if (!seenRunning && drainingLinks.size === 0 && Date.now() - t0 > 30000) { setAsrStatus("Klaar"); return; }
       await new Promise(r => setTimeout(r, 2000));
     }
   } finally {
@@ -901,7 +902,7 @@ function buildWebSocketUrl(sessionId, channelId, cfg) {
   return `${proto}//${location.host}/ws?${params}`;
 }
 
-async function openAudioStream(ws, cfg, useWorklet) {
+async function openAudioStream(link, cfg, useWorklet) {
   // AGC/echo-cancellation/noise-suppression expliciet uit: deze normaliseren volume
   // en vervormen het signaal, wat zowel de cross-kanaal RMS-arbitrage ondermijnt
   // (lek wordt opgepompt richting normaal niveau) als de ruwe audio-integriteit aantast.
@@ -932,15 +933,16 @@ async function openAudioStream(ws, cfg, useWorklet) {
     recorderWorker = new Worker("/web/recorder_worker.js");
     recorderWorker.postMessage({ command: "init", config: { sampleRate: audioContext.sampleRate } });
     recorderWorker.onmessage = e => {
-      if (ws.readyState !== WebSocket.OPEN) return;
       // Frame: [1 byte gate-vlag][s16le PCM]. Audio wordt altijd verstuurd —
       // de vlag bepaalt alleen of de server dit fragment naar ASR doorlaat,
       // nooit of het wordt opgenomen (WAV blijft altijd compleet).
+      // Verbinding weg? Dan NIET weggooien (voorheen: return), maar bufferen en na
+      // herstel nasturen -- zie sendAudioFrame() (plan fase 2, 2026-11-18).
       const pcm = new Uint8Array(e.data.buffer);
       const framed = new Uint8Array(pcm.length + 1);
       framed[0] = e.data.gateOpen ? 1 : 0;
       framed.set(pcm, 1);
-      ws.send(framed.buffer);
+      sendAudioFrame(link, framed, pcm.length);
     };
 
     // Noise gate instellen op de worklet
@@ -974,7 +976,9 @@ async function openAudioStream(ws, cfg, useWorklet) {
   } else {
     mediaRecorder = new MediaRecorder(stream);
     mediaRecorder.ondataavailable = e => {
-      if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) ws.send(e.data);
+      // WebM-modus (alleen zonder --pcm-input): geen buffering/hervatten mogelijk, de
+      // server decodeert één doorlopende WebM-stroom.
+      if (e.data.size > 0 && link.ws && link.ws.readyState === WebSocket.OPEN) link.ws.send(e.data);
     };
     mediaRecorder.start(250);
   }
@@ -986,6 +990,8 @@ function cleanupChannelConnection(uid) {
   const conn = activeConnections.get(uid);
   if (!conn) return;
 
+  // Loopt er een herverbind-poging en hoeft deze link niet meer na te sturen: stoppen.
+  if (!drainingLinks.has(uid)) clearTimeout(conn.timer);
   clearInterval(conn.watchdog);
 
   if (conn.recorderWorker) {
@@ -1015,22 +1021,57 @@ function updateConnectionStatus() {
   setConnectionStatus(connected, total);
 }
 
-async function startChannelConnection(cfg, sessionId) {
-  const channelId = getChannelId(cfg);
-  const wsUrl = buildWebSocketUrl(sessionId, channelId, cfg);
-  const ws = new WebSocket(wsUrl);
-
-  // Wacht op config-bericht van server
-  const configData = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error(`WebSocket timeout (${channelId})`)), 8000);
+// Wacht op het config-bericht van de server. Weigert met .code = close-code (bv. 4404:
+// sessie niet te hervatten) als de verbinding vóór het config-bericht sluit.
+function waitForConfig(ws, channelId, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`WebSocket timeout (${channelId})`)), timeoutMs);
     ws.onerror = () => { clearTimeout(timeout); reject(new Error(`WebSocket fout (${channelId})`)); };
-    ws.onclose = () => { clearTimeout(timeout); reject(new Error(`WebSocket gesloten (${channelId})`)); };
+    ws.onclose = (ev) => {
+      clearTimeout(timeout);
+      const err = new Error(`WebSocket gesloten (${channelId})`);
+      err.code = ev.code;
+      reject(err);
+    };
     ws.onmessage = e => {
       let data;
       try { data = JSON.parse(e.data); } catch { return; }
       if (data.type === "config") { clearTimeout(timeout); resolve(data); }
     };
   });
+}
+
+function attachLinkHandlers(link) {
+  const ws = link.ws;
+  // Transcript-messagehandler instellen
+  ws.onmessage = e => {
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+    handleChannelMessage(data, link.channelId);
+  };
+  ws.onclose = (event) => {
+    // [DIAG] "verdwenen helft opname"-onderzoek (2026-07-19): code/reason/wasClean van
+    // de onderliggende WS-close loggen, om vast te stellen OF en WAAROM de verbinding brak.
+    console.log(
+      "[DIAG][WS_CLOSE]", link.channelId,
+      "code=" + event.code, "reason=" + JSON.stringify(event.reason),
+      "wasClean=" + event.wasClean, "isRecording=" + isRecording, "isPaused=" + isPaused
+    );
+    if (link.ws !== ws) return; // oude verbinding die al vervangen is
+    onLinkClosed(link, event);
+  };
+  ws.onerror = () => {
+    console.log("[DIAG][WS_ERROR]", link.channelId, "isRecording=" + isRecording, "isPaused=" + isPaused);
+  };
+}
+
+async function startChannelConnection(cfg, sessionId) {
+  const channelId = getChannelId(cfg);
+  const wsUrl = buildWebSocketUrl(sessionId, channelId, cfg);
+  const ws = new WebSocket(wsUrl);
+
+  // Wacht op config-bericht van server
+  const configData = await waitForConfig(ws, channelId);
 
   // Sla audio-modus op (van eerste kanaal)
   if (activeConnections.size === 0) {
@@ -1038,37 +1079,233 @@ async function startChannelConnection(cfg, sessionId) {
     setModeStatus(serverUseAudioWorklet ? "AudioWorklet (PCM)" : "MediaRecorder (WebM)");
   }
 
-  // Transcript-messagehandler instellen
-  ws.onmessage = e => {
-    let data;
-    try { data = JSON.parse(e.data); } catch { return; }
-    handleChannelMessage(data, channelId);
-  };
-
-  ws.onclose = (event) => {
-    // [DIAG] "verdwenen helft opname"-onderzoek (2026-07-19): serverlog bewees een
-    // stille, onverklaarde 4,5-minuten-stilstand gevolgd door een gloednieuwe sessie
-    // (nieuwe session_id, WAV/vensters herbeginnen bij 0) middenin een pauzeloze
-    // opname -- zonder enige exception. Dit logt code/reason/wasClean van de
-    // onderliggende WS-close, om de volgende keer vast te stellen OF en WAAROM de
-    // verbinding zelf brak (i.p.v. alleen te zien dat de server niets meer ontving).
-    console.log(
-      "[DIAG][WS_CLOSE]", channelId,
-      "code=" + event.code, "reason=" + JSON.stringify(event.reason),
-      "wasClean=" + event.wasClean, "isRecording=" + isRecording, "isPaused=" + isPaused
-    );
-    handleChannelClose(cfg.uid, channelId);
-  };
-  ws.onerror = () => {
-    console.log("[DIAG][WS_ERROR]", channelId, "isRecording=" + isRecording, "isPaused=" + isPaused);
-  };
+  // "link": de verbinding van dit kanaal, met vervangbare ws (opnieuw verbinden) en de
+  // audiobuffer voor nasturen. Staat zelf in activeConnections, zodat bestaande code die
+  // conn.ws gebruikt (Stop, Pauze, keep-alive, Ververs) altijd de actuele ws pakt.
+  const link = createLink(ws, cfg, channelId, sessionId);
+  attachLinkHandlers(link);
 
   // Audio openen
-  const audioResources = await openAudioStream(ws, cfg, serverUseAudioWorklet);
+  const audioResources = await openAudioStream(link, cfg, serverUseAudioWorklet);
+  Object.assign(link, audioResources);
 
-  activeConnections.set(cfg.uid, { ws, channelId, ...audioResources });
+  activeConnections.set(cfg.uid, link);
   updateConnectionStatus();
 }
+
+// ======================================================================
+// Verbindingsverlies (plan fase 2, 2026-11-18): melding, audio bufferen in het geheugen
+// en automatisch opnieuw verbinden op dezelfde sessie (resume=1). Doel: geen audio kwijt
+// bij een wifi-hapering -- de audio is het bewijs.
+//   - Elk audioframe krijgt een positie (bytes s16le sinds de start van dit kanaal).
+//   - Verbinding weg: frames gaan in de buffer (max BACKLOG_MAX_BYTES).
+//   - Na herverbinding meldt de server hoeveel audio hij echt ontving (received_bytes);
+//     de browser stuurt precies vanaf daar opnieuw. Daarom blijven ook de laatste
+//     RESEND_RETAIN_BYTES aan verstuurde audio bewaard: wat vlak voor de storing
+//     "verstuurd" was, kan onderweg verloren zijn gegaan.
+// Alleen in PCM-modus (AudioWorklet); in WebM-modus kan een stroom niet hervat worden.
+// ======================================================================
+const BYTES_PER_SEC_PCM = 32000;                        // 16 kHz s16le mono
+const RESEND_RETAIN_BYTES = 120 * BYTES_PER_SEC_PCM;    // 2 min verstuurde audio bewaren
+const BACKLOG_MAX_BYTES = 30 * 60 * BYTES_PER_SEC_PCM;  // max 30 min onverstuurde audio
+const drainingLinks = new Map(); // gestopt tijdens een storing: nog audio na te sturen
+
+function createLink(ws, cfg, channelId, sessionId) {
+  return {
+    ws, cfg, channelId, sessionId, uid: cfg.uid,
+    frames: [],        // [{off, data: Uint8Array (vlag+PCM), len: PCM-bytes}]
+    offset: 0,         // positie (PCM-bytes) na het laatst aangemaakte frame
+    sentOffset: 0,     // tot hier aan een open ws aangeboden
+    reconnecting: false, attempt: 0, closedAt: null, timer: null,
+    droppedBytes: 0,   // audio die niet bewaard kon worden (buffer vol)
+    failed: false,     // server kan de sessie niet meer hervatten
+    stopRequested: false,
+  };
+}
+
+function sendAudioFrame(link, framed, payloadLen) {
+  if (link.ws && link.ws.readyState === WebSocket.OPEN && !link.reconnecting) {
+    link.frames.push({ off: link.offset, data: framed, len: payloadLen });
+    link.offset += payloadLen;
+    try { link.ws.send(framed); link.sentOffset = link.offset; } catch (e) {}
+    trimSentFrames(link);
+    return;
+  }
+  if (link.failed) { link.droppedBytes += payloadLen; return; }
+  if (link.offset - link.sentOffset + payloadLen > BACKLOG_MAX_BYTES) {
+    // Buffer vol: dit stuk audio gaat verloren. Positie NIET ophogen, zodat de posities
+    // aansluitend blijven op wat de server krijgt; het gat wordt gemeld.
+    link.droppedBytes += payloadLen;
+    return;
+  }
+  link.frames.push({ off: link.offset, data: framed, len: payloadLen });
+  link.offset += payloadLen;
+}
+
+function trimSentFrames(link) {
+  const keepFrom = link.sentOffset - RESEND_RETAIN_BYTES;
+  let i = 0;
+  while (i < link.frames.length && link.frames[i].off + link.frames[i].len < keepFrom) i++;
+  if (i > 0) link.frames.splice(0, i);
+}
+
+// Stuur alles vanaf receivedBytes (wat de server al heeft) opnieuw.
+function resendFrom(link, receivedBytes) {
+  let resent = 0;
+  const oldest = link.frames.length ? link.frames[0].off : link.offset;
+  if (receivedBytes < oldest) {
+    // Server mist audio die niet meer in de buffer zit: echt verlies, melden.
+    link.droppedBytes += oldest - receivedBytes;
+  }
+  for (const f of link.frames) {
+    const end = f.off + f.len;
+    if (end <= receivedBytes) continue;
+    let data = f.data;
+    if (f.off < receivedBytes) {
+      const skip = (receivedBytes - f.off) & ~1; // hele samples
+      const payload = f.data.subarray(1 + skip);
+      data = new Uint8Array(payload.length + 1);
+      data[0] = f.data[0];
+      data.set(payload, 1);
+    }
+    try { link.ws.send(data); } catch (e) {}
+    resent += data.length - 1;
+  }
+  link.sentOffset = link.offset;
+  trimSentFrames(link);
+  return resent;
+}
+
+function onLinkClosed(link, event) {
+  const live = activeConnections.get(link.uid) === link || drainingLinks.has(link.uid);
+  // Normale afsluiting (na Stop sluit de server zelf, zie TriviasServer) of WebM-modus.
+  if (!live || (!isRecording && !link.stopRequested) || !serverUseAudioWorklet || link.stopDelivered) {
+    handleChannelClose(link.uid, link.channelId);
+    return;
+  }
+  if (event && event.code === 4404) { markLinkFailed(link); return; }
+  if (link.reconnecting) return;
+  link.reconnecting = true;
+  link.closedAt = Date.now();
+  link.attempt = 0;
+  updateConnectionBanner();
+  scheduleReconnect(link);
+}
+
+function scheduleReconnect(link) {
+  const delay = Math.min(10000, 1000 * 2 ** link.attempt);
+  link.attempt++;
+  clearTimeout(link.timer);
+  link.timer = setTimeout(() => tryReconnect(link), delay);
+}
+
+async function tryReconnect(link) {
+  const live = activeConnections.get(link.uid) === link || drainingLinks.has(link.uid);
+  if (!live || link.failed) return;
+  const url = buildWebSocketUrl(link.sessionId, link.channelId, link.cfg) + "&resume=1";
+  let ws, cfgMsg;
+  try {
+    ws = new WebSocket(url);
+    cfgMsg = await waitForConfig(ws, link.channelId);
+  } catch (e) {
+    if (e.code === 4404) { markLinkFailed(link); return; }
+    try { ws && ws.close(); } catch (_) {}
+    updateConnectionBanner();
+    scheduleReconnect(link);
+    return;
+  }
+  link.ws = ws;
+  attachLinkHandlers(link);
+  const received = Number(cfgMsg.received_bytes || 0);
+  const resent = resendFrom(link, received);
+  const outageS = Math.round((Date.now() - link.closedAt) / 1000);
+  link.reconnecting = false;
+  link.attempt = 0;
+  console.log("[RECONNECT]", link.channelId, "storing", outageS, "s, nagestuurd",
+              (resent / BYTES_PER_SEC_PCM).toFixed(1), "s, server had", received, "bytes");
+  if (link.stopRequested) {
+    // Tijdens de storing op Stop gedrukt: nu alsnog afronden.
+    try { ws.send(new Blob([], { type: "audio/webm" })); } catch (_) {}
+    link.stopDelivered = true;
+    drainingLinks.delete(link.uid);
+  }
+  updateConnectionBanner({ restoredS: resent / BYTES_PER_SEC_PCM, outageS });
+}
+
+function markLinkFailed(link) {
+  link.failed = true;
+  link.reconnecting = false;
+  clearTimeout(link.timer);
+  drainingLinks.delete(link.uid);
+  updateConnectionBanner();
+}
+
+function anyLinkBuffering() {
+  const all = [...activeConnections.values(), ...drainingLinks.values()];
+  return all.some(l => l && l.frames && l.offset > l.sentOffset);
+}
+
+// --- Melding bovenaan het scherm ---
+let connectionBannerTimer = null;
+let connectionBannerHideTimer = null;
+
+function ensureConnectionBanner() {
+  let el = document.getElementById("connectionBanner");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "connectionBanner";
+    el.setAttribute("role", "alert");
+    el.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;padding:12px 16px;" +
+      "font-weight:600;font-size:15px;text-align:center;display:none;box-shadow:0 2px 6px rgba(0,0,0,.25)";
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function updateConnectionBanner(restored) {
+  const el = ensureConnectionBanner();
+  const links = [...activeConnections.values(), ...drainingLinks.values()].filter(l => l && l.frames);
+  const failed = links.filter(l => l.failed);
+  const down = links.filter(l => l.reconnecting);
+  const droppedS = links.reduce((s, l) => s + (l.droppedBytes || 0), 0) / BYTES_PER_SEC_PCM;
+  const lossNote = droppedS >= 0.5
+    ? ` LET OP: ${droppedS.toFixed(0)} s audio kon niet worden bewaard en ontbreekt in de opname.` : "";
+  clearTimeout(connectionBannerHideTimer);
+
+  if (failed.length) {
+    el.style.background = "#b00020"; el.style.color = "#fff";
+    el.textContent = "De verbinding is hersteld, maar de server kon deze sessie niet meer hervatten " +
+      "(langer dan 5 minuten onderbroken). Stop de opname; de audio tot de onderbreking is bewaard." + lossNote;
+    el.style.display = "block";
+  } else if (down.length) {
+    const since = Math.min(...down.map(l => l.closedAt));
+    const secs = Math.round((Date.now() - since) / 1000);
+    const bufS = Math.max(...down.map(l => (l.offset - l.sentOffset) / BYTES_PER_SEC_PCM));
+    el.style.background = "#b00020"; el.style.color = "#fff";
+    el.textContent = `Verbinding met de server verbroken (${secs} s). De audio wordt lokaal bewaard ` +
+      `(${bufS.toFixed(0)} s) en de verbinding wordt hersteld… Duurt dit langer, pauzeer dan het gehoor. ` +
+      `Sluit of ververs deze pagina niet.` + lossNote;
+    el.style.display = "block";
+    if (!connectionBannerTimer) connectionBannerTimer = setInterval(() => updateConnectionBanner(), 1000);
+    return;
+  } else if (restored) {
+    el.style.background = "#1b5e20"; el.style.color = "#fff";
+    el.textContent = `Verbinding hersteld na ${restored.outageS} s — ${restored.restoredS.toFixed(0)} s audio nagestuurd, ` +
+      `er ontbreekt niets.` + lossNote;
+    el.style.display = "block";
+    connectionBannerHideTimer = setTimeout(() => { el.style.display = "none"; }, lossNote ? 30000 : 8000);
+  } else {
+    el.style.display = "none";
+  }
+  if (connectionBannerTimer) { clearInterval(connectionBannerTimer); connectionBannerTimer = null; }
+}
+
+window.addEventListener("beforeunload", (e) => {
+  if (isRecording || anyLinkBuffering() || drainingLinks.size > 0) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
 
 function handleChannelClose(uid, channelId) {
   cleanupChannelConnection(uid);
@@ -1176,13 +1413,27 @@ async function stopRecording() {
   }
 
   for (const [uid, conn] of activeConnections.entries()) {
+    conn.stopRequested = true;
+    if (conn.reconnecting && conn.frames) {
+      // Stop tijdens een storing: microfoon stoppen, maar de link houden zodat de
+      // gebufferde audio na herstel alsnog verstuurd wordt, gevolgd door het einde-signaal
+      // (zie tryReconnect). Zonder herstel binnen 5 min sluit de server de sessie zelf af.
+      drainingLinks.set(uid, conn);
+      cleanupChannelConnection(uid);
+      continue;
+    }
     if (conn.ws?.readyState === WebSocket.OPEN) {
       try {
         const emptyBlob = new Blob([], { type: "audio/webm" });
         conn.ws.send(emptyBlob);
+        conn.stopDelivered = true;
       } catch (e) {}
     }
     cleanupChannelConnection(uid);
+  }
+  if (drainingLinks.size > 0) {
+    setAsrStatus("Opname gestopt — nog niet verstuurde audio wordt verzonden zodra de verbinding terug is.");
+    updateConnectionBanner();
   }
 
   setConnectionStatus(0, channelConfigs.length);
@@ -1211,14 +1462,15 @@ async function confirmAndStop() {
 
 function sendKeepAliveFrames() {
   for (const [, conn] of activeConnections.entries()) {
-    if (conn.ws?.readyState !== WebSocket.OPEN) continue;
     // Alleen relevant voor de PCM-worklet-modus; de WebM/MediaRecorder-fallback
     // gebruikt mediaRecorder.pause()/resume(), die geen los keep-alive-signaal nodig heeft.
     if (!serverUseAudioWorklet) continue;
     const framed = new Uint8Array(KEEP_ALIVE_SILENT_PCM.length + 1);
     framed[0] = 0; // gate dicht: puur keep-alive, nooit naar ASR
     framed.set(KEEP_ALIVE_SILENT_PCM, 1);
-    try { conn.ws.send(framed.buffer); } catch (e) {}
+    // Ook keep-alive-stilte komt in de WAV: via dezelfde weg als audio, zodat de
+    // posities voor het nasturen na een storing blijven kloppen.
+    sendAudioFrame(conn, framed, KEEP_ALIVE_SILENT_PCM.length);
   }
 }
 

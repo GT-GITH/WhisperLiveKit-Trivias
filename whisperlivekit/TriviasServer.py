@@ -230,6 +230,25 @@ class SessionManager:
         self._sessions[session_id] = meta
         self._persist(session_id)
 
+    def set_channel_connection(self, session_id: str, channel_id: str, state: str) -> None:
+        """Verbindingsstatus per kanaal (verbonden|onderbroken|afgesloten), met tijdstip en
+        een logboek van onderbrekingen -- vastleggen dat er een storing was, voor de
+        bewijsbaarheid en straks de zichtbare markering (plan fase 3)."""
+        self._hydrate(session_id)
+        meta = self._sessions.get(session_id, {"session_id": session_id})
+        now = datetime.utcnow().isoformat() + "Z"
+        conn = meta.setdefault("connection", {})
+        conn[channel_id] = {"state": state, "since": now}
+        if state == "onderbroken":
+            meta.setdefault("interruptions", []).append({"channel_id": channel_id, "from": now, "to": None})
+        elif state == "verbonden":
+            for it in reversed(meta.get("interruptions", [])):
+                if it.get("channel_id") == channel_id and it.get("to") is None:
+                    it["to"] = now
+                    break
+        self._sessions[session_id] = meta
+        self._persist(session_id)
+
     def all(self) -> Dict[str, Dict[str, Any]]:
         return self._sessions
 
@@ -955,6 +974,58 @@ _stop_requested: Dict[str, bool] = {}
 # Uitschakelaar (bv. voor tests die het incrementele pad zonder refresh willen zien).
 AUTO_REFRESH_AFTER_STOP = os.environ.get("TRIVIAS_AUTO_REFRESH", "1") != "0"
 
+# Verbindingsverlies (plan fase 2, 2026-11-18): bij een verbroken verbinding ZONDER Stop
+# blijft de AudioProcessor (WAV-writer, batch-boekhouding, live-decoder) bestaan en kan
+# de browser binnen RECONNECT_GRACE_S opnieuw aanhaken (resume=1) en de tussentijds
+# gebufferde audio nasturen -- naadloos in dezelfde WAV. Daarna: netjes afsluiten met
+# status "onderbroken" (hervatten na langere tijd = fase 3).
+RECONNECT_GRACE_S = float(os.environ.get("TRIVIAS_RECONNECT_GRACE_S", "300"))
+_detached_processors: Dict[tuple, Dict[str, Any]] = {}
+# Kanalen met een open WebSocket: de browser merkt een storing vaak eerder dan de server
+# (die pas na de ping-timeout). Een resume=1 neemt dan de nog "levende" oude verbinding
+# over in plaats van geweigerd te worden.
+_attached_connections: Dict[tuple, Dict[str, Any]] = {}
+
+
+def _received_pcm_bytes(proc) -> int:
+    """Hoeveel audio (s16le-bytes, zonder vlag-bytes) deze processor tot nu toe ontving:
+    verwerkt + nog in de buffer. Bij herverbinding stuurt de client precies vanaf hier
+    opnieuw, zodat audio die vlak voor de storing onderweg verloren ging alsnog aankomt."""
+    return int(getattr(proc, "total_pcm_samples", 0)) * int(getattr(proc, "bytes_per_sample", 2)) \
+        + len(getattr(proc, "pcm_buffer", b"") or b"")
+
+
+async def _close_detached_after_grace(key: tuple) -> None:
+    sid, ch = key
+    try:
+        await asyncio.sleep(RECONNECT_GRACE_S)
+    except asyncio.CancelledError:
+        return  # opnieuw aangehaakt
+    entry = _detached_processors.pop(key, None)
+    if entry is None:
+        return
+    proc = entry["processor"]
+    logger.warning(
+        f"[SESSION] {sid}/{ch}: geen herverbinding binnen {RECONNECT_GRACE_S:.0f}s -> "
+        f"afsluiten, status 'onderbroken' (hervatten later mogelijk, fase 3)"
+    )
+    try:
+        # Zelfde afronding als bij Stop: laatste batch-venster, WAV sluiten.
+        await proc.process_audio(None)
+    except Exception as e:
+        logger.warning(f"[SESSION] {sid}/{ch}: afronden na onderbreking mislukt: {e}")
+    try:
+        await proc.cleanup()
+    except Exception as e:
+        logger.warning(f"[SESSION] {sid}/{ch}: cleanup na onderbreking mislukt: {e}")
+    active = _active_ws_channels.get(sid, set())
+    active.discard(ch)
+    if not active:
+        _active_ws_channels.pop(sid, None)
+        # Hadden de andere kanalen bewust gestopt, dan nu alsnog het definitieve transcript.
+        if _stop_requested.pop(sid, False) and AUTO_REFRESH_AFTER_STOP:
+            asyncio.create_task(_auto_refresh_after_stop(sid))
+
 
 @app.post("/sessions/{session_id}/refresh_transcript")
 async def refresh_transcript(session_id: str):
@@ -1330,8 +1401,13 @@ async def websocket_endpoint(
     lang2: Optional[str] = Query(default=None),
     gate_framed: bool = Query(default=False),
     gate_threshold: Optional[float] = Query(default=None),
+    resume: bool = Query(default=False),
 ):
     """Hoofdstream voor audio ÔåÆ ASR (exactzelfde kern als basic_server, maar met session-metadata).
+
+    resume=1: opnieuw aanhaken na een verbroken verbinding (binnen RECONNECT_GRACE_S):
+    dezelfde AudioProcessor/WAV gaat verder; de client stuurt eerst de tussentijds
+    gebufferde audio na. Niet (meer) te hervatten -> close-code 4404.
 
     gate_framed=1: elk binair audio-bericht begint met 1 vlag-byte (0x00/0x01) dat aangeeft
     of dit fragment naar ASR mag (cross-kanaal anti-lek, alleen gebruikt door web_trivias/app.js).
@@ -1355,28 +1431,75 @@ async def websocket_endpoint(
         language2=lang2,
     )
 
-    #audio_processor = AudioProcessor(transcription_engine=transcription_engine)
-    audio_processor = AudioProcessor(
-        transcription_engine=transcription_engine,
-        session_id=sid,
-        channel_id=channel_id or "default",
-        language=lang,
-        language2=lang2,
-        gate_framed=gate_framed,
-        gate_threshold=gate_threshold,
-    )
+    key = (sid, channel_id or "default")
+    reattached = False
+    if resume:
+        old = _attached_connections.get(key)
+        if old is not None:
+            # Server dacht dat de oude verbinding nog leefde: overnemen. Oude lus beëindigen
+            # en wachten tot die klaar is, zodat de ontvangen-teller stabiel is.
+            old["superseded"] = True
+            try:
+                # half-dode TCP-verbinding: niet eindeloos op de close wachten
+                await asyncio.wait_for(
+                    old["websocket"].close(code=4000, reason="overgenomen door nieuwe verbinding"), timeout=5.0)
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(old["ended"].wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"[SESSION] {sid}/{key[1]}: oude verbinding stopte niet binnen 10s")
+            audio_processor = old["processor"]
+            reattached = True
+        else:
+            entry = _detached_processors.pop(key, None)
+            if entry is None:
+                await websocket.accept()
+                logger.warning(f"[SESSION] {sid}/{key[1]}: resume gevraagd maar niets om aan te haken")
+                await websocket.close(code=4404, reason="sessie niet (meer) te hervatten")
+                return
+            entry["timer"].cancel()
+            audio_processor = entry["processor"]
+            reattached = True
+    else:
+        #audio_processor = AudioProcessor(transcription_engine=transcription_engine)
+        audio_processor = AudioProcessor(
+            transcription_engine=transcription_engine,
+            session_id=sid,
+            channel_id=channel_id or "default",
+            language=lang,
+            language2=lang2,
+            gate_framed=gate_framed,
+            gate_threshold=gate_threshold,
+        )
 
     await websocket.accept()
-    logger.info(f"WebSocket connection opened for session {sid}.")
+    logger.info(f"WebSocket connection opened for session {sid}{' (opnieuw aangehaakt)' if reattached else ''}.")
     _active_ws_channels.setdefault(sid, set()).add(channel_id or "default")
+    conn_entry = {"processor": audio_processor, "websocket": websocket,
+                  "superseded": False, "ended": asyncio.Event()}
+    _attached_connections[key] = conn_entry
+    if reattached:
+        session_manager.set_channel_connection(sid, key[1], "verbonden")
 
-    # Config naar client sturen (zelfde semantics als basic_server)
+    # Config naar client sturen (zelfde semantics als basic_server). Bij hervatten ook
+    # hoeveel audio er al binnen is, zodat de client precies vanaf daar opnieuw stuurt.
     try:
-        await websocket.send_json({"type": "config", "useAudioWorklet": bool(args.pcm_input)})
+        cfg_msg = {"type": "config", "useAudioWorklet": bool(args.pcm_input), "resumed": reattached}
+        if reattached:
+            cfg_msg["received_bytes"] = _received_pcm_bytes(audio_processor)
+            logger.info(f"[SESSION] {sid}/{key[1]}: hervat, al ontvangen {cfg_msg['received_bytes']} bytes")
+        await websocket.send_json(cfg_msg)
     except Exception as e:
         logger.warning(f"Failed to send config to client: {e}")
 
-    results_generator = await audio_processor.create_tasks()
+    if reattached:
+        # De verwerking liep door; alleen een nieuwe resultatenstroom naar deze WebSocket.
+        # Volledige stand opnieuw sturen (niet alleen wijzigingen).
+        audio_processor.last_response_content = None
+        results_generator = audio_processor.results_formatter()
+    else:
+        results_generator = await audio_processor.create_tasks()
     websocket_task = asyncio.create_task(handle_websocket_results(websocket, results_generator))
 
     # Registreer WAV zodra die aangemaakt wordt (binnen 0.5s na eerste audio)
@@ -1386,8 +1509,9 @@ async def websocket_endpoint(
             if getattr(audio_processor, "_wav_path", None):
                 register_wav_path(sid, channel_id or "default", str(audio_processor._wav_path))
                 return
-    asyncio.create_task(_watch_wav_path())
-    
+    if not reattached:
+        asyncio.create_task(_watch_wav_path())
+
     try:
         while True:
             message = await websocket.receive_bytes()
@@ -1421,11 +1545,34 @@ async def websocket_endpoint(
         
         logger.info(f"Cleaning up WebSocket endpoint for session {sid}...")
 
+        if _attached_connections.get(key) is conn_entry:
+            _attached_connections.pop(key, None)
+        conn_entry["ended"].set()
+        if conn_entry["superseded"]:
+            # Een nieuwe verbinding (resume=1) heeft deze processor overgenomen: niets
+            # opruimen, de verwerking gaat daar verder.
+            logger.info(f"[SESSION] {sid}/{key[1]}: oude verbinding overgenomen door herverbinding")
+            return
+
         # Bewuste Stop (client stuurde het einde-signaal -> is_stopping) of storing?
         # Uitlezen vóór cleanup(), die is_stopping zelf ook zet.
         deliberate_stop = bool(getattr(audio_processor, "is_stopping", False))
         if deliberate_stop:
             _stop_requested[sid] = True
+        elif RECONNECT_GRACE_S > 0:
+            # Storing: NIET opruimen. Processor blijft draaien (WAV-writer open) en wacht
+            # op herverbinding; de browser buffert intussen de audio (plan fase 2).
+            _detached_processors[key] = {
+                "processor": audio_processor,
+                "timer": asyncio.create_task(_close_detached_after_grace(key)),
+                "detached_at": time.monotonic(),
+            }
+            session_manager.set_channel_connection(sid, key[1], "onderbroken")
+            logger.warning(
+                f"[SESSION] {sid}/{key[1]}: verbinding verbroken zonder Stop -> onderbroken, "
+                f"wacht max {RECONNECT_GRACE_S:.0f}s op herverbinding (resume=1)"
+            )
+            return
 
         await audio_processor.cleanup()
         logger.info(f"WebSocket endpoint cleaned up successfully for session {sid}.")
@@ -1457,9 +1604,11 @@ async def websocket_ws(
     lang2: Optional[str] = Query(default=None),
     gate_framed: bool = Query(default=False),
     gate_threshold: Optional[float] = Query(default=None),
+    resume: bool = Query(default=False),
 ):
     """Compat-endpoint voor clients die nog /ws gebruiken."""
     return await websocket_endpoint(
+        resume=resume,
         websocket=websocket,
         session_id=session_id,
         source_system=source_system,
