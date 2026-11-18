@@ -42,6 +42,11 @@ MAX_TEXT_TOKENS_PER_S = 8
 #   TRIVIAS_LIVE_REWIND_FRAMES=<n>  drempel in frames (leeg = config.rewind_threshold)
 LIVE_REWIND_MODE = os.environ.get("TRIVIAS_LIVE_REWIND", "reset")
 LIVE_REWIND_FRAMES = int(os.environ.get("TRIVIAS_LIVE_REWIND_FRAMES", "0") or 0)
+# A/B live-haperen (2026-11-18): "geen spraak, stop" vuurde 345 van 353 keer midden in
+# echte spraak (yt4/yt2, p mediaan 0.63-0.65 bij drempel 0.5). Leeg = config.nonspeech_prob
+# (0.5, ongewijzigd); >1.0 = uit (de VAC filtert stilte al voor de decoder).
+LIVE_NONSPEECH_PROB = (float(os.environ["TRIVIAS_LIVE_NONSPEECH_PROB"])
+                       if os.environ.get("TRIVIAS_LIVE_NONSPEECH_PROB") else None)
 
 # [DIAG][GPU] (2026-08-23) onderzoek naar sporadisch trage encoder-aanroepen
 # (zie [DIAG][LIVE_PERF] hieronder): op verzoek rechtstreeks in het serverlog
@@ -672,7 +677,7 @@ class AlignAtt:
             if new_segment and self.tokenizer.no_speech is not None:
                 probs_at_sot = logits[:, self.state.prompt_sot_index, :].float().softmax(dim=-1)
                 no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
-                if no_speech_probs[0] > self.cfg.nonspeech_prob:
+                if no_speech_probs[0] > (LIVE_NONSPEECH_PROB if LIVE_NONSPEECH_PROB is not None else self.cfg.nonspeech_prob):
                     # [DIAG][LIVE_NOSPEECH] (2026-11-15, live-stilstand bij muziek): puur
                     # observerend -- welke kans, over hoeveel buffer-audio, met welke drempel.
                     logger.info(

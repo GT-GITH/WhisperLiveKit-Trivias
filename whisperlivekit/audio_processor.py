@@ -326,11 +326,16 @@ class AudioProcessor:
         self.vac: Optional[FixedVADIterator] = None
         
         if self.args.vac:
+            # A/B-schakelaar live-haperen (2026-11-18): standaard 0.5 (ongewijzigd). Silero
+            # markeerde korte spraak boven geroezemoes als 100% stilte -> niets naar live
+            # (yt4 215-230 s, yt2 205-225 s). LET OP: de VAC stuurt ook het sluiten van de
+            # batch-vensters aan, dus een andere drempel raakt ook de definitieve tekst.
+            vac_threshold = float(os.environ.get("TRIVIAS_VAC_THRESHOLD", "0.5"))
             if models.vac_session is not None:
                 vac_model = OnnxWrapper(session=models.vac_session)
-                self.vac = FixedVADIterator(vac_model)
+                self.vac = FixedVADIterator(vac_model, threshold=vac_threshold)
             else:
-                self.vac = FixedVADIterator(load_jit_vad())    
+                self.vac = FixedVADIterator(load_jit_vad(), threshold=vac_threshold)
         self.ffmpeg_manager: Optional[FFmpegManager] = None
         self.ffmpeg_reader_task: Optional[asyncio.Task] = None
         self._ffmpeg_error: Optional[str] = None
