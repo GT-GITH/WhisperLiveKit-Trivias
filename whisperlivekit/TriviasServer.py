@@ -1299,6 +1299,14 @@ async def handle_websocket_results(websocket: WebSocket, results_generator):
             await websocket.send_json(response.to_dict())
         logger.info("Results generator finished. Sending 'ready_to_stop' to client.")
         await websocket.send_json({"type": "ready_to_stop"})
+        # De browser sluit de WebSocket na Stop niet zelf (app.js cleanupChannelConnection
+        # laat 'm open voor de laatste updates). Zonder deze close bleef de endpoint-lus
+        # eeuwig wachten -> geen opruiming en geen automatisch Ververs (live-test 2026-11-18;
+        # de e2e-runner sloot wel zelf, daardoor viel het daar niet op).
+        try:
+            await websocket.close(code=1000, reason="stopped")
+        except Exception:
+            pass
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected while handling results (client closed connection?).")
     except Exception as e:
@@ -1392,6 +1400,9 @@ async def websocket_endpoint(
             logger.error(f"Unexpected KeyError in websocket_endpoint: {e}", exc_info=True)
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected by client during main loop (session_id={sid}).")
+    except RuntimeError as e:
+        # Server sloot de verbinding zelf na ready_to_stop (zie handle_websocket_results).
+        logger.info(f"WebSocket gesloten na Stop (session_id={sid}): {e}")
     except Exception as e:
         logger.error(f"Unexpected error in websocket_endpoint main loop: {e}", exc_info=True)
     finally:
