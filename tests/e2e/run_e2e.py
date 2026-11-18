@@ -48,6 +48,9 @@ SERVER_LOG_ERROR_PATTERNS = {
     "live-abort": "[LIVE][ABORT]",
     "lusbeveiliging": "[Loop Detection]",
     "transcriptie-exception": "Exception in transcription_processor",
+    # batch-venster mislukt (bv. CUDA OOM) -- gemist op 2026-11-18 omdat dit niet telde
+    "batch-fout": "[BATCH][WORKER] error",
+    "batch-venster-definitief-mislukt": "[BATCH][FAILED]",
 }
 # Geen fouten, wel meetwaarden voor het live-buffer-onderzoek (2026-11-17).
 SERVER_LOG_INFO_PATTERNS = {

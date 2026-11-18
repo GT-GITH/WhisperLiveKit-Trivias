@@ -58,6 +58,9 @@ ENABLE_HARD_CAP = False
 # starttijd 2.08 s te vroeg, 3/3 runs. Dat is audio van het vorige venster.
 BATCH_CONTEXT_PAD_LEFT_MS = 600
 BATCH_CONTEXT_PAD_RIGHT_MS = 0
+# Mislukte batch-vensters (bv. CUDA out of memory) opnieuw proberen, zie _batch_worker.
+BATCH_JOB_MAX_RETRIES = 2
+BATCH_JOB_RETRY_DELAY_S = 2.0
 # Audio vóór een batch-venster die de dekkingscontrole als VAD-context krijgt (zie
 # BatchFasterWhisperASR._decode, vad_context_f32). Alleen spraakdetectie, geen decodering.
 # UIT (0) sinds 2026-11-17: met 10 s context liep de spraak-aanwijzing van het vorige
@@ -2029,6 +2032,33 @@ class AudioProcessor:
 
             except Exception as e:
                 logger.warning(f"[BATCH][WORKER] error: {e}")
+                # Een mislukt venster mag nooit stil verdwijnen (bewezen 2026-11-18, RTX 2000
+                # Ada 16 GB: 'CUDA failed with error out of memory' in 2 vensters -> 179-247 s
+                # nooit gedecodeerd -> 18 zinnen onzichtbaar weg). Eerst opnieuw proberen
+                # (geheugen kan intussen vrij zijn); lukt dat niet, dan de venster-start
+                # terugzetten zodat het volgende venster dit stuk alsnog meeneemt.
+                if isinstance(job, dict):
+                    n = int(job.get("_attempt", 0))
+                    if n < BATCH_JOB_MAX_RETRIES:
+                        logger.warning(
+                            f"[BATCH][RETRY] job={job.get('job_id')} venster="
+                            f"{job.get('start_ms')}..{job.get('end_ms')} poging {n + 2} na fout"
+                        )
+                        await asyncio.sleep(BATCH_JOB_RETRY_DELAY_S)
+                        await self._batch_queue.put(dict(job, _attempt=n + 1))
+                    else:
+                        logger.error(
+                            f"[BATCH][FAILED] job={job.get('job_id')} venster="
+                            f"{job.get('start_ms')}..{job.get('end_ms')} na {n + 1} pogingen mislukt"
+                        )
+                        if self._batch_window_start_ms == int(job["end_ms"]):
+                            logger.info(
+                                f"[BATCH][WINDOW_REWIND] job={job.get('job_id')} start teruggezet "
+                                f"van {job['end_ms']}ms naar {job['start_ms']}ms (venster mislukt)"
+                            )
+                            self._batch_window_start_ms = int(job["start_ms"])
+                            self._batch_window_start_at_silence = bool(job.get("start_at_silence"))
+                            self._batch_last_close_end_ms = int(job["start_ms"])
             finally:
                 self._batch_queue.task_done()
                 self._batch_job_active = False
