@@ -734,10 +734,14 @@ class AudioProcessor:
         # Einde van spraak is leidend. Bij voorkeur uit de AUDIO (begin van de
         # VAD-stilte, PCM-tijdbasis); het laatste live-token loopt achter en gaf
         # vensters die midden in de zin eindigden (zie BatchCloseSignal).
-        if speech_end_ms is not None and speech_end_ms > window_start_ms:
-            window_end_ms = int(speech_end_ms)
-        else:
-            window_end_ms = self._get_last_speech_end_ms(fallback_ms=stream_time_ms)
+        # NOOIT terugvallen op de live-tokenklok: die loopt op een trage GPU voor op de
+        # audio (bewezen 2026-11-17, RTX 2000 Ada: venster 294141..330217 ms in een
+        # opname van 291.7 s -> voorbij de WAV -> [BATCH][SKIP] -> zinnen weg). Zegt de
+        # audio dat er sinds het vensterbegin geen nieuwe spraak is, dan valt er niets te
+        # sluiten. En een venster eindigt nooit voorbij de audio die er werkelijk is.
+        if speech_end_ms is None or speech_end_ms <= window_start_ms:
+            return
+        window_end_ms = min(int(speech_end_ms), int(stream_time_ms))
         window_len_ms = window_end_ms - window_start_ms
 
         # 0) Gedwongen sluiting na lange stilte (BATCH_IDLE_CLOSE_SILENCE_MS): ook als het
@@ -798,12 +802,10 @@ class AudioProcessor:
 
             window_start_ms = int(self._batch_window_start_ms)
 
-            # Neem het meest betrouwbare einde van de al verwerkte audio
-            state_end_buffer_ms = int(round(float(self.state.end_buffer) * 1000.0)) if getattr(self, "state", None) else 0
-            last_speech_end_ms = self._get_last_speech_end_ms(fallback_ms=state_end_buffer_ms)
-
-            # Kies speech-end als die er is, anders de buffer-end
-            window_end_ms = max(last_speech_end_ms, state_end_buffer_ms)
+            # Einde = alle ontvangen audio (PCM-klok), niet de live-klok (end_buffer /
+            # laatste token): die kan voorlopen op de audio en gaf vensters voorbij de WAV
+            # (zie _batch_on_silence_boundary). Bij Stop is de WAV compleet.
+            window_end_ms = int(round(self.total_pcm_samples / float(self.sample_rate) * 1000.0))
 
             if window_end_ms <= window_start_ms:
                 logger.info(
@@ -1783,6 +1785,18 @@ class AudioProcessor:
                         f"[BATCH][SKIP] job={job['job_id']} empty/invalid wav slice "
                         f"decode={decode_start_ms}..{decode_end_ms}"
                     )
+                    # Net als WINDOW_REWIND hieronder: dit bereik is NIET afgehandeld. Zet de
+                    # start van het volgende venster terug zodat het later alsnog gedecodeerd
+                    # wordt (voorheen: voorgoed overgeslagen). Alleen als er nog geen nieuwer
+                    # venster overheen is gegaan.
+                    if self._batch_window_start_ms == end_ms:
+                        logger.info(
+                            f"[BATCH][WINDOW_REWIND] job={job['job_id']} start teruggezet van "
+                            f"{end_ms}ms naar {start_ms}ms (venster lag voorbij de WAV)"
+                        )
+                        self._batch_window_start_ms = start_ms
+                        self._batch_window_start_at_silence = bool(job.get("start_at_silence"))
+                        self._batch_last_close_end_ms = start_ms
                     # Geen batch-decode mogelijk (venster wijst voorbij de daadwerkelijk
                     # opgenomen WAV, zie [DIAG][WAV_DRIFT]). Dit venster verdween voorheen
                     # volledig uit het opgeslagen transcript, zelfs als er wél live-tekst
@@ -1956,6 +1970,9 @@ class AudioProcessor:
                         )
                         self._batch_window_start_ms = real_window_end_ms
                         self._batch_window_start_at_silence = False
+                        # anders blokkeert de duplicate-close-guard het venster dat het
+                        # niet-gedecodeerde stuk alsnog moet ophalen
+                        self._batch_last_close_end_ms = real_window_end_ms
 
                 logger.info(
                     f"[BATCH][APPLY][DBG] job={job['job_id']} group_id={group_id} "
