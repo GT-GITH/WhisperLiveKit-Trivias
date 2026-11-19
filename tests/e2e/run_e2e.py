@@ -141,7 +141,8 @@ RESEND_RETAIN_BYTES = 120 * SR * 2  # = app.js: laatste 2 min verstuurde audio b
 async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: dict, pcm: bytes,
                          start_evt: asyncio.Event, t0_holder: dict, speed: float, chunk_ms: int,
                          stop_timeout: float, client_gate: float | None = None,
-                         drop_at_s: float | None = None, drop_for_s: float = 0.0) -> dict:
+                         drop_at_s: float | None = None, drop_for_s: float = 0.0,
+                         drop_restart: bool = False) -> dict:
     """Streamt één kanaal zoals de browser (app.js) het doet, inclusief het gedrag bij
     verbindingsverlies (2026-11-18): drop_at_s = audiotijd waarop de verbinding hard
     wegvalt (geen close-handshake, zoals bij een netwerkstoring); drop_for_s later wordt
@@ -176,7 +177,7 @@ async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: di
             state["closed_by_server"].set()
 
     async def connect(resume: bool):
-        u = url + ("&resume=1" if resume else "")
+        u = url + ("&resume=1" if resume else "") + ("&resume_restart=1" if resume and drop_restart else "")
         ws = await websockets.connect(u, max_size=None, open_timeout=30)
         first = json.loads(await ws.recv())  # config-bericht
         state["ws"], state["connected"] = ws, True
@@ -186,6 +187,8 @@ async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: di
 
     async def send_frame(frame: bytes):
         n = len(frame) - 1
+        if drop_restart and not state["connected"]:
+            return  # pagina 'ververst' tijdens de storing: deze audio is weg
         frames_kept.append((pos["offset"], frame, n))
         pos["offset"] += n
         if state["connected"]:
@@ -209,6 +212,14 @@ async def stream_channel(ws_base: str, session_id: str, channel_id: str, cfg: di
         await asyncio.sleep(drop_for_s)
         cfg_msg = await connect(resume=True)
         received = int(cfg_msg.get("received_bytes", 0))
+        if drop_restart:
+            # Verse pagina ("Doorgaan met deze sessie"): geen buffer, posities beginnen
+            # waar de server is (= app.js startChannelConnection bij configData.resumed).
+            frames_kept.clear()
+            pos["offset"] = pos["sent"] = received
+            events.append({"reconnected": cfg_msg.get("resumed"), "received_bytes": received,
+                           "restart": True})
+            return
         oldest = frames_kept[0][0] if frames_kept else pos["offset"]
         if received < oldest:
             errors.append(f"herverbinding: server mist {received}..{oldest} en dat zit niet meer in de buffer")
@@ -295,7 +306,8 @@ async def wait_auto_refresh(server: str, session_id: str, start_timeout_s: float
 async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_refresh: bool,
                        out_dir: Path, client_gate: float | None = None,
                        server_log: str | None = None,
-                       drop_at_s: float | None = None, drop_for_s: float = 0.0) -> dict:
+                       drop_at_s: float | None = None, drop_for_s: float = 0.0,
+                       drop_restart: bool = False) -> dict:
     sdir = SCENARIOS / name
     ref = json.loads((sdir / "reference.json").read_text(encoding="utf-8"))
     session_id = str(uuid.uuid4())
@@ -308,7 +320,7 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
         ch: asyncio.create_task(stream_channel(
             ws_base, session_id, ch, cfg, read_pcm(sdir / f"{ch}.wav"), start_evt, t0_holder,
             speed, chunk_ms, stop_timeout=180 + ref["duration_ms"] / 1000, client_gate=client_gate,
-            drop_at_s=drop_at_s, drop_for_s=drop_for_s))
+            drop_at_s=drop_at_s, drop_for_s=drop_for_s, drop_restart=drop_restart))
         for ch, cfg in ref["channels"].items()
     }
     await asyncio.sleep(2.0)  # alle kanalen verbonden voor de gezamenlijke start
@@ -371,8 +383,20 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
                 data = http_json("POST", f"{server}/sessions/{session_id}/refresh_transcript")
                 result["refresh_s"] = round(time.monotonic() - t, 1)
             by_ch = {ch: [s for s in data.get("segments", []) if s.get("channel_id") == ch] for ch in ref["channels"]}
-            result["paths"]["refresh"] = {
-                ch: score_channel(ref["channels"][ch]["utterances"], by_ch[ch]) for ch in ref["channels"]}
+            if drop_restart:
+                # Audio uit de storing ontbreekt: dan MOET er een zichtbare markering staan.
+                for ch in ref["channels"]:
+                    if not any(str(s.get("id", "")).startswith("gap_") for s in by_ch[ch]):
+                        result["errors"].setdefault(ch, []).append(
+                            "geen markering '[opname onderbroken ...]' in het definitieve transcript")
+                # De WAV mist de storing bewust (geen kunstmatige stilte), dus na het gat
+                # verschuift de tijdas t.o.v. de referentie: scoren op tijd is dan zinloos.
+                # Deze test controleert markering + WAV-volledigheid, niet de WER.
+                result["note_restart"] = "geen WER/gemist-score: tijdas verschoven door bewust ontbrekende audio"
+                result["paths"] = {}
+            else:
+                result["paths"]["refresh"] = {
+                    ch: score_channel(ref["channels"][ch]["utterances"], by_ch[ch]) for ch in ref["channels"]}
         except Exception as e:
             result["errors"].setdefault("_refresh", []).append(str(e))
 
@@ -385,6 +409,10 @@ async def run_scenario(name: str, server: str, speed: float, chunk_ms: int, do_r
         result["live"][ch].update(score_batch_latency(ref["channels"][ch]["utterances"], streamed[ch]["messages"]))
     if speed != 1.0:
         result["live_note"] = "speed != 1: live-timing niet vergelijkbaar met audiotijd"
+    elif drop_at_s is not None:
+        # Na een storing komt de gebufferde audio in één keer binnen en moet live die
+        # inhalen: achterstand/stilstand rond de storing is dan verwacht, geen fout.
+        result["live_note"] = "storingstest: live-achterstand/-stilte rond de storing verwacht, niet als fout geteld"
     else:
         for ch, lm in result["live"].items():
             if lm["live_max_gap_s"] > LIVE_STALL_FAIL_S:
@@ -502,6 +530,9 @@ def main() -> int:
                     help="laat de verbinding op deze audiotijd (s) hard wegvallen, zoals een netwerkstoring")
     ap.add_argument("--drop-for", type=float, default=20.0,
                     help="duur van de storing (s); daarna opnieuw verbinden met resume=1 en nasturen")
+    ap.add_argument("--drop-restart", action="store_true",
+                    help="na de storing als verse pagina hervatten (resume_restart=1): audio uit de "
+                         "storing is weg, server moet een zichtbare markering plaatsen")
     args = ap.parse_args()
 
     try:
@@ -523,7 +554,7 @@ def main() -> int:
             results.append(asyncio.run(run_scenario(name, args.server, args.speed, args.chunk_ms,
                                                     not args.no_refresh, out_dir, args.client_gate,
                                                     args.server_log or None,
-                                                    args.drop_at, args.drop_for)))
+                                                    args.drop_at, args.drop_for, args.drop_restart)))
         except Exception as e:
             results.append({"scenario": name, "errors": {"_run": [f"{type(e).__name__}: {e}"]}, "paths": {}})
 
