@@ -52,8 +52,11 @@ def main() -> None:
     ap.add_argument("--schedule", required=True, help="bufferlengtes (s), komma-gescheiden")
     ap.add_argument("--model", default="large-v3")
     ap.add_argument("--start", type=float, default=0.0, help="begin in de WAV (s)")
-    ap.add_argument("--zero-until", type=float, default=0.0,
-                    help="audio tot hier (s) als stilte, zoals de server die als 'Silence of' invoegt")
+    ap.add_argument("--zero-until", default="0",
+                    help="audio tot hier (s) als stilte, zoals de server die als 'Silence of' "
+                         "invoegt; komma-gescheiden = meerdere varianten")
+    ap.add_argument("--first-token", default="off",
+                    help="waarden voor LIVE_FIRST_TOKEN_MIN_LOGPROB, komma-gescheiden (off = uit)")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
@@ -62,26 +65,32 @@ def main() -> None:
 
     import whisperlivekit.core as core
     core.BatchFasterWhisperASR = lambda *a, **k: None  # alleen live nodig
+    import whisperlivekit.simul_whisper.simul_whisper as sw
     from whisperlivekit.simul_whisper.backend import SimulStreamingOnlineProcessor
 
     engine = core.TranscriptionEngine(model_size=args.model, lan="nl", pcm_input=True)
-    proc = SimulStreamingOnlineProcessor(engine.asr, language=args.lang)
 
     schedule = [float(s) for s in args.schedule.split(",") if s.strip()]
-    audio = gated_audio(args.wav, args.gate, args.start + max(schedule) + 1.0)[int(args.start * SR):].copy()
-    audio[:int(args.zero_until * SR)] = 0.0
-    fed = 0
-    words = []
-    for t in schedule:
-        n = int(round(t * SR))
-        if n > fed:
-            proc.insert_audio_chunk(audio[fed:n], audio_stream_end_time=args.start + n / SR)
-            fed = n
-        toks, _ = proc.process_iter(is_last=False)
-        txt = "".join(getattr(tk, "text", "") for tk in toks)
-        words.append(txt)
-        print(f"[REPLAY] buffer={t:5.2f}s -> {txt!r}", flush=True)
-    print("[REPLAY] LIVE: " + "".join(words).strip(), flush=True)
+    base = gated_audio(args.wav, args.gate, args.start + max(schedule) + 1.0)[int(args.start * SR):]
+    for zu in [float(z) for z in args.zero_until.split(",")]:
+        for ft in args.first_token.split(","):
+            sw.LIVE_FIRST_TOKEN_MIN_LOGPROB = None if ft == "off" else float(ft)
+            proc = SimulStreamingOnlineProcessor(engine.asr, language=args.lang)
+            audio = base.copy()
+            audio[:int(zu * SR)] = 0.0
+            tag = f"zero_until={zu} first_token={ft}"
+            fed = 0
+            words = []
+            for t in schedule:
+                n = int(round(t * SR))
+                if n > fed:
+                    proc.insert_audio_chunk(audio[fed:n], audio_stream_end_time=args.start + n / SR)
+                    fed = n
+                toks, _ = proc.process_iter(is_last=False)
+                txt = "".join(getattr(tk, "text", "") for tk in toks)
+                words.append(txt)
+                print(f"[REPLAY] {tag} buffer={t:5.2f}s -> {txt!r}", flush=True)
+            print(f"[REPLAY] {tag} LIVE: " + "".join(words).strip(), flush=True)
 
 
 if __name__ == "__main__":
