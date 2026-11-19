@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 
 from whisperlivekit import AudioProcessor, TranscriptionEngine, parse_args
+from whisperlivekit.timed_objects import SegmentUpdate
 from whisperlivekit.simul_whisper.backend import gate_batch_sentence, mark_unreliable
 from whisperlivekit.simul_whisper.config import get_channel_config, strip_dialect_suffix
 from whisperlivekit.cross_channel_gate import compute_cross_channel_gate_masks
@@ -248,6 +249,24 @@ class SessionManager:
                     break
         self._sessions[session_id] = meta
         self._persist(session_id)
+
+    def mark_interruption_gap(self, session_id: str, channel_id: str, audio_ms: int,
+                              lost_ms: Optional[int], restart: bool) -> Optional[Dict[str, Any]]:
+        """Laatste (net gesloten) onderbreking van dit kanaal markeren als 'audio ontbreekt',
+        met de plek in de opname. Geeft de onderbreking terug (voor de markeringstekst)."""
+        self._hydrate(session_id)
+        meta = self._sessions.get(session_id)
+        if not meta:
+            return None
+        its = [it for it in meta.get("interruptions", []) if it.get("channel_id") == channel_id]
+        if its:
+            it = its[-1]
+        else:  # geen geregistreerde onderbreking (bv. serverherstart): nieuwe vastleggen
+            it = {"channel_id": channel_id, "from": None, "to": datetime.utcnow().isoformat() + "Z"}
+            meta.setdefault("interruptions", []).append(it)
+        it.update({"gap": True, "audio_ms": int(audio_ms), "lost_ms": lost_ms, "restart": bool(restart)})
+        self._persist(session_id)
+        return dict(it)
 
     def all(self) -> Dict[str, Dict[str, Any]]:
         return self._sessions
@@ -637,6 +656,10 @@ def rebuild_channel_transcript(
             "end_ms": end_ms,
         })
 
+    # Markeringen van onderbrekingen met ontbrekende audio blijven staan (plan fase 3).
+    entries.extend(_gap_marker_entries(session_id, channel_id))
+    entries.sort(key=lambda e: e.get("start_ms") or 0)
+
     json_path = wav_path.with_suffix(".json")
     _backup_incremental_transcript(json_path)
     _atomic_write_json(json_path, entries)
@@ -935,6 +958,10 @@ async def get_session_transcript(session_id: str, channel_id: str = Query(defaul
             "gehoorverslag_generated_at": meta.get("gehoorverslag_generated_at"),
             "languages2": languages2,
             "languages": languages,
+            # verbindingsstatus per kanaal (verbonden|onderbroken|afgesloten) en het
+            # logboek van onderbrekingen -- voor de knop "Doorgaan met deze sessie"
+            "connection": meta.get("connection") or {},
+            "interruptions": meta.get("interruptions") or [],
         })
 
     # Zoek JSON bestand voor deze sessie + channel
@@ -985,6 +1012,56 @@ _detached_processors: Dict[tuple, Dict[str, Any]] = {}
 # (die pas na de ping-timeout). Een resume=1 neemt dan de nog "levende" oude verbinding
 # over in plaats van geweigerd te worden.
 _attached_connections: Dict[tuple, Dict[str, Any]] = {}
+
+
+def _find_channel_wav(session_id: str, channel_id: str) -> Optional[Path]:
+    """Bestaande WAV van dit kanaal in deze sessie (nieuwste), voor hervatten vanaf schijf."""
+    best = None
+    for wav_file in Path("recordings").glob(f"session_{session_id}_*.wav"):
+        parsed = _parse_session_wav_name(wav_file.stem)
+        if parsed is None or parsed[0] != session_id or parsed[1] != channel_id:
+            continue
+        if best is None or wav_file.stat().st_mtime > best.stat().st_mtime:
+            best = wav_file
+    return best
+
+
+def _fmt_local_time(iso_utc: Optional[str]) -> Optional[str]:
+    """'2026-11-19T06:12:03.1Z' -> '07:12:03' (Nederlandse tijd), voor de markering."""
+    if not iso_utc:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromisoformat(iso_utc.rstrip("Z")).replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(ZoneInfo("Europe/Amsterdam")).strftime("%H:%M:%S")
+    except Exception:
+        return iso_utc
+
+
+def _gap_marker_text(interruption: Dict[str, Any]) -> str:
+    """Tekst van de zichtbare markering voor een onderbreking met ontbrekende audio."""
+    frm, to = _fmt_local_time(interruption.get("from")), _fmt_local_time(interruption.get("to"))
+    lost_ms = interruption.get("lost_ms")
+    if interruption.get("restart") and frm and to:
+        return f"[opname onderbroken {frm} – {to}: audio uit deze periode ontbreekt]"
+    if lost_ms:
+        return f"[opname onderbroken: ca. {round(lost_ms / 1000)} s audio ontbreekt]"
+    return f"[opname onderbroken {frm or '?'} – {to or '?'}]"
+
+
+def _gap_marker_entries(session_id: str, channel_id: str) -> list:
+    """Markeringen (als transcript-entries) voor de onderbrekingen met ontbrekende audio van
+    dit kanaal -- ook na Ververs, die het transcript opnieuw opbouwt, weer toegevoegd."""
+    meta = session_manager.get(session_id) or {}
+    out = []
+    for it in meta.get("interruptions", []):
+        if it.get("channel_id") != channel_id or not it.get("gap") or it.get("audio_ms") is None:
+            continue
+        ms = int(it["audio_ms"])
+        out.append({"type": "segment_update", "id": f"gap_{ms}", "text_batch": None,
+                    "text_final": _gap_marker_text(it), "state": "FINAL",
+                    "start_ms": ms, "end_ms": ms, "gap": True})
+    return out
 
 
 def _received_pcm_bytes(proc) -> int:
@@ -1402,6 +1479,8 @@ async def websocket_endpoint(
     gate_framed: bool = Query(default=False),
     gate_threshold: Optional[float] = Query(default=None),
     resume: bool = Query(default=False),
+    resume_restart: bool = Query(default=False),
+    resume_lost_ms: Optional[int] = Query(default=None),
 ):
     """Hoofdstream voor audio ÔåÆ ASR (exactzelfde kern als basic_server, maar met session-metadata).
 
@@ -1432,7 +1511,8 @@ async def websocket_endpoint(
     )
 
     key = (sid, channel_id or "default")
-    reattached = False
+    reattached = False      # zelfde processor (nog in geheugen)
+    cold_resumed = False    # nieuwe processor, verder in de bestaande WAV (fase 3)
     if resume:
         old = _attached_connections.get(key)
         if old is not None:
@@ -1453,14 +1533,30 @@ async def websocket_endpoint(
             reattached = True
         else:
             entry = _detached_processors.pop(key, None)
-            if entry is None:
-                await websocket.accept()
-                logger.warning(f"[SESSION] {sid}/{key[1]}: resume gevraagd maar niets om aan te haken")
-                await websocket.close(code=4404, reason="sessie niet (meer) te hervatten")
-                return
-            entry["timer"].cancel()
-            audio_processor = entry["processor"]
-            reattached = True
+            if entry is not None:
+                entry["timer"].cancel()
+                audio_processor = entry["processor"]
+                reattached = True
+            else:
+                # Plan fase 3: niets meer in het geheugen (langer dan RECONNECT_GRACE_S weg,
+                # of serverherstart) -> hervatten vanaf schijf: verder in de bestaande WAV.
+                wav = _find_channel_wav(sid, key[1])
+                if wav is None:
+                    await websocket.accept()
+                    logger.warning(f"[SESSION] {sid}/{key[1]}: resume gevraagd maar niets om aan te haken")
+                    await websocket.close(code=4404, reason="sessie niet (meer) te hervatten")
+                    return
+                audio_processor = AudioProcessor(
+                    transcription_engine=transcription_engine,
+                    session_id=sid,
+                    channel_id=channel_id or "default",
+                    language=lang,
+                    language2=lang2,
+                    gate_framed=gate_framed,
+                    gate_threshold=gate_threshold,
+                    resume_wav_path=str(wav),
+                )
+                cold_resumed = True
     else:
         #audio_processor = AudioProcessor(transcription_engine=transcription_engine)
         audio_processor = AudioProcessor(
@@ -1473,22 +1569,39 @@ async def websocket_endpoint(
             gate_threshold=gate_threshold,
         )
 
+    resumed = reattached or cold_resumed
     await websocket.accept()
-    logger.info(f"WebSocket connection opened for session {sid}{' (opnieuw aangehaakt)' if reattached else ''}.")
+    logger.info(f"WebSocket connection opened for session {sid}"
+                f"{' (opnieuw aangehaakt)' if reattached else ' (hervat vanaf schijf)' if cold_resumed else ''}.")
     _active_ws_channels.setdefault(sid, set()).add(channel_id or "default")
     conn_entry = {"processor": audio_processor, "websocket": websocket,
                   "superseded": False, "ended": asyncio.Event()}
     _attached_connections[key] = conn_entry
-    if reattached:
+    received_bytes = _received_pcm_bytes(audio_processor) if resumed else 0
+    if resumed:
         session_manager.set_channel_connection(sid, key[1], "verbonden")
+        # Ontbreekt er audio (pagina ververst tijdens de storing = alles van de storing;
+        # of de browserbuffer liep vol = resume_lost_ms), dan zichtbaar markeren op deze
+        # plek in de opname -- de onderbreking mag nooit onzichtbaar zijn.
+        if resume_restart or (resume_lost_ms or 0) > 0:
+            gap = session_manager.mark_interruption_gap(
+                sid, key[1], audio_ms=round(received_bytes / 32), lost_ms=resume_lost_ms,
+                restart=resume_restart)
+            if gap is not None:
+                try:
+                    await audio_processor.emit_segment_update(SegmentUpdate(
+                        id=f"gap_{gap['audio_ms']}", state="FINAL", start_ms=gap["audio_ms"],
+                        end_ms=gap["audio_ms"], text_batch=None, text_final=_gap_marker_text(gap)))
+                except Exception as e:
+                    logger.warning(f"[SESSION] {sid}/{key[1]}: markering onderbreking mislukt: {e}")
 
     # Config naar client sturen (zelfde semantics als basic_server). Bij hervatten ook
     # hoeveel audio er al binnen is, zodat de client precies vanaf daar opnieuw stuurt.
     try:
-        cfg_msg = {"type": "config", "useAudioWorklet": bool(args.pcm_input), "resumed": reattached}
-        if reattached:
-            cfg_msg["received_bytes"] = _received_pcm_bytes(audio_processor)
-            logger.info(f"[SESSION] {sid}/{key[1]}: hervat, al ontvangen {cfg_msg['received_bytes']} bytes")
+        cfg_msg = {"type": "config", "useAudioWorklet": bool(args.pcm_input), "resumed": resumed}
+        if resumed:
+            cfg_msg["received_bytes"] = received_bytes
+            logger.info(f"[SESSION] {sid}/{key[1]}: hervat, al ontvangen {received_bytes} bytes")
         await websocket.send_json(cfg_msg)
     except Exception as e:
         logger.warning(f"Failed to send config to client: {e}")
@@ -1509,7 +1622,7 @@ async def websocket_endpoint(
             if getattr(audio_processor, "_wav_path", None):
                 register_wav_path(sid, channel_id or "default", str(audio_processor._wav_path))
                 return
-    if not reattached:
+    if not resumed:
         asyncio.create_task(_watch_wav_path())
 
     try:
@@ -1559,6 +1672,7 @@ async def websocket_endpoint(
         deliberate_stop = bool(getattr(audio_processor, "is_stopping", False))
         if deliberate_stop:
             _stop_requested[sid] = True
+            session_manager.set_channel_connection(sid, key[1], "afgesloten")
         elif RECONNECT_GRACE_S > 0:
             # Storing: NIET opruimen. Processor blijft draaien (WAV-writer open) en wacht
             # op herverbinding; de browser buffert intussen de audio (plan fase 2).
@@ -1605,10 +1719,14 @@ async def websocket_ws(
     gate_framed: bool = Query(default=False),
     gate_threshold: Optional[float] = Query(default=None),
     resume: bool = Query(default=False),
+    resume_restart: bool = Query(default=False),
+    resume_lost_ms: Optional[int] = Query(default=None),
 ):
     """Compat-endpoint voor clients die nog /ws gebruiken."""
     return await websocket_endpoint(
         resume=resume,
+        resume_restart=resume_restart,
+        resume_lost_ms=resume_lost_ms,
         websocket=websocket,
         session_id=session_id,
         source_system=source_system,

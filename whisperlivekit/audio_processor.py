@@ -193,6 +193,45 @@ async def get_all_from_queue(queue: asyncio.Queue) -> Union[object, Silence, np.
     return items
 
 
+class _AppendingWavWriter:
+    """Schrijft PCM achteraan een BESTAANDE WAV (hervatten na een onderbreking) en houdt
+    de RIFF/data-groottes in de kop actueel -- zoals wave.Wave_write dat na elke
+    writeframes doet, zodat lezers (batch-worker, refresh) altijd een geldige lengte zien.
+    Verwacht de standaard 44-byte PCM-kop die wave.Wave_write zelf schreef."""
+
+    def __init__(self, path: Path):
+        import struct
+        self._struct = struct
+        self._file = open(path, "r+b")
+        hdr = self._file.read(44)
+        if len(hdr) < 44 or hdr[0:4] != b"RIFF" or hdr[8:12] != b"WAVE" or hdr[36:40] != b"data":
+            self._file.close()
+            raise ValueError(f"onverwachte WAV-kop in {path}, kan niet aanvullen")
+        self._datawritten = struct.unpack("<I", hdr[40:44])[0]
+        self._file.seek(44 + self._datawritten)
+        self._file.truncate()  # eventuele rommel na de data (crash) weg
+
+    def writeframes(self, data: bytes) -> None:
+        self._file.write(data)
+        self._datawritten += len(data)
+        self._patchheader()
+
+    def _patchheader(self) -> None:
+        pos = self._file.tell()
+        self._file.seek(4)
+        self._file.write(self._struct.pack("<I", 36 + self._datawritten))
+        self._file.seek(40)
+        self._file.write(self._struct.pack("<I", self._datawritten))
+        self._file.seek(pos)
+
+    def close(self) -> None:
+        try:
+            self._patchheader()
+            self._file.flush()
+        finally:
+            self._file.close()
+
+
 class AudioProcessor:
     """
     Processes audio streams for transcription and diarization.
@@ -382,6 +421,27 @@ class AudioProcessor:
 
         self._wav_writer: Optional[wave.Wave_write] = None
         self._wav_path: Optional[Path] = None
+
+        # Hervatten na een onderbreking (plan fase 3, 2026-11-19): verder in de BESTAANDE
+        # WAV van dit kanaal; alle klokken (audio, VAD, live, batch-vensters) lopen door
+        # vanaf het einde van die opname, zodat tijdstempels blijven kloppen met de WAV.
+        # Geen kunstmatige stilte in de WAV: een eventueel gat wordt in meta.json
+        # vastgelegd en zichtbaar gemarkeerd (TriviasServer).
+        self._resume_samples: int = 0
+        resume_path = kwargs.get("resume_wav_path")
+        if resume_path:
+            p = Path(resume_path)
+            with wave.open(str(p), "rb") as rf:
+                self._resume_samples = rf.getnframes()
+            self._wav_path = p
+            self.total_pcm_samples = self._resume_samples
+            if self.transcription is not None and hasattr(self.transcription, "_reanchor_live_clock"):
+                self.transcription.end = self._resume_samples / self.sample_rate
+                self.transcription._reanchor_live_clock("resume")
+            logger.info(
+                f"[SESSION][RESUME] channel={self.channel_id} verder in {p.name} vanaf "
+                f"{self._resume_samples / self.sample_rate:.2f}s"
+            )
 
     def _log_status_throttled(self, msg: str) -> None:
         # Max 1x per interval loggen (msg verandert steeds door lag, dus niet op msg vergelijken)
@@ -945,7 +1005,8 @@ class AudioProcessor:
 
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
-        cumulative_pcm_duration_stream_time = 0.0
+        # Bij hervatten loopt de stroomtijd door vanaf het einde van de bestaande WAV.
+        cumulative_pcm_duration_stream_time = self._resume_samples / self.sample_rate
         
         while True:
             try:
@@ -1549,6 +1610,12 @@ class AudioProcessor:
         if self._wav_writer is not None:
             return
 
+        if self._resume_samples and self._wav_path is not None and self._wav_path.exists():
+            # Hervatten: achteraan de bestaande WAV verder schrijven.
+            self._wav_writer = _AppendingWavWriter(self._wav_path)
+            logger.info(f"[SESSION WAV] Resuming {self._wav_path} at {self._resume_samples} frames")
+            return
+
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         filename = f"session_{self.session_id}_{self.channel_id}_{ts}.wav"
         self._wav_path = self.recordings_dir / filename
@@ -2147,10 +2214,11 @@ class AudioProcessor:
 
         if not self.beg_loop:
             self.beg_loop = time()
-            self.current_silence = Silence(start=0.0, is_starting=True)
+            resume_s = self._resume_samples / self.sample_rate
+            self.current_silence = Silence(start=resume_s, is_starting=True)
             self.tokens_alignment.beg_loop = self.beg_loop
-            # Batch window starts at t=0 for this session
-            self._batch_window_start_ms = 0
+            # Batch window starts at t=0 for this session (bij hervatten: einde bestaande WAV)
+            self._batch_window_start_ms = int(round(resume_s * 1000.0))
             self._batch_window_start_at_silence = True
 
         if not message:
@@ -2329,8 +2397,13 @@ class AudioProcessor:
 
             if "end" in res and not self.current_silence:
                 self._diag_feed["sil_begin"] += 1
+                # VAC telt samples vanaf zijn eigen start; bij hervatten is dat het einde
+                # van de bestaande WAV -> naar de absolute audioklok omrekenen.
+                vac_end = res.get("end")
+                if vac_end is not None:
+                    vac_end += self._resume_samples
                 pre_silence_chunk = self._slice_before_silence(
-                    asr_pcm_array, chunk_sample_start, res.get("end")
+                    asr_pcm_array, chunk_sample_start, vac_end
                 )
                 if pre_silence_chunk is not None and pre_silence_chunk.size > 0:
                     await self._enqueue_active_audio(pre_silence_chunk)

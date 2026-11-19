@@ -473,6 +473,7 @@ let playbackLanguages = {}; // { channel_id: taalcode }
 let playbackLanguages2 = {}; // { channel_id: taalcode|null } -- Taal 2, alleen bij taalpaar-kanalen (tolk)
 let playbackGehoorverslagGeneratedAt = null;
 let playbackCreatedAt = null; // ruwe %Y%m%dT%H%M%SZ-timestamp, voor formatDutchDateTime()
+let playbackConnection = {};  // verbindingsstatus per kanaal (knop "Doorgaan met deze sessie")
 
 // True terwijl de gebruiker de transportbalk-scrubber vasthoudt -- voorkomt dat
 // de timeupdate-listener (renderPlaybackTimeline()) de balk tijdens het slepen
@@ -1065,9 +1066,12 @@ function attachLinkHandlers(link) {
   };
 }
 
-async function startChannelConnection(cfg, sessionId) {
+async function startChannelConnection(cfg, sessionId, opts = {}) {
   const channelId = getChannelId(cfg);
-  const wsUrl = buildWebSocketUrl(sessionId, channelId, cfg);
+  let wsUrl = buildWebSocketUrl(sessionId, channelId, cfg);
+  // Hervatten na een onderbreking met een verse pagina: audio uit de onderbreking is
+  // niet meer in deze browser -> server markeert het gat (resume_restart).
+  if (opts.resumeRestart) wsUrl += "&resume=1&resume_restart=1";
   const ws = new WebSocket(wsUrl);
 
   // Wacht op config-bericht van server
@@ -1083,6 +1087,11 @@ async function startChannelConnection(cfg, sessionId) {
   // audiobuffer voor nasturen. Staat zelf in activeConnections, zodat bestaande code die
   // conn.ws gebruikt (Stop, Pauze, keep-alive, Ververs) altijd de actuele ws pakt.
   const link = createLink(ws, cfg, channelId, sessionId);
+  // Hervat: posities beginnen waar de bestaande opname eindigt (wat de server al heeft),
+  // anders zouden nieuwe frames bij een latere herverbinding als 'al ontvangen' gelden.
+  if (configData.resumed) {
+    link.offset = link.sentOffset = Number(configData.received_bytes || 0);
+  }
   attachLinkHandlers(link);
 
   // Audio openen
@@ -1202,7 +1211,11 @@ function scheduleReconnect(link) {
 async function tryReconnect(link) {
   const live = activeConnections.get(link.uid) === link || drainingLinks.has(link.uid);
   if (!live || link.failed) return;
-  const url = buildWebSocketUrl(link.sessionId, link.channelId, link.cfg) + "&resume=1";
+  let url = buildWebSocketUrl(link.sessionId, link.channelId, link.cfg) + "&resume=1";
+  // Kon een deel van de audio niet bewaard worden (buffer vol), dan meldt de server dat
+  // als zichtbare markering op deze plek in de opname.
+  const unreportedLost = (link.droppedBytes || 0) - (link.reportedDropBytes || 0);
+  if (unreportedLost > 0) url += "&resume_lost_ms=" + Math.round(unreportedLost / 32);
   let ws, cfgMsg;
   try {
     ws = new WebSocket(url);
@@ -1215,6 +1228,7 @@ async function tryReconnect(link) {
     return;
   }
   link.ws = ws;
+  link.reportedDropBytes = link.droppedBytes || 0;
   attachLinkHandlers(link);
   const received = Number(cfgMsg.received_bytes || 0);
   const resent = resendFrom(link, received);
@@ -1316,7 +1330,7 @@ function handleChannelClose(uid, channelId) {
 
 // === Opname start / stop ===
 
-async function startRecording() {
+async function startRecording(opts = {}) {
   if (isRecording) return;
   if (channelConfigs.length === 0) {
     alert("Configureer eerst minstens één kanaal via het tabblad Configuratie.");
@@ -1346,8 +1360,9 @@ async function startRecording() {
   hidePlaybackTimeline();
   hideLiveClipPlayer();
   updateRefreshPlaybackButtonUI();
-  currentSessionId = crypto.randomUUID();
-  console.log("[DIAG][START_RECORDING] nieuwe sessie", currentSessionId);
+  const resumeChannels = new Set(opts.resumeChannels || []);
+  currentSessionId = opts.resumeSessionId || crypto.randomUUID();
+  console.log("[DIAG][START_RECORDING]", opts.resumeSessionId ? "hervat sessie" : "nieuwe sessie", currentSessionId);
 
   // Reset transcript state voor alle kanalen
   channelLines.clear();
@@ -1360,7 +1375,10 @@ async function startRecording() {
   const errors = [];
   await Promise.all(channelConfigs.map(async cfg => {
     try {
-      await startChannelConnection(cfg, currentSessionId);
+      // Bij "Doorgaan met deze sessie": kanalen die al in de sessie zitten hervatten
+      // (verder in hun bestaande WAV); een eventueel nieuw kanaal begint gewoon.
+      await startChannelConnection(cfg, currentSessionId,
+                                   { resumeRestart: resumeChannels.has(getChannelId(cfg)) });
     } catch (e) {
       errors.push(e.message);
       console.error("Kanaal mislukt:", cfg.roleId, e);
@@ -2294,6 +2312,7 @@ async function loadSessionTranscript(sessionId) {
     playbackLanguages2 = data.languages2 || {};
     playbackGehoorverslagGeneratedAt = data.gehoorverslag_generated_at || null;
     playbackCreatedAt = data.created_at || null;
+    playbackConnection = data.connection || {};
 
     playbackLines       = [];
     playbackLineById    = new Map();
@@ -2627,6 +2646,41 @@ function updateRefreshPlaybackButtonUI() {
   if (gehoorverslagButton) {
     gehoorverslagButton.classList.toggle("hidden", !(isPlaybackMode && currentSessionId));
   }
+  const resumeBtn = document.getElementById("resumeSessionButton");
+  if (resumeBtn) {
+    const interrupted = Object.values(playbackConnection || {}).some(c => c && c.state === "onderbroken");
+    resumeBtn.classList.toggle("hidden", !(isPlaybackMode && currentSessionId && interrupted));
+  }
+}
+
+// === Doorgaan met een onderbroken sessie (plan fase 3, 2026-11-19) ===
+// Was de verbinding langer weg (of is de pagina intussen ververst), dan kan de opname
+// vanaf hier verder in DEZELFDE sessie: de server vult de bestaande WAV per kanaal aan.
+// Audio uit de onderbreking zelf ontbreekt dan; dat wordt zichtbaar gemarkeerd.
+// (playbackConnection: gedeclareerd bij de andere playback-state bovenaan.)
+
+async function resumeInterruptedSession() {
+  if (!currentSessionId || isRecording) return;
+  const needed = playbackChannels || [];
+  const configured = channelConfigs.map(getChannelId);
+  const missing = needed.filter(ch => !configured.includes(ch));
+  if (missing.length) {
+    alert("De kanaalconfiguratie komt niet overeen met deze sessie. Ontbrekende kanalen: " +
+          missing.join(", ") + "\nStel deze kanalen in via Configuratie en probeer opnieuw.");
+    return;
+  }
+  const ok = confirm(
+    "Verder opnemen in deze onderbroken sessie?\n\n" +
+    "De nieuwe opname wordt achter de bestaande opname gezet. De periode van de onderbreking " +
+    "wordt in het transcript gemarkeerd."
+  );
+  if (!ok) return;
+  await startRecording({ resumeSessionId: currentSessionId, resumeChannels: needed });
+}
+
+{
+  const resumeBtn = document.getElementById("resumeSessionButton");
+  if (resumeBtn) resumeBtn.addEventListener("click", resumeInterruptedSession);
 }
 
 // Downloadt het (v1, letterlijke) gehoorverslag als .docx voor de huidig
