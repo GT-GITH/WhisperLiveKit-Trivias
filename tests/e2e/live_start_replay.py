@@ -52,6 +52,8 @@ def main() -> None:
     ap.add_argument("--schedule", required=True, help="bufferlengtes (s), komma-gescheiden")
     ap.add_argument("--model", default="large-v3")
     ap.add_argument("--start", type=float, default=0.0, help="begin in de WAV (s)")
+    ap.add_argument("--zero-until", type=float, default=0.0,
+                    help="audio tot hier (s) als stilte, zoals de server die als 'Silence of' invoegt")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
@@ -65,7 +67,8 @@ def main() -> None:
     engine = core.TranscriptionEngine(model_size=args.model, lan="nl", pcm_input=True)
     proc = SimulStreamingOnlineProcessor(engine.asr, language=args.lang)
 
-    audio = gated_audio(args.wav, args.gate)[int(args.start * SR):]
+    audio = gated_audio(args.wav, args.gate)[int(args.start * SR):].copy()
+    audio[:int(args.zero_until * SR)] = 0.0
     fed = 0
     words = []
     for t in [float(s) for s in args.schedule.split(",") if s.strip()]:
