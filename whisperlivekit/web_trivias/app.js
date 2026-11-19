@@ -1018,7 +1018,9 @@ function cleanupChannelConnection(uid) {
 
 function updateConnectionStatus() {
   const total = channelConfigs.length;
-  const connected = activeConnections.size;
+  // Een link die opnieuw verbindt (of niet meer hervat kan worden) telt niet als verbonden.
+  const connected = [...activeConnections.values()]
+    .filter(l => !(l && (l.reconnecting || l.failed))).length;
   setConnectionStatus(connected, total);
 }
 
@@ -1278,6 +1280,7 @@ function ensureConnectionBanner() {
 
 function updateConnectionBanner(restored) {
   const el = ensureConnectionBanner();
+  updateConnectionStatus();
   const links = [...activeConnections.values(), ...drainingLinks.values()].filter(l => l && l.frames);
   const failed = links.filter(l => l.failed);
   const down = links.filter(l => l.reconnecting);
