@@ -262,6 +262,10 @@ class AudioProcessor:
         # pad_left: die 600 ms zou het einde van de VORIGE uiting opnieuw decoderen
         # (zie BATCH_CONTEXT_PAD_LEFT_MS). Sessiestart telt ook als 'op stilte'.
         self._batch_window_start_at_silence: bool = True
+        # Harde naden in de WAV (ms): hier sluit audio van na een onderbreking met
+        # ontbrekende audio direct aan op audio van ervoor. Geen batch-decode, context of
+        # tijdstempel mag eroverheen lopen, zie mark_discontinuity / _seam_bounds.
+        self._seams_ms: List[int] = []
         # Guard: voorkomt dubbele enqueue voor dezelfde window-close
         self._batch_last_close_end_ms: Optional[int] = None
         # Batch window control (Stap 1 refined)
@@ -1013,8 +1017,11 @@ class AudioProcessor:
         het venster eindigt hier altijd precies op de naad, ook als het restje kort is."""
         while self.pcm_buffer:
             await self.handle_pcm_data(force=True)
-        await self._pause_flush()
         cut_ms = int(round(self.total_pcm_samples / float(self.sample_rate) * 1000.0))
+        # Vóór de flush registreren: het staartvenster dat _pause_flush in de wachtrij
+        # zet, moet de naad al als bovengrens zien.
+        self.add_seam(cut_ms)
+        await self._pause_flush()
         start_ms = self._batch_window_start_ms
         if start_ms is not None and cut_ms > int(start_ms):
             # _flush_final_batch_tail slaat restjes < 300 ms over; hier toch afsluiten
@@ -1022,10 +1029,26 @@ class AudioProcessor:
             await self._enqueue_batch_window(int(start_ms), cut_ms, reason="discontinuity")
             self._batch_last_close_end_ms = cut_ms
         self._batch_window_start_ms = cut_ms
-        self._batch_window_start_at_silence = False
+        # Begin op de naad: geen linkercontext (die zou audio van vóór de onderbreking
+        # meedecoderen -- e2e 2026-11-19: pad_left=600 ms, zin-start 600 ms vóór de naad).
+        # _seam_bounds begrenst dat ook voor herhaal-/rewind-paden.
+        self._batch_window_start_at_silence = True
         self._batch_ready_to_close = False
         self._batch_ready_at_ms = None
         logger.info(f"[SESSION][NAAD] channel={self.channel_id} naad op {cut_ms} ms ({reason})")
+
+    def add_seam(self, ms: int) -> None:
+        ms = int(ms)
+        if ms > 0 and ms not in self._seams_ms:
+            self._seams_ms.append(ms)
+            self._seams_ms.sort()
+
+    def _seam_bounds(self, start_ms: int, end_ms: int) -> Tuple[int, Optional[int]]:
+        """(ondergrens, bovengrens) voor audio rond venster start_ms..end_ms: de laatste
+        naad op of vóór start_ms en de eerste naad op of na end_ms (None = geen)."""
+        lo = max([s for s in self._seams_ms if s <= start_ms], default=0)
+        hi = min([s for s in self._seams_ms if s >= end_ms], default=None)
+        return lo, hi
 
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
@@ -1851,8 +1874,11 @@ class AudioProcessor:
 
                 # 2) Decode audio slice met padding (FO)
                 pad_left_ms = 0 if job.get("start_at_silence") else BATCH_CONTEXT_PAD_LEFT_MS
-                decode_start_ms = max(0, start_ms - pad_left_ms)
+                seam_lo_ms, seam_hi_ms = self._seam_bounds(start_ms, end_ms)
+                decode_start_ms = max(seam_lo_ms, start_ms - pad_left_ms)
                 decode_end_ms   = end_ms + BATCH_CONTEXT_PAD_RIGHT_MS
+                if seam_hi_ms is not None:
+                    decode_end_ms = min(decode_end_ms, seam_hi_ms)
 
                 # Synchrone I/O (flush+fsync+wave-read) hoort niet rechtstreeks op de
                 # gedeelde event loop -- _batch_worker() draait als asyncio.create_task
@@ -1953,10 +1979,10 @@ class AudioProcessor:
                 # VAD-context voor de dekkingscontrole: de BATCH_VAD_CONTEXT_MS audio vóór
                 # het gedecodeerde stuk (alleen voor spraakdetectie, wordt niet gedecodeerd).
                 vad_ctx_f32 = None
-                if decode_start_ms > 0 and BATCH_VAD_CONTEXT_MS > 0:
+                if decode_start_ms > seam_lo_ms and BATCH_VAD_CONTEXT_MS > 0:
                     vad_ctx_f32, _ = await asyncio.to_thread(
                         self._read_wav_slice_float32,
-                        max(0, decode_start_ms - BATCH_VAD_CONTEXT_MS), decode_start_ms,
+                        max(seam_lo_ms, decode_start_ms - BATCH_VAD_CONTEXT_MS), decode_start_ms,
                     )
                 _batch_perf_t0 = time()
                 result = await asyncio.to_thread(
@@ -2091,6 +2117,9 @@ class AudioProcessor:
                         for i, (sent, ok, _why) in enumerate(sentence_decisions):
                             sent_start_ms = int(round(sent["start"] * 1000)) + decode_start_ms
                             sent_end_ms = int(round(sent["end"] * 1000)) + decode_start_ms + 300  # 300ms buffer
+                            if seam_hi_ms is not None:
+                                # de buffer mag niet in audio van na een onderbreking vallen
+                                sent_end_ms = min(sent_end_ms, seam_hi_ms)
                             sent_id = f"{group_id}_s{i}"
                             upd = SegmentUpdate(
                                 id=sent_id,

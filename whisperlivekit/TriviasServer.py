@@ -1625,6 +1625,8 @@ async def websocket_endpoint(
                 # Bij hervatten vanaf schijf begint het venster al op de naad.
                 await audio_processor.mark_discontinuity("onderbreking met ontbrekende audio")
                 received_bytes = _received_pcm_bytes(audio_processor)
+            else:
+                audio_processor.add_seam(round(received_bytes / 32))
             gap = session_manager.mark_interruption_gap(
                 sid, key[1], audio_ms=round(received_bytes / 32), lost_ms=resume_lost_ms,
                 restart=resume_restart)
