@@ -2157,8 +2157,13 @@ class AudioProcessor:
             logger.info("Empty audio message received, initiating stop sequence.")
 
             # Zorg dat eventueel resterende PCM eerst nog naar de pipeline én WAV gaat
-            if self.pcm_buffer:
-                await self.handle_pcm_data()
+            # (handle_pcm_data verwerkt per aanroep max. max_bytes_per_sec; force voor het
+            # laatste restje onder de minimale hoeveelheid).
+            while self.pcm_buffer:
+                before = len(self.pcm_buffer)
+                await self.handle_pcm_data(force=True)
+                if len(self.pcm_buffer) >= before:
+                    break
 
             # Markeer stop pas hierna
             self.is_stopping = True
@@ -2265,9 +2270,11 @@ class AudioProcessor:
         # blijft de rest van de mask True: fail-open, nooit fail-closed.
         return mask
 
-    async def handle_pcm_data(self) -> None:
-        # Process when enough data
-        if len(self.pcm_buffer) < self.bytes_per_sec:
+    async def handle_pcm_data(self, force: bool = False) -> None:
+        # Process when enough data. force=True (bij Stop): ook een restje kleiner dan
+        # bytes_per_sec verwerken -- anders kwam de laatste fractie audio nooit in de WAV
+        # (e2e 2026-11-19: WAV 36-77 ms korter dan verstuurd; audio is het bewijs).
+        if len(self.pcm_buffer) < self.bytes_per_sec and not force:
             return
 
         if len(self.pcm_buffer) > self.max_bytes_per_sec:
