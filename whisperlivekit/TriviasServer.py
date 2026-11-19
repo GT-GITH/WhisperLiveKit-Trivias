@@ -688,7 +688,10 @@ def rebuild_channel_transcript(
 
     # Markeringen van onderbrekingen met ontbrekende audio blijven staan (plan fase 3).
     entries.extend(_gap_marker_entries(session_id, channel_id))
-    entries.sort(key=lambda e: e.get("start_ms") or 0)
+    # Markering vóór tekst die op hetzelfde moment (de naad) begint: die tekst komt
+    # van ná de onderbreking.
+    entries.sort(key=lambda e: (e.get("start_ms") or 0,
+                                0 if str(e.get("id", "")).startswith("gap_") else 1))
 
     json_path = wav_path.with_suffix(".json")
     _backup_incremental_transcript(json_path)
