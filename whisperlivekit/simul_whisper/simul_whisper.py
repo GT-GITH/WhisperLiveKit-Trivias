@@ -53,14 +53,21 @@ LIVE_NONSPEECH_PROB = (float(os.environ["TRIVIAS_LIVE_NONSPEECH_PROB"])
 # token werd vastgelegd en trok 'İzlediğiniz için teşekkür ederim' mee -- de echte
 # eerste zin verscheen live nooit. Is het eerste token van een nog leeg segment zo
 # onzeker, dan niets vastleggen en op meer audio wachten (zelfde criterium als
-# Whisper's logprob_threshold -1.0). Leeg = uit (A/B-schakelaar).
-LIVE_FIRST_TOKEN_MIN_LOGPROB = (float(os.environ["TRIVIAS_LIVE_FIRST_TOKEN_MIN_LOGPROB"])
-                                if os.environ.get("TRIVIAS_LIVE_FIRST_TOKEN_MIN_LOGPROB") else None)
-# Alleen wachten zolang de buffer korter is dan dit (s). Onbegrensd wachten bleek in de
-# A/B (2026-11-19) 13.4 s live-stilte bij de tolk te geven: echte spraak waar Whisper
-# blijvend twijfelt tussen ' De' en ' Ze' (logprob ~-1.6). Leeg = geen grens.
-LIVE_FIRST_TOKEN_MAX_BUFFER_S = (float(os.environ["TRIVIAS_LIVE_FIRST_TOKEN_MAX_BUFFER_S"])
-                                 if os.environ.get("TRIVIAS_LIVE_FIRST_TOKEN_MAX_BUFFER_S") else None)
+# Whisper's logprob_threshold -1.0). 'off' = uit.
+# Alleen wachten zolang de buffer korter is dan MAX_BUFFER_S: onbegrensd wachten gaf in
+# de A/B (2026-11-19) 13.4 s live-stilte bij de tolk (echte spraak waar Whisper blijvend
+# twijfelt tussen ' De' en ' Ze', logprob ~-1.6). Met grens 2.0 s (A/B C vs A, 6
+# scenario's): definitieve tekst identiek, live gemist 12 -> 11, live-WER opgeteld
+# 2.24 -> 2.01, langste stilte hooguit ~1 s langer. Daarom standaard aan.
+def _env_float_or_off(name: str, default: Optional[float]) -> Optional[float]:
+    v = os.environ.get(name)
+    if v is None or v.strip() == "":
+        return default
+    return None if v.strip().lower() == "off" else float(v)
+
+
+LIVE_FIRST_TOKEN_MIN_LOGPROB = _env_float_or_off("TRIVIAS_LIVE_FIRST_TOKEN_MIN_LOGPROB", -1.0)
+LIVE_FIRST_TOKEN_MAX_BUFFER_S = _env_float_or_off("TRIVIAS_LIVE_FIRST_TOKEN_MAX_BUFFER_S", 2.0)
 
 # [DIAG][GPU] (2026-08-23) onderzoek naar sporadisch trage encoder-aanroepen
 # (zie [DIAG][LIVE_PERF] hieronder): op verzoek rechtstreeks in het serverlog
