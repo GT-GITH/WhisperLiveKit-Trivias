@@ -29,10 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 SR = 16000
 
 
-def gated_audio(path: str, gate: float) -> np.ndarray:
+def gated_audio(path: str, gate: float, max_s: float) -> np.ndarray:
     with wave.open(path, "rb") as w:
         assert w.getframerate() == SR and w.getnchannels() == 1 and w.getsampwidth() == 2
-        pcm = w.readframes(w.getnframes())
+        pcm = w.readframes(min(w.getnframes(), int(max_s * SR)))
     x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
     if not gate:
         return x
@@ -67,11 +67,12 @@ def main() -> None:
     engine = core.TranscriptionEngine(model_size=args.model, lan="nl", pcm_input=True)
     proc = SimulStreamingOnlineProcessor(engine.asr, language=args.lang)
 
-    audio = gated_audio(args.wav, args.gate)[int(args.start * SR):].copy()
+    schedule = [float(s) for s in args.schedule.split(",") if s.strip()]
+    audio = gated_audio(args.wav, args.gate, args.start + max(schedule) + 1.0)[int(args.start * SR):].copy()
     audio[:int(args.zero_until * SR)] = 0.0
     fed = 0
     words = []
-    for t in [float(s) for s in args.schedule.split(",") if s.strip()]:
+    for t in schedule:
         n = int(round(t * SR))
         if n > fed:
             proc.insert_audio_chunk(audio[fed:n], audio_stream_end_time=args.start + n / SR)

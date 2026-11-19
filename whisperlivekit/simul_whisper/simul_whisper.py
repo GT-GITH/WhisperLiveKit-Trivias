@@ -47,6 +47,15 @@ LIVE_REWIND_FRAMES = int(os.environ.get("TRIVIAS_LIVE_REWIND_FRAMES", "0") or 0)
 # (0.5, ongewijzigd); >1.0 = uit (de VAC filtert stilte al voor de decoder).
 LIVE_NONSPEECH_PROB = (float(os.environ["TRIVIAS_LIVE_NONSPEECH_PROB"])
                        if os.environ.get("TRIVIAS_LIVE_NONSPEECH_PROB") else None)
+# Live-start (live-test 2026-11-19, sessie ebaacadc): het eerste token van een segment
+# wordt geforceerd (blank/EOT onderdrukt). Op 0.92 s buffer (0.82 s stilte + 0.1 s
+# spraak) koos de decoder ' İ' met logprob -1.96, aandacht op de stilte (frame 6); dat
+# token werd vastgelegd en trok 'İzlediğiniz için teşekkür ederim' mee -- de echte
+# eerste zin verscheen live nooit. Is het eerste token van een nog leeg segment zo
+# onzeker, dan niets vastleggen en op meer audio wachten (zelfde criterium als
+# Whisper's logprob_threshold -1.0). Leeg = uit (A/B-schakelaar).
+LIVE_FIRST_TOKEN_MIN_LOGPROB = (float(os.environ["TRIVIAS_LIVE_FIRST_TOKEN_MIN_LOGPROB"])
+                                if os.environ.get("TRIVIAS_LIVE_FIRST_TOKEN_MIN_LOGPROB") else None)
 
 # [DIAG][GPU] (2026-08-23) onderzoek naar sporadisch trage encoder-aanroepen
 # (zie [DIAG][LIVE_PERF] hieronder): op verzoek rechtstreeks in het serverlog
@@ -628,7 +637,9 @@ class AlignAtt:
         most_attended_frame = None
 
         token_len_before_decoding = current_tokens.shape[1]
-        
+        # Nog niets vastgelegd in dit segment (alleen de verplichte prompt)?
+        segment_empty = sum(t.shape[1] for t in self.state.tokens[1:]) == 0
+
         l_absolute_timestamps = []
         
         accumulated_cross_attns = []
@@ -720,6 +731,19 @@ class AlignAtt:
                     logits[cycle_repeats, next_in_cycle[cycle_repeats]] = -np.inf
 
             current_tokens, completed = self.state.token_decoder.update(current_tokens, logits, sum_logprobs)
+
+            if (tokens_produced_this_chunk == 1 and segment_empty and not is_last
+                    and LIVE_FIRST_TOKEN_MIN_LOGPROB is not None):
+                first_lp = float(sum_logprobs[0].item())
+                if first_lp < LIVE_FIRST_TOKEN_MIN_LOGPROB:
+                    logger.info(
+                        f"[LIVE][FIRST_TOKEN] onzeker begin van segment, wacht op meer audio: "
+                        f"token={self.tokenizer.decode([current_tokens[0, -1].item()])!r} "
+                        f"logprob={first_lp:.2f} drempel={LIVE_FIRST_TOKEN_MIN_LOGPROB} "
+                        f"buffer={self.segments_len():.2f}s"
+                    )
+                    current_tokens = current_tokens[:, :token_len_before_decoding]
+                    break
 
             logger.debug(f"Decoding completed: {completed}, sum_logprobs: {sum_logprobs.tolist()}, tokens: ")
             self.debug_print_tokens(current_tokens)
