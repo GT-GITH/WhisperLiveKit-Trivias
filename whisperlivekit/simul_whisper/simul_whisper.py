@@ -56,6 +56,11 @@ LIVE_NONSPEECH_PROB = (float(os.environ["TRIVIAS_LIVE_NONSPEECH_PROB"])
 # Whisper's logprob_threshold -1.0). Leeg = uit (A/B-schakelaar).
 LIVE_FIRST_TOKEN_MIN_LOGPROB = (float(os.environ["TRIVIAS_LIVE_FIRST_TOKEN_MIN_LOGPROB"])
                                 if os.environ.get("TRIVIAS_LIVE_FIRST_TOKEN_MIN_LOGPROB") else None)
+# Alleen wachten zolang de buffer korter is dan dit (s). Onbegrensd wachten bleek in de
+# A/B (2026-11-19) 13.4 s live-stilte bij de tolk te geven: echte spraak waar Whisper
+# blijvend twijfelt tussen ' De' en ' Ze' (logprob ~-1.6). Leeg = geen grens.
+LIVE_FIRST_TOKEN_MAX_BUFFER_S = (float(os.environ["TRIVIAS_LIVE_FIRST_TOKEN_MAX_BUFFER_S"])
+                                 if os.environ.get("TRIVIAS_LIVE_FIRST_TOKEN_MAX_BUFFER_S") else None)
 
 # [DIAG][GPU] (2026-08-23) onderzoek naar sporadisch trage encoder-aanroepen
 # (zie [DIAG][LIVE_PERF] hieronder): op verzoek rechtstreeks in het serverlog
@@ -733,7 +738,9 @@ class AlignAtt:
             current_tokens, completed = self.state.token_decoder.update(current_tokens, logits, sum_logprobs)
 
             if (tokens_produced_this_chunk == 1 and segment_empty and not is_last
-                    and LIVE_FIRST_TOKEN_MIN_LOGPROB is not None):
+                    and LIVE_FIRST_TOKEN_MIN_LOGPROB is not None
+                    and (LIVE_FIRST_TOKEN_MAX_BUFFER_S is None
+                         or self.segments_len() < LIVE_FIRST_TOKEN_MAX_BUFFER_S)):
                 first_lp = float(sum_logprobs[0].item())
                 if first_lp < LIVE_FIRST_TOKEN_MIN_LOGPROB:
                     logger.info(
