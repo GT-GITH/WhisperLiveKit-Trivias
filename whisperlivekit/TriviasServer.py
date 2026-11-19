@@ -231,17 +231,23 @@ class SessionManager:
         self._sessions[session_id] = meta
         self._persist(session_id)
 
-    def set_channel_connection(self, session_id: str, channel_id: str, state: str) -> None:
+    def set_channel_connection(self, session_id: str, channel_id: str, state: str,
+                               since: Optional[str] = None) -> None:
         """Verbindingsstatus per kanaal (verbonden|onderbroken|afgesloten), met tijdstip en
         een logboek van onderbrekingen -- vastleggen dat er een storing was, voor de
-        bewijsbaarheid en straks de zichtbare markering (plan fase 3)."""
+        bewijsbaarheid en de zichtbare markering (plan fase 3).
+
+        `since` (bij onderbroken): wandkloktijd van de laatst ontvangen audio = het echte
+        begin van de onderbreking. De server merkt een weggevallen verbinding pas na de
+        ping-time-out (~20-30 s later); dat tijdstip wordt apart bewaard als detected_at."""
         self._hydrate(session_id)
         meta = self._sessions.get(session_id, {"session_id": session_id})
         now = datetime.utcnow().isoformat() + "Z"
         conn = meta.setdefault("connection", {})
-        conn[channel_id] = {"state": state, "since": now}
+        conn[channel_id] = {"state": state, "since": since or now}
         if state == "onderbroken":
-            meta.setdefault("interruptions", []).append({"channel_id": channel_id, "from": now, "to": None})
+            meta.setdefault("interruptions", []).append(
+                {"channel_id": channel_id, "from": since or now, "detected_at": now, "to": None})
         elif state == "verbonden":
             for it in reversed(meta.get("interruptions", [])):
                 if it.get("channel_id") == channel_id and it.get("to") is None:
@@ -1628,7 +1634,9 @@ async def websocket_endpoint(
     try:
         while True:
             message = await websocket.receive_bytes()
-            # Hier kun je later per kanaal/session extra metadata koppelen
+            # Wandkloktijd van de laatst ontvangen audio: bij een storing het echte begin
+            # van de onderbreking (de server merkt de storing pas later, na de ping-time-out).
+            conn_entry["last_audio_at"] = datetime.utcnow().isoformat() + "Z"
             await audio_processor.process_audio(message)
     except KeyError as e:
         if "bytes" in str(e):
@@ -1681,7 +1689,8 @@ async def websocket_endpoint(
                 "timer": asyncio.create_task(_close_detached_after_grace(key)),
                 "detached_at": time.monotonic(),
             }
-            session_manager.set_channel_connection(sid, key[1], "onderbroken")
+            session_manager.set_channel_connection(
+                sid, key[1], "onderbroken", since=conn_entry.get("last_audio_at"))
             logger.warning(
                 f"[SESSION] {sid}/{key[1]}: verbinding verbroken zonder Stop -> onderbroken, "
                 f"wacht max {RECONNECT_GRACE_S:.0f}s op herverbinding (resume=1)"
