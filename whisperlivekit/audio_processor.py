@@ -1003,6 +1003,30 @@ class AudioProcessor:
             logger.warning(f"[PAUSE][FLUSH] live decoder reset failed: {e}")
         logger.info(f"[PAUSE][FLUSH] channel={self.channel_id} session paused, segment/window flushed")
 
+    async def mark_discontinuity(self, reason: str) -> None:
+        """Harde naad in de opname: na een onderbreking met ontbrekende audio (pagina
+        ververst tijdens een storing) sluit de audio die nu komt direct aan op de audio
+        van vóór de storing, terwijl er een stuk gehoor tussen ontbreekt. Live-buffer en
+        batch-venster mogen niet over die naad heen lopen: anders maakt Whisper van het
+        begin van een zin ervoor en het eind van een andere erna één schijnbaar
+        doorlopende zin (live-test 2026-11-19). Zelfde afsluiting als bij Pauze, maar
+        het venster eindigt hier altijd precies op de naad, ook als het restje kort is."""
+        while self.pcm_buffer:
+            await self.handle_pcm_data(force=True)
+        await self._pause_flush()
+        cut_ms = int(round(self.total_pcm_samples / float(self.sample_rate) * 1000.0))
+        start_ms = self._batch_window_start_ms
+        if start_ms is not None and cut_ms > int(start_ms):
+            # _flush_final_batch_tail slaat restjes < 300 ms over; hier toch afsluiten
+            # zodat het volgende venster op de naad begint.
+            await self._enqueue_batch_window(int(start_ms), cut_ms, reason="discontinuity")
+            self._batch_last_close_end_ms = cut_ms
+        self._batch_window_start_ms = cut_ms
+        self._batch_window_start_at_silence = False
+        self._batch_ready_to_close = False
+        self._batch_ready_at_ms = None
+        logger.info(f"[SESSION][NAAD] channel={self.channel_id} naad op {cut_ms} ms ({reason})")
+
     async def transcription_processor(self) -> None:
         """Process audio chunks for transcription."""
         # Bij hervatten loopt de stroomtijd door vanaf het einde van de bestaande WAV.

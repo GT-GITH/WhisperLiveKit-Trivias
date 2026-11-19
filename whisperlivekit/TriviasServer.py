@@ -631,7 +631,31 @@ def rebuild_channel_transcript(
         batch_asr = engine.get_batch_asr_for_channel(channel_id)
     else:
         batch_asr = engine.batch_asr
-    segments = batch_asr.transcribe_full(asr_audio_f32, language_override=lang)
+    # Onderbrekingen met ontbrekende audio zijn harde naden in de WAV: de audio
+    # erachter sluit direct aan op de audio ervoor, maar daartussen ontbreekt een
+    # stuk gehoor. In één keer decoderen liet Whisper een zin over de naad heen
+    # lopen (live-test 2026-11-19: begin van een zin vóór de storing + eind van een
+    # andere erna = één schijnbaar doorlopende zin). Daarom elk deel apart decoderen.
+    sr = 16000
+    cuts = sorted({int(round(e["start_ms"] * sr / 1000))
+                   for e in _gap_marker_entries(session_id, channel_id)})
+    cuts = [c for c in cuts if 0 < c < len(asr_audio_f32)]
+    bounds = [0] + cuts + [len(asr_audio_f32)]
+    segments = []
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        if b - a <= 0:
+            continue
+        off_s = a / sr
+        for seg in batch_asr.transcribe_full(asr_audio_f32[a:b], language_override=lang):
+            seg = dict(seg)
+            seg["start"] = seg["start"] + off_s
+            seg["end"] = seg["end"] + off_s
+            segments.append(seg)
+    if cuts:
+        logger.info(
+            f"[REFRESH] session={session_id} channel={channel_id} apart gedecodeerd rond "
+            f"{len(cuts)} onderbreking(en) op {[round(c / sr, 3) for c in cuts]} s"
+        )
 
     entries: list[dict] = []
     n_accepted = 0
@@ -1525,6 +1549,11 @@ async def websocket_endpoint(
             # Server dacht dat de oude verbinding nog leefde: overnemen. Oude lus beëindigen
             # en wachten tot die klaar is, zodat de ontvangen-teller stabiel is.
             old["superseded"] = True
+            # De server had de storing nog niet gemerkt: de onderbreking alsnog vastleggen,
+            # met als begin de laatst ontvangen audio (anders zou een eventuele markering
+            # hieronder aan een eerdere, al afgehandelde onderbreking hangen).
+            session_manager.set_channel_connection(
+                sid, key[1], "onderbroken", since=old.get("last_audio_at"))
             try:
                 # half-dode TCP-verbinding: niet eindeloos op de close wachten
                 await asyncio.wait_for(
@@ -1590,6 +1619,12 @@ async def websocket_endpoint(
         # of de browserbuffer liep vol = resume_lost_ms), dan zichtbaar markeren op deze
         # plek in de opname -- de onderbreking mag nooit onzichtbaar zijn.
         if resume_restart or (resume_lost_ms or 0) > 0:
+            if reattached:
+                # Zelfde processor: het open batch-venster en de live-buffer lopen anders
+                # over de naad heen (audio ervoor + audio erna als één doorlopend stuk).
+                # Bij hervatten vanaf schijf begint het venster al op de naad.
+                await audio_processor.mark_discontinuity("onderbreking met ontbrekende audio")
+                received_bytes = _received_pcm_bytes(audio_processor)
             gap = session_manager.mark_interruption_gap(
                 sid, key[1], audio_ms=round(received_bytes / 32), lost_ms=resume_lost_ms,
                 restart=resume_restart)
